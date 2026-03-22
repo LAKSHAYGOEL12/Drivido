@@ -1,0 +1,40 @@
+/**
+ * Chat API – conversations and messages from backend.
+ * Requires backend to implement GET/POST /api/chat/* (see docs/CHAT_API_BACKEND.md).
+ */
+import api from './api';
+import { API } from '../constants/API';
+import type {
+  ChatConversationsResponse,
+  ChatMessagesResponse,
+  ChatSendMessageRequest,
+  ChatMessageResponse,
+} from '../types/api';
+
+export async function fetchConversations(): Promise<ChatConversationsResponse['conversations']> {
+  const res = await api.get<ChatConversationsResponse>(API.endpoints.chat.conversations, {
+    timeout: 15000,
+  });
+  return res?.conversations ?? [];
+}
+
+export async function fetchThreadMessages(
+  rideId: string,
+  otherUserId: string
+): Promise<ChatMessageResponse[]> {
+  const q = new URLSearchParams({ rideId, otherUserId }).toString();
+  const path = `${API.endpoints.chat.messages}?${q}`;
+  const res = await api.get<ChatMessagesResponse>(path, { timeout: 15000 });
+  return res?.messages ?? [];
+}
+
+export async function sendChatMessage(
+  payload: ChatSendMessageRequest
+): Promise<ChatMessageResponse> {
+  const res = await api.post<ChatMessageResponse>(API.endpoints.chat.send, payload, {
+    timeout: 15000,
+  });
+  if (!res?.id) throw new Error('Invalid send message response');
+  return res;
+}
+
