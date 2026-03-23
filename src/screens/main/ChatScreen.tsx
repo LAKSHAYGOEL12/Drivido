@@ -16,9 +16,10 @@ import type { RidesStackParamList, SearchStackParamList, InboxStackParamList } f
 import { Ionicons } from '@expo/vector-icons';
 import type { RideListItem } from '../../types/api';
 import { useInbox, type PersistedChatMessage } from '../../contexts/InboxContext';
+import { useAuth } from '../../contexts/AuthContext';
 import { sendChatMessage } from '../../services/chat-api';
 import { COLORS } from '../../constants/colors';
-import { isChatSendingAllowed } from '../../utils/chatAccess';
+import { bookingIsCancelled, pickPreferredBookingForUser } from '../../utils/bookingStatus';
 
 const ROUTE_LABEL_MAX = 15;
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -75,6 +76,7 @@ export default function ChatScreen(): React.JSX.Element {
   const route = useRoute<ChatRouteProp>();
   const { ride, otherUserName, otherUserId } = route.params;
   const { addOrUpdateConversation, getMessages, addMessage, updateMessageStatus, loadThreadMessages } = useInbox();
+  const { user } = useAuth();
   const [message, setMessage] = useState('');
   const messages = getMessages(ride, otherUserName, otherUserId);
   const [inputFocused, setInputFocused] = useState(false);
@@ -83,7 +85,24 @@ export default function ChatScreen(): React.JSX.Element {
   const [now, setNow] = useState(() => Date.now());
   const scrollRef = useRef<ScrollView>(null);
 
-  const canSend = isChatSendingAllowed(ride, now);
+  const currentUserId = (user?.id ?? user?.phone ?? '').trim();
+  const isRideOwner = Boolean(currentUserId && (ride.userId ?? '').trim() === currentUserId);
+
+  const myBookingStatusCandidate = (() => {
+    if (ride.bookings && currentUserId) {
+      const mine = pickPreferredBookingForUser(ride.bookings, currentUserId);
+      if (mine?.status) return mine.status;
+    }
+    return ride.myBookingStatus;
+  })();
+
+  const bookingStatusLabel = !myBookingStatusCandidate
+    ? ''
+    : bookingIsCancelled(myBookingStatusCandidate)
+      ? 'Cancelled'
+      : 'Booked';
+
+  const canSend = true;
 
   useEffect(() => {
     addOrUpdateConversation(ride, otherUserName, otherUserId);
@@ -140,7 +159,6 @@ export default function ChatScreen(): React.JSX.Element {
   const displayName = otherUserName?.trim() || 'Driver';
 
   const handleSend = async () => {
-    if (!isChatSendingAllowed(ride, Date.now())) return;
     const trimmed = message.trim();
     if (!trimmed) return;
     const otherId = (otherUserId ?? '').trim();
@@ -252,10 +270,14 @@ export default function ChatScreen(): React.JSX.Element {
         >
           <View style={styles.rideBarContent}>
             <Text style={styles.rideRoute} numberOfLines={1}>{shortRoute}</Text>
-            <Text style={styles.rideMeta}>
-              <Text style={styles.rideStatus}>{canSend ? 'Confirmed' : 'Chat closed'}</Text>
-              {' • '}{rideDateTimeStr}
-            </Text>
+            {bookingStatusLabel ? (
+              <Text style={styles.rideMeta}>
+                <Text style={styles.rideStatus}>{bookingStatusLabel}</Text>
+                {' • '}{rideDateTimeStr}
+              </Text>
+            ) : (
+              <Text style={styles.rideMeta}>{rideDateTimeStr}</Text>
+            )}
           </View>
           <Ionicons name="chevron-forward" size={20} color={COLORS.textMuted} />
         </TouchableOpacity>
@@ -267,6 +289,7 @@ export default function ChatScreen(): React.JSX.Element {
           contentContainerStyle={[
             styles.chatAreaContent,
             messages.length > 0 && styles.chatAreaContentWithMessages,
+            !canSend ? { paddingBottom: 26 } : null,
           ]}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
@@ -274,7 +297,7 @@ export default function ChatScreen(): React.JSX.Element {
         >
           {messages.length === 0 ? (
             <Text style={styles.emptyChatHint}>
-              {canSend ? 'No messages yet. Say hello!' : 'This chat is read-only. Messaging closed 2 hours after the ride was completed.'}
+              No messages yet
             </Text>
           ) : (
             messages.map((msg) => (
@@ -302,7 +325,7 @@ export default function ChatScreen(): React.JSX.Element {
                     </Text>
                     {msg.isFromMe && (
                       <View style={styles.tickWrap}>
-                        {msg.status === 'delivered' || msg.status === 'read' ? (
+                        {msg.status === 'read' ? (
                           <Ionicons name="checkmark-done" size={16} color={COLORS.primary} />
                         ) : (
                           <Ionicons name="checkmark" size={16} color={COLORS.textMuted} />
@@ -318,14 +341,6 @@ export default function ChatScreen(): React.JSX.Element {
 
         {/* Warnings */}
         <View style={styles.warnings}>
-          {!canSend ? (
-            <View style={styles.chatClosedBanner}>
-              <Ionicons name="lock-closed-outline" size={18} color={COLORS.textMuted} />
-              <Text style={styles.chatClosedText}>
-                Chat is read-only. Messaging is available until 2 hours after the ride is marked completed.
-              </Text>
-            </View>
-          ) : null}
           <Text style={styles.moderationText}>
             We may moderate messages. You can also report inappropriate ones from our guidelines page.
           </Text>
@@ -339,34 +354,30 @@ export default function ChatScreen(): React.JSX.Element {
         </View>
 
           {/* Input row: stays above keyboard via KeyboardAvoidingView */}
-          <View style={[styles.inputRow, keyboardVisible && styles.inputRowKeyboardUp]}>
-            <TextInput
-              style={[styles.input, !canSend && styles.inputDisabled]}
-              placeholder={
-                canSend ? `Your message to ${displayName}` : 'Chat closed — you can still read messages'
-              }
-              placeholderTextColor={COLORS.textMuted}
-              value={message}
-              onChangeText={setMessage}
-              onFocus={() => setFocused(true)}
-              onBlur={() => setFocused(false)}
-              multiline
-              maxLength={1000}
-              editable={canSend}
-            />
-            <TouchableOpacity
-              style={[styles.sendBtn, (!message.trim() || !canSend) && styles.sendBtnDisabled]}
-              onPress={handleSend}
-              disabled={!message.trim() || !canSend}
-              activeOpacity={0.8}
-            >
-              <Ionicons
-                name="send"
-                size={20}
-                color={message.trim() && canSend ? COLORS.white : COLORS.textMuted}
+          {canSend ? (
+            <View style={[styles.inputRow, keyboardVisible && styles.inputRowKeyboardUp]}>
+              <TextInput
+                style={styles.input}
+                placeholder={`Your message to ${displayName}`}
+                placeholderTextColor={COLORS.textMuted}
+                value={message}
+                onChangeText={setMessage}
+                onFocus={() => setFocused(true)}
+                onBlur={() => setFocused(false)}
+                multiline
+                maxLength={1000}
+                editable
               />
-            </TouchableOpacity>
-          </View>
+              <TouchableOpacity
+                style={[styles.sendBtn, !message.trim() && styles.sendBtnDisabled]}
+                onPress={handleSend}
+                disabled={!message.trim()}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="send" size={20} color={message.trim() ? COLORS.white : COLORS.textMuted} />
+              </TouchableOpacity>
+            </View>
+          ) : null}
         </View>
       </KeyboardAvoidingView>
     </SafeAreaView>

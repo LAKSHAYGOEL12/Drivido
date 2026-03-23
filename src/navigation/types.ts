@@ -62,6 +62,7 @@ export type SearchStackParamList = {
     toLongitude?: number;
   };
   RideDetail: { ride: RideListItem; passengerSearch?: PassengerSearchParams };
+  EditRide: { ride: RideListItem };
   BookPassengerDetail: {
     ride: RideListItem;
     booking: NonNullable<RideListItem['bookings']>[number];
@@ -140,7 +141,25 @@ export type PublishStackParamList = {
 export type RidesStackParamList = {
   /** `_afterBookRefresh`: set after booking — list clears and refetches with loader. */
   YourRidesList: { _afterBookRefresh?: number } | undefined;
-  RideDetail: { ride: RideListItem; passengerSearch?: PassengerSearchParams };
+  RideDetail: {
+    ride: RideListItem;
+    passengerSearch?: PassengerSearchParams;
+    selectedFrom?: string;
+    selectedTo?: string;
+  };
+  LocationPicker: {
+    field?: 'from' | 'to';
+    currentFrom?: string;
+    currentTo?: string;
+    currentDate?: string;
+    currentPassengers?: string;
+    currentFromLatitude?: number;
+    currentFromLongitude?: number;
+    currentToLatitude?: number;
+    currentToLongitude?: number;
+    returnScreen?: 'SearchRides' | 'PublishRide';
+  } | undefined;
+  EditRide: { ride: RideListItem };
   BookPassengerDetail: {
     ride: RideListItem;
     booking: NonNullable<RideListItem['bookings']>[number];

@@ -1,16 +1,21 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import {
+  Animated,
   StyleSheet,
   Text,
   View,
   TouchableOpacity,
   ActivityIndicator,
   Alert,
+  Modal,
   ScrollView,
   Platform,
   InteractionManager,
+  useWindowDimensions,
 } from 'react-native';
-import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
+import { useFocusEffect, useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
+import DatePickerModal from '../../components/common/DatePickerModal';
+import PassengersPickerModal from '../../components/common/PassengersPickerModal';
 import { resetTabsToYourRidesAfterBook } from '../../navigation/navigateAfterBook';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import type { RidesStackParamList, SearchStackParamList } from '../../navigation/types';
@@ -66,6 +71,7 @@ type BookingItem = {
 export default function RideDetailScreen(): React.JSX.Element {
   const navigation = useNavigation();
   const route = useRoute<RideDetailRouteProp>();
+  const { height: windowHeight } = useWindowDimensions();
   const scrollRef = useRef<ScrollView>(null);
   const fullRideBlockAlertShownRef = useRef(false);
   const { user } = useAuth();
@@ -77,6 +83,20 @@ export default function RideDetailScreen(): React.JSX.Element {
   const [passengers, setPassengers] = useState<BookingItem[]>(initialRide.bookings ?? []);
   const [detailLoading, setDetailLoading] = useState(true);
   const [passengerItineraryExpanded, setPassengerItineraryExpanded] = useState(false);
+  const [showEditSheet, setShowEditSheet] = useState(false);
+  const [editSheetExpanded, setEditSheetExpanded] = useState(false);
+  const editHalfHeight = Math.max(430, Math.round(windowHeight * 0.68));
+  const editFullHeight = Math.max(editHalfHeight, Math.round(windowHeight * 0.94));
+  const editSheetSlideY = useRef(new Animated.Value(windowHeight)).current;
+  const [editPickup, setEditPickup] = useState('');
+  const [editDestination, setEditDestination] = useState('');
+  const [editPassengers, setEditPassengers] = useState(1);
+  const [editDate, setEditDate] = useState<Date | null>(null);
+  const [editTimeHour, setEditTimeHour] = useState(9);
+  const [editTimeMinute, setEditTimeMinute] = useState(0);
+  const [showEditDateModal, setShowEditDateModal] = useState(false);
+  const [showEditPassengersModal, setShowEditPassengersModal] = useState(false);
+  const [showEditTimeModal, setShowEditTimeModal] = useState(false);
   /** Passenger booking: number of seats to request (capped by fresh getRideAvailableSeats). */
   const [bookSeatsCount, setBookSeatsCount] = useState(1);
 
@@ -315,6 +335,13 @@ export default function RideDetailScreen(): React.JSX.Element {
     void fetchRideDetail({ force: true });
   }, [fetchRideDetail]);
 
+  // Ensure edited values are shown immediately after returning from EditRide.
+  useFocusEffect(
+    useCallback(() => {
+      void fetchRideDetail({ force: true });
+    }, [fetchRideDetail])
+  );
+
   useEffect(() => {
     setBookSeatsCount(1);
   }, [ride.id]);
@@ -352,8 +379,47 @@ export default function RideDetailScreen(): React.JSX.Element {
       Alert.alert('Not allowed', 'Only the driver can edit this ride.');
       return;
     }
-    Alert.alert('Edit ride', 'Edit ride details will be available soon.');
+    (navigation as { navigate: (n: string, p: Record<string, unknown>) => void }).navigate('EditRide', {
+      ride,
+    });
   };
+
+  const expandEditSheet = () => {
+    setEditSheetExpanded(true);
+  };
+
+  const closeEditSheet = () => {
+    Animated.timing(editSheetSlideY, {
+      toValue: windowHeight,
+      duration: 220,
+      useNativeDriver: true,
+    }).start(() => {
+      setShowEditSheet(false);
+      setEditSheetExpanded(false);
+    });
+  };
+
+  useEffect(() => {
+    const p = route.params as RidesStackParamList['RideDetail'] & {
+      selectedFrom?: string;
+      selectedTo?: string;
+    };
+    if (!p) return;
+    let touched = false;
+    if (typeof p.selectedFrom === 'string') {
+      setEditPickup(p.selectedFrom);
+      touched = true;
+    }
+    if (typeof p.selectedTo === 'string') {
+      setEditDestination(p.selectedTo);
+      touched = true;
+    }
+    if (!touched) return;
+    (navigation as { setParams: (params: Record<string, unknown>) => void }).setParams({
+      selectedFrom: undefined,
+      selectedTo: undefined,
+    });
+  }, [route.params, navigation]);
 
   const handleBook = async () => {
     if (rideCancelledByOwner) {
@@ -1008,6 +1074,171 @@ export default function RideDetailScreen(): React.JSX.Element {
         )}
       </ScrollView>
       )}
+      <Modal visible={showEditSheet} transparent animationType="none" onRequestClose={closeEditSheet}>
+        <View style={styles.editSheetOverlay}>
+          <TouchableOpacity style={styles.editSheetDismissArea} activeOpacity={1} onPress={closeEditSheet} />
+          <Animated.View
+            style={[
+              styles.editSheetCard,
+              { height: editSheetExpanded ? editFullHeight : editHalfHeight, transform: [{ translateY: editSheetSlideY }] },
+            ]}
+          >
+            <TouchableOpacity style={styles.editSheetHandleArea} onPress={expandEditSheet} activeOpacity={0.9}>
+              <View style={styles.editSheetHandle} />
+            </TouchableOpacity>
+            <View style={styles.editSheetHeader}>
+              <Text style={styles.editSheetTitle}>Edit ride details</Text>
+              <TouchableOpacity onPress={closeEditSheet} hitSlop={10}>
+                <Ionicons name="close" size={20} color={COLORS.textSecondary} />
+              </TouchableOpacity>
+            </View>
+            <ScrollView
+              style={styles.editSheetBodyScroll}
+              contentContainerStyle={styles.editSheetBody}
+              showsVerticalScrollIndicator={false}
+            >
+              <View style={styles.editPreviewCard}>
+                <TouchableOpacity
+                  style={styles.editPreviewRow}
+                  onPress={() =>
+                    (navigation as { navigate: (name: string, params: Record<string, unknown>) => void }).navigate('LocationPicker', {
+                      field: 'from',
+                      currentFrom: editPickup,
+                      currentTo: editDestination,
+                      returnScreen: 'SearchRides',
+                    })
+                  }
+                  activeOpacity={0.75}
+                >
+                  <View style={styles.editPreviewIconCol}>
+                    <View style={styles.editPreviewGreenDot} />
+                    <View style={styles.editPreviewDotted} />
+                  </View>
+                  <View style={styles.editPreviewTextWrap}>
+                    <Text style={styles.editPreviewValue} numberOfLines={1}>{editPickup}</Text>
+                    <Text style={styles.editPreviewLabel}>PICKUP</Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.editPreviewRow}
+                  onPress={() =>
+                    (navigation as { navigate: (name: string, params: Record<string, unknown>) => void }).navigate('LocationPicker', {
+                      field: 'to',
+                      currentFrom: editPickup,
+                      currentTo: editDestination,
+                      returnScreen: 'SearchRides',
+                    })
+                  }
+                  activeOpacity={0.75}
+                >
+                  <View style={styles.editPreviewIconCol}>
+                    <View style={styles.editPreviewRedPin} />
+                  </View>
+                  <View style={styles.editPreviewTextWrap}>
+                    <Text style={styles.editPreviewValue} numberOfLines={1}>{editDestination}</Text>
+                    <Text style={styles.editPreviewLabel}>DESTINATION</Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
+                </TouchableOpacity>
+
+                <View style={styles.editPreviewDivider} />
+
+                <TouchableOpacity style={styles.editMetaRow} onPress={() => setShowEditDateModal(true)} activeOpacity={0.75}>
+                  <View style={styles.editMetaLeft}>
+                    <Ionicons name="calendar-outline" size={20} color={COLORS.textSecondary} />
+                  </View>
+                  <View style={styles.editMetaCenter}>
+                    <Text style={styles.editMetaValue}>
+                      {editDate ? `${editDate.getDate()}/${editDate.getMonth() + 1}/${editDate.getFullYear()}` : cardDateShort}
+                    </Text>
+                    <Text style={styles.editMetaLabel}>DEPARTURE DATE</Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={20} color={COLORS.textMuted} />
+                </TouchableOpacity>
+
+                <View style={styles.editPreviewDivider} />
+
+                <TouchableOpacity style={styles.editMetaRow} onPress={() => setShowEditTimeModal(true)} activeOpacity={0.75}>
+                  <View style={styles.editMetaLeft}>
+                    <Ionicons name="time-outline" size={20} color={COLORS.textSecondary} />
+                  </View>
+                  <View style={styles.editMetaCenter}>
+                    <Text style={styles.editMetaValue}>
+                      {String(editTimeHour).padStart(2, '0')}:{String(editTimeMinute).padStart(2, '0')}
+                    </Text>
+                    <Text style={styles.editMetaLabel}>PREFERRED TIME</Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={20} color={COLORS.textMuted} />
+                </TouchableOpacity>
+
+                <View style={styles.editPreviewDivider} />
+
+                <TouchableOpacity style={styles.editMetaRow} onPress={() => setShowEditPassengersModal(true)} activeOpacity={0.75}>
+                  <View style={styles.editMetaLeft}>
+                    <Ionicons name="people-outline" size={20} color={COLORS.textSecondary} />
+                  </View>
+                  <View style={styles.editMetaCenter}>
+                    <Text style={styles.editMetaValue}>
+                      {editPassengers} passenger{editPassengers !== 1 ? 's' : ''}
+                    </Text>
+                    <Text style={styles.editMetaLabel}>SEATING SPACE</Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={20} color={COLORS.textMuted} />
+                </TouchableOpacity>
+              </View>
+
+              <Text style={styles.editSheetText}>
+                Tap the top handle to expand this sheet to full screen.
+              </Text>
+            </ScrollView>
+          </Animated.View>
+        </View>
+      </Modal>
+
+      <DatePickerModal
+        visible={showEditDateModal}
+        onClose={() => setShowEditDateModal(false)}
+        selectedDate={editDate}
+        onSelectDate={(d) => {
+          setEditDate(d);
+          setShowEditDateModal(false);
+        }}
+      />
+      <PassengersPickerModal
+        visible={showEditPassengersModal}
+        onClose={() => setShowEditPassengersModal(false)}
+        value={editPassengers}
+        onDone={(n) => setEditPassengers(Math.max(1, Math.min(4, n)))}
+      />
+      <Modal visible={showEditTimeModal} transparent animationType="slide" onRequestClose={() => setShowEditTimeModal(false)}>
+        <TouchableOpacity style={styles.editTimeOverlay} activeOpacity={1} onPress={() => setShowEditTimeModal(false)}>
+          <View style={styles.editTimeCard} onStartShouldSetResponder={() => true}>
+            <Text style={styles.editTimeTitle}>Set time</Text>
+            <View style={styles.editTimeRow}>
+              <TouchableOpacity style={styles.editTimeBtn} onPress={() => setEditTimeHour((h) => (h + 23) % 24)}>
+                <Ionicons name="remove" size={20} color={COLORS.text} />
+              </TouchableOpacity>
+              <Text style={styles.editTimeValue}>{String(editTimeHour).padStart(2, '0')}</Text>
+              <TouchableOpacity style={styles.editTimeBtn} onPress={() => setEditTimeHour((h) => (h + 1) % 24)}>
+                <Ionicons name="add" size={20} color={COLORS.text} />
+              </TouchableOpacity>
+              <Text style={styles.editTimeColon}>:</Text>
+              <TouchableOpacity style={styles.editTimeBtn} onPress={() => setEditTimeMinute((m) => (m + 55) % 60)}>
+                <Ionicons name="remove" size={20} color={COLORS.text} />
+              </TouchableOpacity>
+              <Text style={styles.editTimeValue}>{String(editTimeMinute).padStart(2, '0')}</Text>
+              <TouchableOpacity style={styles.editTimeBtn} onPress={() => setEditTimeMinute((m) => (m + 5) % 60)}>
+                <Ionicons name="add" size={20} color={COLORS.text} />
+              </TouchableOpacity>
+            </View>
+            <TouchableOpacity style={styles.editTimeDoneBtn} onPress={() => setShowEditTimeModal(false)}>
+              <Text style={styles.editTimeDoneText}>Done</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -1651,5 +1882,204 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '600',
     color: COLORS.textMuted,
+  },
+  editSheetOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    justifyContent: 'flex-end',
+  },
+  editSheetDismissArea: {
+    flex: 1,
+  },
+  editSheetCard: {
+    backgroundColor: COLORS.background,
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    minHeight: 380,
+    maxHeight: '96%',
+  },
+  editSheetHandleArea: {
+    alignItems: 'center',
+    paddingTop: 10,
+    paddingBottom: 6,
+  },
+  editSheetHandle: {
+    width: 46,
+    height: 5,
+    borderRadius: 999,
+    backgroundColor: COLORS.border,
+  },
+  editSheetHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: COLORS.border,
+  },
+  editSheetTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: COLORS.text,
+  },
+  editSheetBody: {
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 24,
+  },
+  editSheetBodyScroll: {
+    flex: 1,
+  },
+  editSheetText: {
+    fontSize: 14,
+    color: COLORS.textSecondary,
+    lineHeight: 20,
+    marginTop: 10,
+  },
+  editPreviewCard: {
+    borderWidth: 1,
+    borderColor: COLORS.borderLight,
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    backgroundColor: COLORS.background,
+  },
+  editPreviewRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 56,
+  },
+  editPreviewIconCol: {
+    width: 22,
+    alignItems: 'center',
+  },
+  editPreviewGreenDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    borderWidth: 2,
+    borderColor: COLORS.primary,
+    backgroundColor: COLORS.background,
+    marginTop: 2,
+  },
+  editPreviewDotted: {
+    width: 2,
+    minHeight: 14,
+    borderLeftWidth: 2,
+    borderLeftColor: COLORS.border,
+    borderStyle: 'dashed',
+    marginVertical: 3,
+  },
+  editPreviewRedPin: {
+    width: 10,
+    height: 14,
+    borderRadius: 6,
+    backgroundColor: COLORS.error,
+    marginTop: 2,
+  },
+  editPreviewTextWrap: {
+    flex: 1,
+    marginLeft: 10,
+  },
+  editPreviewValue: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: COLORS.text,
+  },
+  editPreviewLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.textMuted,
+    marginTop: 1,
+  },
+  editPreviewDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: COLORS.border,
+    marginVertical: 8,
+  },
+  editMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 56,
+  },
+  editMetaLeft: {
+    width: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  editMetaCenter: {
+    flex: 1,
+    marginLeft: 10,
+  },
+  editMetaValue: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: COLORS.text,
+  },
+  editMetaLabel: {
+    marginTop: 2,
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.textMuted,
+    letterSpacing: 0.4,
+  },
+  editTimeOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'flex-end',
+  },
+  editTimeCard: {
+    backgroundColor: COLORS.background,
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 22,
+  },
+  editTimeTitle: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: COLORS.text,
+    marginBottom: 10,
+  },
+  editTimeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  editTimeBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: COLORS.backgroundSecondary,
+  },
+  editTimeValue: {
+    minWidth: 34,
+    textAlign: 'center',
+    fontSize: 20,
+    fontWeight: '700',
+    color: COLORS.text,
+  },
+  editTimeColon: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: COLORS.textSecondary,
+    marginHorizontal: 2,
+  },
+  editTimeDoneBtn: {
+    marginTop: 12,
+    alignItems: 'center',
+    paddingVertical: 10,
+  },
+  editTimeDoneText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: COLORS.primary,
   },
 });

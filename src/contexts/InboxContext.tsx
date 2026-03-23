@@ -19,7 +19,7 @@ import {
 } from '../utils/chatFetchThrottle';
 import { getInboxActivitySortKey } from '../utils/inboxList';
 
-export type InboxMessageStatus = 'sent' | 'delivered';
+export type InboxMessageStatus = 'sent' | 'read';
 
 /** Same shape as ChatScreen expects – isFromMe is computed from senderUserId vs currentUser. */
 export interface PersistedChatMessage {
@@ -38,6 +38,7 @@ export interface InboxConversation {
   lastMessage: string;
   lastMessageAt: number;
   messageStatus: InboxMessageStatus;
+  isLastMessageFromMe: boolean;
   unreadCount: number;
 }
 
@@ -169,6 +170,10 @@ function buildConversationsForUser(threads: StoredThreads, currentUserId: string
     if (t.deletedFor?.includes(currentUserId)) continue;
     const otherId = t.participantIds.find((id) => id !== currentUserId) ?? '';
     const otherName = t.participantNames?.[otherId]?.trim() || 'User';
+    const lastMsg = (t.messages ?? []).length > 0 ? t.messages[t.messages.length - 1] : null;
+    const lastSenderId = (lastMsg?.senderUserId ?? t.lastMessageSenderId ?? '').trim();
+    const isLastMessageFromMe = lastSenderId === currentUserId;
+    const lastStatusRaw = (lastMsg?.status ?? 'sent').trim().toLowerCase();
     list.push({
       id: key,
       ride: t.ride,
@@ -176,7 +181,8 @@ function buildConversationsForUser(threads: StoredThreads, currentUserId: string
       otherUserId: otherId || undefined,
       lastMessage: t.lastMessage ?? '',
       lastMessageAt: t.lastMessageAt ?? 0,
-      messageStatus: (t.lastMessageSenderId ? 'delivered' : 'sent') as InboxMessageStatus,
+      messageStatus: lastStatusRaw === 'read' ? 'read' : 'sent',
+      isLastMessageFromMe,
       unreadCount: t.unreadFor?.[currentUserId] ?? 0,
     });
   }

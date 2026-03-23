@@ -94,15 +94,15 @@ export default function Inbox(): React.JSX.Element {
             <View style={styles.unreadBadge}>
               <Text style={styles.unreadCount}>{item.unreadCount}</Text>
             </View>
-          ) : (
+          ) : item.isLastMessageFromMe ? (
             <View style={styles.tickWrap}>
-              {item.messageStatus === 'delivered' ? (
+              {item.messageStatus === 'read' ? (
                 <Ionicons name="checkmark-done" size={18} color={COLORS.primary} />
               ) : (
                 <Ionicons name="checkmark" size={18} color={COLORS.textMuted} />
               )}
             </View>
-          )}
+          ) : null}
         </View>
       </TouchableOpacity>
     </View>

@@ -55,6 +55,7 @@ export default function BottomTabs(): React.JSX.Element {
           const name = getFocusedRouteNameFromRoute(route) ?? 'SearchRides';
           const hideTabs =
             name === 'RideDetail' ||
+            name === 'EditRide' ||
             name === 'BookPassengerDetail' ||
             name === 'Chat' ||
             name === 'LocationPicker';
@@ -106,7 +107,7 @@ export default function BottomTabs(): React.JSX.Element {
         options={({ route }) => {
           const name = getFocusedRouteNameFromRoute(route) ?? 'YourRidesList';
           const hideTabs =
-            name === 'RideDetail' || name === 'BookPassengerDetail' || name === 'Chat';
+            name === 'RideDetail' || name === 'EditRide' || name === 'BookPassengerDetail' || name === 'Chat';
           return {
             headerShown: false,
             title: 'Your Rides',
