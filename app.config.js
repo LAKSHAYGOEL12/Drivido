@@ -5,8 +5,17 @@ require('dotenv').config({ path: path.resolve(__dirname, '.env') });
 
 /** Backend origin only — same variable the app uses: `src/config/apiBaseUrl.ts` + `services/api.ts` */
 const apiBaseUrlFromEnv = (process.env.EXPO_PUBLIC_API_URL || '').trim();
+/** Expo project UUID — required for `getExpoPushTokenAsync` when not in Expo Go (dev build / APK). See https://expo.dev → Project settings, or `eas project:info`. */
+const easProjectIdFromEnv = (process.env.EXPO_PUBLIC_EAS_PROJECT_ID || '').trim();
 
 const appJson = require('./app.json');
+
+const extraEasMerged = {
+  ...(typeof appJson.expo.extra?.eas === 'object' && appJson.expo.extra.eas !== null
+    ? appJson.expo.extra.eas
+    : {}),
+  ...(easProjectIdFromEnv ? { projectId: easProjectIdFromEnv } : {}),
+};
 
 // Google Maps API key from .env (required for Android; black screen if missing)
 const androidMapsKey = process.env.EXPO_PUBLIC_GOOGLE_MAPS_ANDROID_KEY || '';
@@ -20,6 +29,8 @@ const config = {
     extra: {
       ...(appJson.expo.extra || {}),
       apiUrl: apiBaseUrlFromEnv,
+      /** Push: Expo needs `projectId` in dev/bare/APK builds for `getExpoPushTokenAsync`. */
+      eas: extraEasMerged,
     },
     plugins: [
       ...appJson.expo.plugins.map((plugin) => {
@@ -40,6 +51,8 @@ const config = {
     android: {
       ...(appJson.expo.android || {}),
       package: appJson.expo.android?.package || 'com.drivido.app',
+      /** Firebase / FCM — file at project root; required for Android push (expo-notifications). */
+      googleServicesFile: './google-services.json',
       // http:// LAN API (EXPO_PUBLIC_API_URL) on device — required on Android 9+
       usesCleartextTraffic: true,
       softwareKeyboardLayoutMode: 'resize',

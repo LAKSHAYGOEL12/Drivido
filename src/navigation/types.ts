@@ -121,6 +121,11 @@ export type PublishStackParamList = {
     destinationLatitude?: number;
     destinationLongitude?: number;
     selectedDistanceKm: number;
+    /** Preserve selected date when opening price and returning to PublishRide reset. */
+    selectedDateIso?: string;
+    /** Preserve selected time when opening price and returning to PublishRide reset. */
+    selectedTimeHour?: number;
+    selectedTimeMinute?: number;
     /** From route preview (Directions); omitted when user skipped preview — computed from distance. */
     selectedDurationSeconds?: number;
     /** Last confirmed price from Publish — keeps field when reopening fare. */

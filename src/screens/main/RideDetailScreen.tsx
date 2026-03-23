@@ -118,6 +118,37 @@ export default function RideDetailScreen(): React.JSX.Element {
   const passengerSelfCancelledBooking = isMyBookingCancelled && !rideCancelledByOwner;
 
   const activePassengers = passengers.filter((b) => !bookingIsCancelled(b.status));
+  const activePassengerUserIds = new Set(
+    activePassengers.map((p) => (p.userId ?? '').trim()).filter(Boolean)
+  );
+  const cancelledPassengerUserIds = new Set(
+    passengers
+      .filter((p) => bookingIsCancelled(p.status))
+      .map((p) => (p.userId ?? '').trim())
+      .filter(Boolean)
+  );
+  /** Display list: one entry per passenger user when userId is present (prevents cancel+rebook duplicate rows). */
+  const passengersForDisplay: BookingItem[] = (() => {
+    const byUser = new Map<string, BookingItem>();
+    const out: BookingItem[] = [];
+    for (const p of passengers) {
+      const uid = (p.userId ?? '').trim();
+      if (!uid) {
+        out.push(p);
+        continue;
+      }
+      const prev = byUser.get(uid);
+      if (!prev) {
+        byUser.set(uid, p);
+        continue;
+      }
+      const prevCancelled = bookingIsCancelled(prev.status);
+      const nextCancelled = bookingIsCancelled(p.status);
+      // Prefer active booking row over cancelled for the same passenger.
+      if (prevCancelled && !nextCancelled) byUser.set(uid, p);
+    }
+    return [...out, ...byUser.values()];
+  })();
   const totalBookingsCount = getRideTotalBookingCount(ride);
   const availableSeatsCount = getRideAvailableSeats(ride);
 
@@ -716,12 +747,18 @@ export default function RideDetailScreen(): React.JSX.Element {
         {/* Passengers — include cancelled rows (status from API / cascade). */}
         <View style={styles.block}>
           <Text style={styles.passengersHeading}>Passengers</Text>
-          {passengers.length > 0 ? (
+          {passengersForDisplay.length > 0 ? (
             <View style={styles.passengersList}>
-              {passengers.map((b) => {
+              {passengersForDisplay.map((b) => {
                 const isMe = (b.userId ?? '').trim() === currentUserId;
                 const displayName = isMe ? (currentUserName || 'You') : bookingPassengerDisplayName(b);
                 const bookingCancelled = bookingIsCancelled(b.status);
+                const isRebooked =
+                  !bookingCancelled &&
+                  !isPastRide &&
+                  cancelledPassengerUserIds.has((b.userId ?? '').trim()) &&
+                  activePassengerUserIds.has((b.userId ?? '').trim());
+                const shouldFadeCancelled = bookingCancelled && !isRebooked;
 
                 if (isOwner) {
                   const mergedForRoute: BookingItem =
@@ -738,41 +775,48 @@ export default function RideDetailScreen(): React.JSX.Element {
                   return (
                     <TouchableOpacity
                       key={b.id}
-                      style={[styles.passengerRowOwner, bookingCancelled && styles.passengerRowCancelled]}
+                      style={[styles.passengerRowOwner, shouldFadeCancelled && styles.passengerRowCancelled]}
                       onPress={() =>
                         (navigation as { navigate: (n: string, p: Record<string, unknown>) => void }).navigate(
                           'BookPassengerDetail',
                           { ride, booking: b }
                         )
                       }
-                      activeOpacity={bookingCancelled ? 0.55 : 0.72}
+                      activeOpacity={shouldFadeCancelled ? 0.55 : 0.72}
                     >
                       <View style={styles.passengerRowOwnerIcon}>
                         <Ionicons
                           name="person-outline"
                           size={20}
-                          color={bookingCancelled ? COLORS.textMuted : COLORS.textSecondary}
+                          color={shouldFadeCancelled ? COLORS.textMuted : COLORS.textSecondary}
                         />
                       </View>
                       <View style={styles.passengerRowOwnerText}>
                         <Text
-                          style={[styles.passengerNameOwner, bookingCancelled && styles.passengerNameCancelled]}
+                          style={[styles.passengerNameOwner, shouldFadeCancelled && styles.passengerNameCancelled]}
                         >
                           {displayName}
                         </Text>
-                        {bookingCancelled ? (
-                          <Text style={styles.passengerBookingCancelledLabel}>Cancelled</Text>
+                        {bookingCancelled || isRebooked ? (
+                          <Text
+                            style={[
+                              styles.passengerBookingCancelledLabel,
+                              isRebooked && styles.passengerBookingRebookedLabel,
+                            ]}
+                          >
+                            {isRebooked ? 'Rebooked' : 'Cancelled'}
+                          </Text>
                         ) : null}
                         <Text
                           style={[
                             styles.passengerBookedRouteCaption,
-                            bookingCancelled && styles.passengerCaptionCancelled,
+                            shouldFadeCancelled && styles.passengerCaptionCancelled,
                           ]}
                         >
                           Passenger pickup → drop-off
                         </Text>
                         <Text
-                          style={[styles.passengerRouteHint, bookingCancelled && styles.passengerHintCancelled]}
+                          style={[styles.passengerRouteHint, shouldFadeCancelled && styles.passengerHintCancelled]}
                           numberOfLines={2}
                         >
                           {lineShort}
@@ -792,23 +836,33 @@ export default function RideDetailScreen(): React.JSX.Element {
                 return (
                   <View
                     key={b.id}
-                    style={[styles.passengerRow, bookingCancelled && styles.passengerRowCancelled]}
+                    style={[styles.passengerRow, shouldFadeCancelled && styles.passengerRowCancelled]}
                   >
                     <Ionicons
                       name="person-outline"
                       size={18}
-                      color={bookingCancelled ? COLORS.textMuted : COLORS.textSecondary}
+                      color={shouldFadeCancelled ? COLORS.textMuted : COLORS.textSecondary}
                     />
                     <Text
-                      style={[styles.passengerName, bookingCancelled && styles.passengerNameCancelled]}
+                      style={[styles.passengerName, shouldFadeCancelled && styles.passengerNameCancelled]}
                     >
                       {displayName}
                     </Text>
                     <Text
-                      style={[styles.passengerSeats, bookingCancelled && styles.passengerNameCancelled]}
+                      style={[styles.passengerSeats, shouldFadeCancelled && styles.passengerNameCancelled]}
                     >
                       {b.seats} seat{b.seats !== 1 ? 's' : ''}
                     </Text>
+                    {bookingCancelled || isRebooked ? (
+                      <Text
+                        style={[
+                          styles.passengerBookingCancelledLabel,
+                          isRebooked && styles.passengerBookingRebookedLabel,
+                        ]}
+                      >
+                        {isRebooked ? 'Rebooked' : 'Cancelled'}
+                      </Text>
+                    ) : null}
                   </View>
                 );
               })}
@@ -1366,6 +1420,9 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: COLORS.error,
     marginTop: 4,
+  },
+  passengerBookingRebookedLabel: {
+    color: '#16a34a',
   },
   passengerBookedRouteCaption: {
     fontSize: 10,

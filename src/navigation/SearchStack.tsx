@@ -27,7 +27,15 @@ export default function SearchStack(): React.JSX.Element {
       initialRouteName="SearchRides"
     >
       <Stack.Screen name="SearchRides" component={SearchRides} />
-      <Stack.Screen name="LocationPicker" component={LocationPickerScreen} />
+      <Stack.Screen
+        name="LocationPicker"
+        component={LocationPickerScreen}
+        options={{
+          presentation: 'fullScreenModal',
+          animation: 'slide_from_bottom',
+          gestureDirection: 'vertical',
+        }}
+      />
       <Stack.Screen
         name="SearchResults"
         component={SearchResultsScreen}

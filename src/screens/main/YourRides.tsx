@@ -10,7 +10,6 @@ import {
   RefreshControl,
   Animated,
   Easing,
-  Alert,
 } from 'react-native';
 import { useFocusEffect, useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -51,6 +50,7 @@ import {
   type YourRidesFilterTab,
   type YourRidesListContext,
 } from '../../utils/yourRidesList';
+import { showToast } from '../../utils/toast';
 
 type FilterTab = YourRidesFilterTab;
 
@@ -346,6 +346,16 @@ function YourRidesRideCard({
   const isPassengerContext =
     (item.userId ?? '').trim() !== currentUserId && bookedRideIds.has(item.id);
   const isOwnerView = isViewerRideOwner(item, currentUserId);
+  const hasMyActiveBooking =
+    (item.bookings ?? []).some(
+      (b) => (b.userId ?? '').trim() === currentUserId && !bookingIsCancelled(b.status)
+    ) ||
+    Boolean(
+      item.myBookingStatus &&
+        String(item.myBookingStatus).trim() &&
+        !bookingIsCancelled(String(item.myBookingStatus))
+    );
+  const seatFullBlocked = !isOwnerView && isRideSeatsFull(item) && !hasMyActiveBooking;
   const cancelledByYouInPast =
     filter === 'pastRides' && isPassengerContext && bookingIsCancelled(item.myBookingStatus);
   const showCancelledBadgePast =
@@ -360,15 +370,16 @@ function YourRidesRideCard({
       currentUserName={currentUserName}
       showCancelledBadge={showCancelledBadgePast}
       showCompletedBadge={filter === 'pastRides' && isRideCompletedForDisplay(item)}
-      seatFullUnavailable={pastCancelledAndRideFull}
+      seatFullUnavailable={seatFullBlocked || pastCancelledAndRideFull}
       hideSeatAvailability={filter === 'pastRides'}
       myRidesOwnerSummary={filter === 'myRides'}
       onPress={() => {
-        if (pastCancelledAndRideFull) {
-          Alert.alert(
-            'Ride full',
-            'All seats on this ride are booked. Details are only available if you already have a seat.'
-          );
+        if (seatFullBlocked || pastCancelledAndRideFull) {
+          showToast({
+            title: 'Ride full',
+            message: 'All seats on this ride are booked.',
+            variant: 'info',
+          });
           return;
         }
         onNavigateDetail(item);

@@ -14,7 +14,7 @@ import {
   Platform,
   Alert,
 } from 'react-native';
-import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
+import { useNavigation, useRoute, useFocusEffect, type RouteProp } from '@react-navigation/native';
 import type { SearchStackParamList } from '../../navigation/types';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -22,10 +22,15 @@ import { useAuth } from '../../contexts/AuthContext';
 import api from '../../services/api';
 import { API } from '../../constants/API';
 import { geocodeAddressWithFallbacks } from '../../services/places';
+import type { PlacePrediction } from '../../services/places';
 import type { RideListItem } from '../../types/api';
 import { COLORS } from '../../constants/colors';
 import RideListCard from '../../components/rides/RideListCard';
-import { getRideScheduledAt as rideScheduledAt, isViewerRideOwner } from '../../utils/rideDisplay';
+import {
+  getRideScheduledAt as rideScheduledAt,
+  isRideCancelledByOwner,
+  isViewerRideOwner,
+} from '../../utils/rideDisplay';
 import { isRideSeatsFull } from '../../utils/rideSeats';
 import { addRecentSearch } from '../../services/recent-search-storage';
 import DatePickerModal from '../../components/common/DatePickerModal';
@@ -36,6 +41,13 @@ import {
   rideIdFromBookingListRow,
 } from '../../utils/bookingNormalize';
 import { bookingIsCancelled } from '../../utils/bookingStatus';
+import { showToast } from '../../utils/toast';
+import {
+  loadPlaceRecents,
+  upsertPlaceRecent,
+  type PlaceRecentEntry,
+  type PlaceRecentFieldType,
+} from '../../services/place-recent-storage';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -187,7 +199,14 @@ function normalizeRideItem(raw: Record<string, unknown>): RideListItem {
     vehicleModel: toStr(r.vehicleModel ?? r.vehicle_model),
     licensePlate: toStr(r.licensePlate ?? r.license_plate),
     vehicleNumber: toStr(r.vehicleNumber ?? r.vehicle_number),
-    ...(toStr(r.status ?? r.ride_status) ? { status: toStr(r.status ?? r.ride_status) } : {}),
+    status: (() => {
+      const st = toStr(r.status ?? r.ride_status);
+      if (st) return st;
+      if (r.cancelled_at != null || r.cancelledAt != null || r.deleted_at != null || r.deletedAt != null) {
+        return 'cancelled';
+      }
+      return undefined;
+    })(),
     ...(estDur !== undefined && estDur > 0 ? { estimatedDurationSeconds: Math.floor(estDur) } : {}),
     ...(function (): { viewerIsOwner?: boolean } {
       const rawVi = r.viewerIsOwner ?? r.viewer_is_owner;
@@ -574,6 +593,13 @@ export default function SearchResultsScreen(): React.JSX.Element {
   const [draftToLon, setDraftToLon] = useState<number | undefined>(toLongitude);
   const [showDraftDatePicker, setShowDraftDatePicker] = useState(false);
   const [showDraftPassengersPicker, setShowDraftPassengersPicker] = useState(false);
+  const [showLocationModal, setShowLocationModal] = useState(false);
+  const [locationField, setLocationField] = useState<'from' | 'to'>('from');
+  const [locationQuery, setLocationQuery] = useState('');
+  const [locationSuggestions, setLocationSuggestions] = useState<PlacePrediction[]>([]);
+  const [locationRecents, setLocationRecents] = useState<PlaceRecentEntry[]>([]);
+  const [locationLoading, setLocationLoading] = useState(false);
+  const sessionTokenRef = useRef<string | null>(null);
   const editAnim = useRef(new Animated.Value(0)).current;
   const isClosingRef = useRef(false);
   const { width: windowWidth } = useWindowDimensions();
@@ -588,6 +614,142 @@ export default function SearchResultsScreen(): React.JSX.Element {
     height: number;
   }>(null);
   const [sheetFrame, setSheetFrame] = useState<null | { width: number; height: number }>(null);
+
+  const openDraftLocationPicker = React.useCallback(
+    (field: 'from' | 'to') => {
+      setLocationField(field);
+      // Keep search field empty on open so the first letters are never visually clipped.
+      setLocationQuery('');
+      setLocationSuggestions([]);
+      sessionTokenRef.current = `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+      setShowLocationModal(true);
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (!showLocationModal) return;
+    const fieldType: PlaceRecentFieldType = locationField === 'from' ? 'pickup' : 'destination';
+    void loadPlaceRecents(fieldType, recentUserKey).then(setLocationRecents);
+  }, [showLocationModal, locationField, recentUserKey]);
+
+  useEffect(() => {
+    if (!showLocationModal) return;
+    const q = locationQuery.trim();
+    if (q.length < 3) {
+      setLocationSuggestions([]);
+      setLocationLoading(false);
+      return;
+    }
+    setLocationLoading(true);
+    const token = sessionTokenRef.current ?? undefined;
+    const t = setTimeout(() => {
+      import('../../services/places')
+        .then(({ getPlaceSuggestions }) => getPlaceSuggestions(q, { sessionToken: token }))
+        .then(setLocationSuggestions)
+        .catch(() => setLocationSuggestions([]))
+        .finally(() => setLocationLoading(false));
+    }, 320);
+    return () => clearTimeout(t);
+  }, [showLocationModal, locationQuery]);
+
+  const applyLocationSelection = useCallback(async (item: {
+    label: string;
+    placeId?: string;
+    latitude?: number;
+    longitude?: number;
+  }) => {
+    let label = item.label;
+    let lat = item.latitude;
+    let lon = item.longitude;
+    if ((lat == null || lon == null) && item.placeId) {
+      const { getPlaceDetails } = await import('../../services/places');
+      const details = await getPlaceDetails(item.placeId, {
+        sessionToken: sessionTokenRef.current ?? undefined,
+      });
+      if (details) {
+        label = details.formattedAddress || item.label;
+        lat = details.latitude;
+        lon = details.longitude;
+      }
+    }
+    if (locationField === 'from') {
+      setDraftFrom(label);
+      setDraftFromLat(lat);
+      setDraftFromLon(lon);
+    } else {
+      setDraftTo(label);
+      setDraftToLat(lat);
+      setDraftToLon(lon);
+    }
+    if (lat != null && lon != null) {
+      const fieldType: PlaceRecentFieldType = locationField === 'from' ? 'pickup' : 'destination';
+      const rec = await upsertPlaceRecent(
+        {
+          placeId: item.placeId || `${lat},${lon}`,
+          title: label,
+          formattedAddress: label,
+          latitude: lat,
+          longitude: lon,
+          fieldType,
+        },
+        recentUserKey
+      );
+      setLocationRecents(rec);
+    }
+    sessionTokenRef.current = null;
+    setShowLocationModal(false);
+  }, [locationField, recentUserKey]);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      const p = route.params as SearchStackParamList['SearchResults'] & {
+        selectedFrom?: string;
+        selectedTo?: string;
+        preservedDate?: string;
+        preservedPassengers?: string;
+        fromLatitude?: number;
+        fromLongitude?: number;
+        toLatitude?: number;
+        toLongitude?: number;
+      };
+      if (!p) return;
+      let touched = false;
+      if (p.selectedFrom !== undefined) {
+        setDraftFrom(String(p.selectedFrom ?? ''));
+        if (typeof p.fromLatitude === 'number') setDraftFromLat(p.fromLatitude);
+        if (typeof p.fromLongitude === 'number') setDraftFromLon(p.fromLongitude);
+        touched = true;
+      }
+      if (p.selectedTo !== undefined) {
+        setDraftTo(String(p.selectedTo ?? ''));
+        if (typeof p.toLatitude === 'number') setDraftToLat(p.toLatitude);
+        if (typeof p.toLongitude === 'number') setDraftToLon(p.toLongitude);
+        touched = true;
+      }
+      if (typeof p.preservedDate === 'string' && p.preservedDate.trim()) {
+        setDraftDate(p.preservedDate);
+        touched = true;
+      }
+      if (typeof p.preservedPassengers === 'string' && p.preservedPassengers.trim()) {
+        setDraftPassengers(p.preservedPassengers);
+        touched = true;
+      }
+      if (!touched) return;
+      (navigation as { setParams: (params: Record<string, unknown>) => void }).setParams({
+        selectedFrom: undefined,
+        selectedTo: undefined,
+        preservedDate: undefined,
+        preservedPassengers: undefined,
+        fromLatitude: undefined,
+        fromLongitude: undefined,
+        toLatitude: undefined,
+        toLongitude: undefined,
+      });
+      setShowEditModal(true);
+    }, [route.params, navigation])
+  );
+
 
   const passengersForRecent = searchPassengers;
   const [rides, setRides] = useState<RideListItem[]>([]);
@@ -679,6 +841,7 @@ export default function SearchResultsScreen(): React.JSX.Element {
         if (rideDate !== searchDate) return false;
         if (!routeMatches(ride, searchFrom, searchTo, searchFromCoords, searchToCoords)) return false;
         if (currentUserId && isViewerRideOwner(ride, currentUserId)) return false;
+        if (isRideCancelledByOwner(ride)) return false;
         if (!isAtLeast15MinsLater(ride)) return false;
         return true;
       });
@@ -785,7 +948,13 @@ export default function SearchResultsScreen(): React.JSX.Element {
   useEffect(() => {
     if (!showEditModal) return;
     if (isClosingRef.current) return;
-    if (!pillFrame || !sheetFrame) return;
+    // When returning from full-screen LocationPicker there is no pill re-measure context.
+    // Open the edit modal fully visible without the pill->sheet animation.
+    if (!pillFrame) {
+      editAnim.setValue(1);
+      return;
+    }
+    if (!sheetFrame) return;
 
     Animated.timing(editAnim, {
       toValue: 1,
@@ -868,7 +1037,16 @@ export default function SearchResultsScreen(): React.JSX.Element {
           }
           renderItem={({ item }) => {
             const isOwner = isViewerRideOwner(item, currentUserId);
-            const hasMyBooking = myConfirmedRideIds.has(item.id);
+            const hasMyBooking =
+              myConfirmedRideIds.has(item.id) ||
+              ((item.bookings ?? []).some(
+                (b) => (b.userId ?? '').trim() === currentUserId && !bookingIsCancelled(b.status)
+              )) ||
+              Boolean(
+                item.myBookingStatus &&
+                  String(item.myBookingStatus).trim() &&
+                  !bookingIsCancelled(String(item.myBookingStatus))
+              );
             const seatFullBlocked =
               !isOwner && isRideSeatsFull(item) && !hasMyBooking;
             return (
@@ -879,10 +1057,11 @@ export default function SearchResultsScreen(): React.JSX.Element {
                 seatFullUnavailable={seatFullBlocked}
                 onPress={() => {
                   if (seatFullBlocked) {
-                    Alert.alert(
-                      'Ride full',
-                      'All seats on this ride are booked. Details are only available if you already have a seat.'
-                    );
+                    showToast({
+                      title: 'Ride full',
+                      message: 'All seats on this ride are booked.',
+                      variant: 'info',
+                    });
                     return;
                   }
                   navigation.navigate('RideDetail', {
@@ -974,22 +1153,18 @@ export default function SearchResultsScreen(): React.JSX.Element {
                 </View>
                 <View style={styles.editInputWrap}>
                   <Text style={styles.editLabel}>Pickup</Text>
-                  <TextInput
-                    value={draftFrom}
-                    onChangeText={(v) => {
-                      setDraftFrom(v);
-                      setDraftFromLat(undefined);
-                      setDraftFromLon(undefined);
-                    }}
-                    placeholder="Current Location"
-                    style={styles.editTextInput}
-                    placeholderTextColor={COLORS.textMuted}
-                    autoCorrect={false}
-                    textAlign="left"
-                    writingDirection="ltr"
-                    selection={{ start: 0, end: 0 }}
-                    scrollEnabled={false}
-                  />
+                  <TouchableOpacity
+                    activeOpacity={0.75}
+                    onPress={() => openDraftLocationPicker('from')}
+                    style={styles.editTextTap}
+                  >
+                    <Text
+                      style={[styles.editTextInput, !draftFrom.trim() && styles.editTextPlaceholder]}
+                      numberOfLines={1}
+                    >
+                      {draftFrom || 'Current Location'}
+                    </Text>
+                  </TouchableOpacity>
                 </View>
                 <TouchableOpacity
                   style={styles.swapButton}
@@ -1022,22 +1197,18 @@ export default function SearchResultsScreen(): React.JSX.Element {
                 </View>
                 <View style={styles.editInputWrap}>
                   <Text style={styles.editLabel}>Destination</Text>
-                  <TextInput
-                    value={draftTo}
-                    onChangeText={(v) => {
-                      setDraftTo(v);
-                      setDraftToLat(undefined);
-                      setDraftToLon(undefined);
-                    }}
-                    placeholder="Where to?"
-                    style={styles.editTextInput}
-                    placeholderTextColor={COLORS.textMuted}
-                    autoCorrect={false}
-                    textAlign="left"
-                    writingDirection="ltr"
-                    selection={{ start: 0, end: 0 }}
-                    scrollEnabled={false}
-                  />
+                  <TouchableOpacity
+                    activeOpacity={0.75}
+                    onPress={() => openDraftLocationPicker('to')}
+                    style={styles.editTextTap}
+                  >
+                    <Text
+                      style={[styles.editTextInput, !draftTo.trim() && styles.editTextPlaceholder]}
+                      numberOfLines={1}
+                    >
+                      {draftTo || 'Where to?'}
+                    </Text>
+                  </TouchableOpacity>
                 </View>
               </View>
 
@@ -1131,6 +1302,90 @@ export default function SearchResultsScreen(): React.JSX.Element {
         value={Math.min(4, Math.max(1, parseInt(draftPassengers, 10) || 1))}
         onDone={(n) => setDraftPassengers(String(n))}
       />
+
+      <Modal visible={showLocationModal} animationType="slide" presentationStyle="fullScreen">
+        <SafeAreaView style={styles.locationModalContainer} edges={['top']}>
+          <View style={styles.locationModalHeader}>
+            <TouchableOpacity
+              onPress={() => setShowLocationModal(false)}
+              style={styles.locationBackBtn}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            >
+              <Ionicons name="chevron-back" size={22} color={COLORS.textSecondary} />
+            </TouchableOpacity>
+            <Text style={styles.locationModalTitle}>
+              {locationField === 'from' ? 'Select pickup' : 'Select destination'}
+            </Text>
+            <View style={styles.locationBackBtn} />
+          </View>
+          <View style={styles.locationSearchWrap}>
+            <TextInput
+              style={styles.locationSearchInput}
+              placeholder={locationField === 'from' ? 'Search pickup' : 'Search destination'}
+              placeholderTextColor={COLORS.textMuted}
+              autoFocus
+              value={locationQuery}
+              onChangeText={setLocationQuery}
+              autoCorrect={false}
+            />
+          </View>
+          {locationLoading ? (
+            <View style={styles.locationLoadingRow}>
+              <ActivityIndicator size="small" color={COLORS.primary} />
+              <Text style={styles.locationLoadingText}>Searching...</Text>
+            </View>
+          ) : null}
+          {locationQuery.trim().length < 3 ? (
+            <View style={styles.locationListWrap}>
+              <Text style={styles.locationSectionTitle}>Recent Searches</Text>
+              <FlatList
+                data={locationRecents}
+                keyExtractor={(item) => item.placeId}
+                keyboardShouldPersistTaps="handled"
+                renderItem={({ item }) => (
+                  <TouchableOpacity
+                    style={styles.locationRow}
+                    onPress={() =>
+                      void applyLocationSelection({
+                        label: item.formattedAddress || item.title,
+                        placeId: item.placeId,
+                        latitude: item.latitude,
+                        longitude: item.longitude,
+                      })
+                    }
+                  >
+                    <Ionicons name="time-outline" size={16} color={COLORS.textMuted} />
+                    <View style={styles.locationRowTextWrap}>
+                      <Text style={styles.locationRowTitle} numberOfLines={1}>{item.title}</Text>
+                      <Text style={styles.locationRowSubtitle} numberOfLines={1}>{item.formattedAddress}</Text>
+                    </View>
+                  </TouchableOpacity>
+                )}
+              />
+            </View>
+          ) : (
+            <View style={styles.locationListWrap}>
+              <Text style={styles.locationSectionTitle}>Search Results</Text>
+              <FlatList
+                data={locationSuggestions}
+                keyExtractor={(item) => item.placeId}
+                keyboardShouldPersistTaps="handled"
+                renderItem={({ item }) => (
+                  <TouchableOpacity
+                    style={styles.locationRow}
+                    onPress={() => void applyLocationSelection({ label: item.description, placeId: item.placeId })}
+                  >
+                    <Ionicons name="location-outline" size={16} color={COLORS.textSecondary} />
+                    <View style={styles.locationRowTextWrap}>
+                      <Text style={styles.locationRowTitle} numberOfLines={2}>{item.description}</Text>
+                    </View>
+                  </TouchableOpacity>
+                )}
+              />
+            </View>
+          )}
+        </SafeAreaView>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -1367,6 +1622,13 @@ const styles = StyleSheet.create({
     textAlign: 'left',
     writingDirection: 'ltr',
   },
+  editTextTap: {
+    minHeight: 24,
+    justifyContent: 'center',
+  },
+  editTextPlaceholder: {
+    color: COLORS.textMuted,
+  },
   editTextValue: {
     fontSize: 17,
     fontWeight: '600',
@@ -1390,5 +1652,88 @@ const styles = StyleSheet.create({
     color: COLORS.white,
     fontSize: 15,
     fontWeight: '700',
+  },
+  locationModalContainer: {
+    flex: 1,
+    backgroundColor: COLORS.background,
+  },
+  locationModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: COLORS.border,
+  },
+  locationBackBtn: {
+    width: 28,
+    height: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  locationModalTitle: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: COLORS.text,
+  },
+  locationSearchWrap: {
+    paddingHorizontal: 16,
+    paddingTop: 12,
+  },
+  locationSearchInput: {
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    fontSize: 16,
+    color: COLORS.text,
+    backgroundColor: COLORS.backgroundSecondary,
+  },
+  locationLoadingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingTop: 10,
+  },
+  locationLoadingText: {
+    fontSize: 14,
+    color: COLORS.textSecondary,
+  },
+  locationListWrap: {
+    flex: 1,
+    marginTop: 10,
+  },
+  locationSectionTitle: {
+    fontSize: 12,
+    color: COLORS.textMuted,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+    paddingHorizontal: 16,
+    paddingBottom: 8,
+  },
+  locationRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: COLORS.borderLight,
+  },
+  locationRowTextWrap: {
+    flex: 1,
+  },
+  locationRowTitle: {
+    fontSize: 15,
+    color: COLORS.text,
+    fontWeight: '600',
+  },
+  locationRowSubtitle: {
+    marginTop: 2,
+    fontSize: 13,
+    color: COLORS.textSecondary,
   },
 });

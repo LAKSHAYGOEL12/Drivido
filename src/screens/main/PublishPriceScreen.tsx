@@ -40,6 +40,9 @@ export default function PublishPriceScreen(): React.JSX.Element {
     pickupLongitude,
     destinationLatitude,
     destinationLongitude,
+    selectedDateIso,
+    selectedTimeHour,
+    selectedTimeMinute,
     selectedDistanceKm,
     selectedDurationSeconds: durationFromRoute,
     publishRestoreKey,
@@ -79,6 +82,9 @@ export default function PublishPriceScreen(): React.JSX.Element {
   /** Latest input for onBlur (avoids stale closure). */
   const inputTextRef = useRef(inputText);
   inputTextRef.current = inputText;
+  const inputDigits = inputText.replace(/\D/g, '');
+  const inputAmount = inputDigits === '' ? NaN : parseInt(inputDigits, 10);
+  const isPriceInvalid = !Number.isFinite(inputAmount) || inputAmount <= 0;
 
   const stopsAllowed = useMemo(() => isPublishStopsComplete(route.params), [route.params]);
 
@@ -130,6 +136,7 @@ export default function PublishPriceScreen(): React.JSX.Element {
   const destDisplay = selectedTo?.trim() || 'Destination not set';
 
   const onContinue = () => {
+    if (isPriceInvalid) return;
     if (!isPublishStopsComplete(route.params)) {
       alertRouteRequiredPriceScreen();
       navigation.goBack();
@@ -147,6 +154,9 @@ export default function PublishPriceScreen(): React.JSX.Element {
       pickupLongitude,
       destinationLatitude,
       destinationLongitude,
+      ...(selectedDateIso ? { selectedDateIso } : {}),
+      ...(typeof selectedTimeHour === 'number' ? { selectedTimeHour } : {}),
+      ...(typeof selectedTimeMinute === 'number' ? { selectedTimeMinute } : {}),
       selectedRate: String(finalPrice),
       initialPricePerSeat: finalPrice,
       selectedDistanceKm: distanceKmForReco,
@@ -227,7 +237,7 @@ export default function PublishPriceScreen(): React.JSX.Element {
 
           <View style={styles.priceCard}>
             <Text style={styles.priceCardLabel}>Enter amount (₹)</Text>
-            <View style={styles.inputRow}>
+            <View style={[styles.inputRow, isPriceInvalid && styles.inputRowInvalid]}>
               <Text style={styles.rupeePrefix}>₹</Text>
               <TextInput
                 style={styles.priceInput}
@@ -240,10 +250,7 @@ export default function PublishPriceScreen(): React.JSX.Element {
                 }}
                 onBlur={() => {
                   const digits = inputTextRef.current.replace(/\D/g, '');
-                  if (digits === '') {
-                    setPrice(1);
-                    setInputText('1');
-                  } else {
+                  if (digits !== '') {
                     const n = clampPrice(parseInt(digits, 10));
                     setPrice(n);
                     setInputText(String(n));
@@ -293,7 +300,12 @@ export default function PublishPriceScreen(): React.JSX.Element {
         </ScrollView>
 
         <View style={styles.footer}>
-          <TouchableOpacity style={styles.continueBtn} onPress={onContinue} activeOpacity={0.9}>
+          <TouchableOpacity
+            style={[styles.continueBtn, isPriceInvalid && styles.continueBtnDisabled]}
+            onPress={onContinue}
+            activeOpacity={isPriceInvalid ? 1 : 0.9}
+            disabled={isPriceInvalid}
+          >
             <Text style={styles.continueBtnText}>Continue</Text>
             <Ionicons name="arrow-forward" size={22} color={COLORS.white} />
           </TouchableOpacity>
@@ -470,6 +482,9 @@ const styles = StyleSheet.create({
     borderBottomColor: COLORS.primary,
     paddingBottom: 4,
   },
+  inputRowInvalid: {
+    borderBottomColor: COLORS.error,
+  },
   rupeePrefix: {
     fontSize: 36,
     fontWeight: '800',
@@ -565,6 +580,9 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.35,
     shadowRadius: 10,
     elevation: 5,
+  },
+  continueBtnDisabled: {
+    opacity: 0.5,
   },
   continueBtnText: {
     fontSize: 17,

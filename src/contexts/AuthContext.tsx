@@ -8,7 +8,10 @@ import {
 import { getStoredTokens, setStoredTokens, clearStoredTokens } from '../services/token-storage';
 import { clearLocationDeniedFlags } from '../services/location-storage';
 import { clearRideDetailCache } from '../services/rideDetailCache';
-import { unregisterPushTokenWithBackend } from '../services/pushTokenApi';
+import {
+  unregisterPushTokenWithBackend,
+} from '../services/pushTokenApi';
+import { clearLastRegisteredPushToken } from '../services/pushTokenMemory';
 import api from '../services/api';
 import { API } from '../constants/API';
 
@@ -41,6 +44,13 @@ const initialState: AuthState = {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
+/**
+ * `true` → logout calls `DELETE /api/user/push-token` (recommended for production).
+ * `false` → skip unregister while testing multiple accounts on one device (server may still move token on next POST).
+ * Set to `true` before release.
+ */
+const UNREGISTER_PUSH_TOKEN_ON_LOGOUT = false;
+
 /** /auth/me response shape. Align with backend. */
 interface MeResponse {
   user: {
@@ -67,10 +77,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
 
   const logout = useCallback(() => {
     void (async () => {
-      try {
-        await unregisterPushTokenWithBackend();
-      } catch {
-        // Endpoint may be missing or session already invalid — still log out locally.
+      if (UNREGISTER_PUSH_TOKEN_ON_LOGOUT) {
+        try {
+          await unregisterPushTokenWithBackend();
+        } catch {
+          // Endpoint may be missing or session already invalid — still log out locally.
+        }
+      } else {
+        clearLastRegisteredPushToken();
       }
       clearRideDetailCache();
       clearAuth();

@@ -397,6 +397,9 @@ export default function PublishRide(): React.JSX.Element {
         pickupLongitude?: number;
         destinationLatitude?: number;
         destinationLongitude?: number;
+        selectedDateIso?: string;
+        selectedTimeHour?: number;
+        selectedTimeMinute?: number;
         selectedRate?: string;
         selectedDurationSeconds?: number;
         selectedDistanceKm?: number;
@@ -411,6 +414,28 @@ export default function PublishRide(): React.JSX.Element {
       if (p.pickupLongitude !== undefined) setPickupLongitude(p.pickupLongitude);
       if (p.destinationLatitude !== undefined) setDestinationLatitude(p.destinationLatitude);
       if (p.destinationLongitude !== undefined) setDestinationLongitude(p.destinationLongitude);
+      if (p.selectedDateIso) {
+        const d = new Date(p.selectedDateIso);
+        if (!Number.isNaN(d.getTime())) {
+          setSelectedDate(d);
+          setDateLabel(formatDateLabel(d));
+        }
+      }
+      if (
+        typeof p.selectedTimeHour === 'number' &&
+        typeof p.selectedTimeMinute === 'number' &&
+        !Number.isNaN(p.selectedTimeHour) &&
+        !Number.isNaN(p.selectedTimeMinute)
+      ) {
+        const h = Math.max(0, Math.min(23, Math.floor(p.selectedTimeHour)));
+        const m = Math.max(0, Math.min(59, Math.floor(p.selectedTimeMinute)));
+        setSelectedTime({ hour: h, minute: m });
+        setTimeLabel(formatTimeLabel(h, m));
+        const h12 = h % 12 || 12;
+        setClockHour12(h12);
+        setClockAM(h < 12);
+        setClockMinute(Math.round(m / 5) * 5 % 60);
+      }
       if (p.selectedRate !== undefined) setRate(String(p.selectedRate));
       if (p.clearRouteFare) {
         setSelectedRouteDistanceKm(null);
@@ -714,6 +739,9 @@ export default function PublishRide(): React.JSX.Element {
                   pickupLongitude,
                   destinationLatitude,
                   destinationLongitude,
+                  selectedDateIso: selectedDate.toISOString(),
+                  selectedTimeHour: selectedTime.hour,
+                  selectedTimeMinute: selectedTime.minute,
                   selectedDistanceKm: distKm,
                   selectedDurationSeconds: durationSec,
                   ...(initialPricePerSeat !== undefined ? { initialPricePerSeat } : {}),
@@ -945,65 +973,13 @@ export default function PublishRide(): React.JSX.Element {
                 </View>
               </View>
             </Pressable>
-            <View style={styles.timeHourMinuteRow}>
-              <TouchableOpacity
-                style={styles.timeStepperBlock}
-                onPress={() => setClockMode('hour')}
-                activeOpacity={0.8}
-              >
-                <Text style={styles.timeStepperLabel}>Hour</Text>
-                <View style={styles.timeStepperControls}>
-                  <TouchableOpacity
-                    style={styles.timeStepperBtn}
-                    onPress={() => setClockHour12((h) => (h <= 1 ? 12 : h - 1))}
-                  >
-                    <Ionicons name="chevron-down" size={20} color={COLORS.text} />
-                  </TouchableOpacity>
-                  <Text style={styles.timeStepperValue}>{clockHour12}</Text>
-                  <TouchableOpacity
-                    style={styles.timeStepperBtn}
-                    onPress={() => setClockHour12((h) => (h >= 12 ? 1 : h + 1))}
-                  >
-                    <Ionicons name="chevron-up" size={20} color={COLORS.text} />
-                  </TouchableOpacity>
-                </View>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.timeStepperBlock}
-                onPress={() => setClockMode('minute')}
-                activeOpacity={0.8}
-              >
-                <Text style={styles.timeStepperLabel}>Minute</Text>
-                <View style={styles.timeStepperControls}>
-                  <TouchableOpacity
-                    style={styles.timeStepperBtn}
-                    onPress={() => {
-                      const idx = MINUTE_OPTIONS.findIndex((m) => m === clockMinute);
-                      const nextIdx = idx <= 0 ? MINUTE_OPTIONS.length - 1 : idx - 1;
-                      setClockMinute(MINUTE_OPTIONS[nextIdx]);
-                    }}
-                  >
-                    <Ionicons name="chevron-down" size={20} color={COLORS.text} />
-                  </TouchableOpacity>
-                  <Text style={styles.timeStepperValue}>{clockMinute.toString().padStart(2, '0')}</Text>
-                  <TouchableOpacity
-                    style={styles.timeStepperBtn}
-                    onPress={() => {
-                      const idx = MINUTE_OPTIONS.findIndex((m) => m === clockMinute);
-                      const nextIdx = idx >= MINUTE_OPTIONS.length - 1 ? 0 : idx + 1;
-                      setClockMinute(MINUTE_OPTIONS[nextIdx]);
-                    }}
-                  >
-                    <Ionicons name="chevron-up" size={20} color={COLORS.text} />
-                  </TouchableOpacity>
-                </View>
-              </TouchableOpacity>
-            </View>
             <Text style={styles.clockHint}>
-              {clockMode === 'hour' ? 'Tap clock for hour, or tap Minute to set minutes' : 'Tap clock for minute (0–55 in 5 min steps)'}
+              {clockMode === 'hour'
+                ? 'Tap clock to pick hour'
+                : 'Tap clock to pick minutes (0–55 in 5 min steps)'}
             </Text>
             <TouchableOpacity style={styles.dateModalClose} onPress={closeTimeModal}>
-              <Text style={styles.dateModalCloseText}>Close</Text>
+              <Text style={styles.dateModalCloseText}>Done</Text>
             </TouchableOpacity>
           </View>
         </TouchableOpacity>

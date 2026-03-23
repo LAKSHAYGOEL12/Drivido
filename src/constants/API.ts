@@ -2,14 +2,9 @@
  * Endpoint paths only. Backend origin for all requests: `EXPO_PUBLIC_API_URL` in `.env`
  * (`src/config/apiBaseUrl.ts`, `services/api.ts`). Do not use `API.baseUrl` for HTTP.
  */
-const ENV = process.env.EXPO_PUBLIC_ENV ?? 'development';
-
 export const API = {
-  /** Not used by the app HTTP client — kept for reference only. */
-  baseUrl:
-    ENV === 'production'
-      ? 'https://api.drivido.com'
-      : 'https://staging-api.drivido.com',
+  /** Not used by the app HTTP client — reference only (DigitalOcean deployment). */
+  baseUrl: 'https://drivido-fzh4i.ondigitalocean.app',
 
   endpoints: {
     health: '/health',
