@@ -8,10 +8,7 @@ import {
 import { getStoredTokens, setStoredTokens, clearStoredTokens } from '../services/token-storage';
 import { clearLocationDeniedFlags } from '../services/location-storage';
 import { clearRideDetailCache } from '../services/rideDetailCache';
-import {
-  unregisterPushTokenWithBackend,
-} from '../services/pushTokenApi';
-import { clearLastRegisteredPushToken } from '../services/pushTokenMemory';
+import { unregisterPushTokenWithBackend } from '../services/pushTokenRegistration';
 import api from '../services/api';
 import { API } from '../constants/API';
 
@@ -20,6 +17,7 @@ export type User = {
   phone: string;
   email?: string;
   name?: string;
+  createdAt?: string;
 };
 
 type AuthState = {
@@ -44,13 +42,6 @@ const initialState: AuthState = {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-/**
- * `true` → logout calls `DELETE /api/user/push-token` (recommended for production).
- * `false` → skip unregister while testing multiple accounts on one device (server may still move token on next POST).
- * Set to `true` before release.
- */
-const UNREGISTER_PUSH_TOKEN_ON_LOGOUT = false;
-
 /** /auth/me response shape. Align with backend. */
 interface MeResponse {
   user: {
@@ -59,6 +50,8 @@ interface MeResponse {
     phone: string;
     email?: string;
     name?: string;
+    createdAt?: string;
+    created_at?: string;
   };
 }
 
@@ -69,6 +62,10 @@ function userFromMe(me: MeResponse['user']): User {
     phone: me.phone ?? '',
     email: me.email,
     name: me.name,
+    createdAt:
+      (typeof me.createdAt === 'string' && me.createdAt.trim()) ||
+      (typeof me.created_at === 'string' && me.created_at.trim()) ||
+      undefined,
   };
 }
 
@@ -77,14 +74,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
 
   const logout = useCallback(() => {
     void (async () => {
-      if (UNREGISTER_PUSH_TOKEN_ON_LOGOUT) {
-        try {
-          await unregisterPushTokenWithBackend();
-        } catch {
-          // Endpoint may be missing or session already invalid — still log out locally.
-        }
-      } else {
-        clearLastRegisteredPushToken();
+      try {
+        await unregisterPushTokenWithBackend();
+      } catch {
+        // Endpoint may be missing or session already invalid — still log out locally.
       }
       clearRideDetailCache();
       clearAuth();

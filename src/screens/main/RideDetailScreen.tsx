@@ -12,6 +12,9 @@ import {
   Platform,
   InteractionManager,
   useWindowDimensions,
+  TextInput,
+  KeyboardAvoidingView,
+  Pressable,
 } from 'react-native';
 import { useFocusEffect, useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import DatePickerModal from '../../components/common/DatePickerModal';
@@ -24,6 +27,8 @@ import { useAuth } from '../../contexts/AuthContext';
 import api from '../../services/api';
 import { fetchRideDetailRaw, invalidateRideDetailCache } from '../../services/rideDetailCache';
 import { recordOwnerCancelledRide } from '../../services/ownerCancelledRidesStorage';
+import { hasCurrentUserRatedRide, submitRideRating } from '../../services/ratings';
+import { hasHandledRatingPrompt, markRatingPromptHandled } from '../../services/ratingPromptStorage';
 import { API } from '../../constants/API';
 import type { CreateBookingRequest, RideListItem } from '../../types/api';
 import { COLORS } from '../../constants/colors';
@@ -97,8 +102,14 @@ export default function RideDetailScreen(): React.JSX.Element {
   const [showEditDateModal, setShowEditDateModal] = useState(false);
   const [showEditPassengersModal, setShowEditPassengersModal] = useState(false);
   const [showEditTimeModal, setShowEditTimeModal] = useState(false);
+  const [showRatingModal, setShowRatingModal] = useState(false);
+  const [ratingStars, setRatingStars] = useState(0);
+  const [ratingReview, setRatingReview] = useState('');
+  const [ratingSubmitting, setRatingSubmitting] = useState(false);
+  const [ratingSubmitted, setRatingSubmitted] = useState(false);
   /** Passenger booking: number of seats to request (capped by fresh getRideAvailableSeats). */
   const [bookSeatsCount, setBookSeatsCount] = useState(1);
+  const ratingCheckKeyRef = useRef<string | null>(null);
 
   const currentUserId = (user?.id ?? '').trim();
   const currentUserName = (user?.name ?? '').trim();
@@ -130,7 +141,8 @@ export default function RideDetailScreen(): React.JSX.Element {
         (b) =>
           (b.userId ?? '').trim() === currentUserId && bookingIsCancelled(b.status)
       ));
-  const isPastRide = isRidePastArrivalWindow(ride);
+  const rideIsCompleted = String(ride.status ?? '').trim().toLowerCase() === 'completed';
+  const isPastRide = rideIsCompleted || isRidePastArrivalWindow(ride);
   /** Cancelled rides may still be “upcoming” by time — hide edit/cancel anyway. */
   const isOwnerRideCancelled = isOwnerStrict && isRideCancelledByOwner(ride);
   /** Whole ride pulled by driver — passenger UI must not imply *they* cancelled or offer re-book. */
@@ -243,6 +255,15 @@ export default function RideDetailScreen(): React.JSX.Element {
     : driverName;
   const chatOtherUserId = isOwner ? firstPassenger?.userId : ride.userId;
   const priceDisplay = formatRidePrice(ride);
+  const rideDetailRatingPromptEnabled = false;
+  const ratingTargetUserId = (() => {
+    if (!currentUserId) return '';
+    if (isOwner) {
+      const firstOther = passengers.find((b) => (b.userId ?? '').trim() && (b.userId ?? '').trim() !== currentUserId);
+      return (firstOther?.userId ?? '').trim();
+    }
+    return (ride.userId ?? '').trim();
+  })();
 
   const fetchRideDetail = useCallback(async (opts?: { force?: boolean }) => {
     setDetailLoading(true);
@@ -344,6 +365,12 @@ export default function RideDetailScreen(): React.JSX.Element {
 
   useEffect(() => {
     setBookSeatsCount(1);
+    setShowRatingModal(false);
+    setRatingStars(0);
+    setRatingReview('');
+    setRatingSubmitting(false);
+    setRatingSubmitted(false);
+    ratingCheckKeyRef.current = null;
   }, [ride.id]);
 
   /** Keep seat picker within fresh availability whenever server counts change (never trust stale values). */
@@ -358,6 +385,40 @@ export default function RideDetailScreen(): React.JSX.Element {
   useEffect(() => {
     fullRideBlockAlertShownRef.current = false;
   }, [initialRide.id]);
+
+  useEffect(() => {
+    if (!rideDetailRatingPromptEnabled) return;
+    if (detailLoading) return;
+    if (!rideIsCompleted) return;
+    if (!currentUserId) return;
+    if (!ratingTargetUserId) return;
+
+    const key = `${ride.id}:${currentUserId}:${ratingTargetUserId}`;
+    if (ratingCheckKeyRef.current === key) return;
+    ratingCheckKeyRef.current = key;
+
+    let cancelled = false;
+    void (async () => {
+      const handled = await hasHandledRatingPrompt(currentUserId, ride.id);
+      if (cancelled || handled) return;
+      try {
+        const alreadyRated = await hasCurrentUserRatedRide(ride.id, currentUserId);
+        if (cancelled) return;
+        if (alreadyRated) {
+          await markRatingPromptHandled(currentUserId, ride.id);
+          return;
+        }
+        setShowRatingModal(true);
+      } catch {
+        // Non-blocking fallback: still allow prompt once; backend duplicate guard prevents resubmission.
+        if (!cancelled) setShowRatingModal(true);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [detailLoading, rideIsCompleted, ride.id, currentUserId, ratingTargetUserId, rideDetailRatingPromptEnabled]);
 
   /** Non-owners cannot view full rides unless they already have a booking (e.g. deep link). */
   useEffect(() => {
@@ -569,6 +630,58 @@ export default function RideDetailScreen(): React.JSX.Element {
       ]
     );
   };
+
+  const handleSkipRating = useCallback(() => {
+    if (!currentUserId) {
+      setShowRatingModal(false);
+      return;
+    }
+    void markRatingPromptHandled(currentUserId, ride.id);
+    setShowRatingModal(false);
+  }, [currentUserId, ride.id]);
+
+  const handleSubmitRating = useCallback(async () => {
+    if (ratingSubmitting || ratingSubmitted) return;
+    if (!currentUserId) return;
+    if (!ratingTargetUserId) {
+      Alert.alert('Rating unavailable', 'Could not find who to rate for this completed ride.');
+      return;
+    }
+    if (ratingStars < 1 || ratingStars > 5) {
+      Alert.alert('Select rating', 'Please select 1 to 5 stars.');
+      return;
+    }
+
+    setRatingSubmitting(true);
+    try {
+      await submitRideRating({
+        rideId: ride.id,
+        toUserId: ratingTargetUserId,
+        rating: ratingStars,
+        review: ratingReview.trim() || undefined,
+      });
+      await markRatingPromptHandled(currentUserId, ride.id);
+      setRatingSubmitted(true);
+      setShowRatingModal(false);
+      Alert.alert('Thanks for your feedback');
+    } catch (e: unknown) {
+      const message =
+        e && typeof e === 'object' && 'message' in e
+          ? String((e as { message: unknown }).message)
+          : 'Could not submit rating right now.';
+      Alert.alert('Error', message);
+    } finally {
+      setRatingSubmitting(false);
+    }
+  }, [
+    ratingSubmitting,
+    ratingSubmitted,
+    currentUserId,
+    ratingTargetUserId,
+    ratingStars,
+    ratingReview,
+    ride.id,
+  ]);
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
@@ -1074,6 +1187,78 @@ export default function RideDetailScreen(): React.JSX.Element {
         )}
       </ScrollView>
       )}
+      <Modal visible={showRatingModal} transparent animationType="fade" onRequestClose={handleSkipRating}>
+        <KeyboardAvoidingView
+          style={styles.ratingOverlay}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 12 : 0}
+        >
+          <Pressable style={styles.ratingOverlayPressable} onPress={handleSkipRating} />
+          <View style={styles.ratingSheet}>
+            <View style={styles.ratingHandle} />
+            <TouchableOpacity
+              style={styles.ratingCloseBtn}
+              onPress={handleSkipRating}
+              disabled={ratingSubmitting || ratingSubmitted}
+              hitSlop={8}
+            >
+              <Ionicons name="close" size={22} color={COLORS.textMuted} />
+            </TouchableOpacity>
+            <Text style={styles.ratingTitle}>Rate your ride</Text>
+            <Text style={styles.ratingSubtitle}>Tap a star to rate your experience</Text>
+
+            <View style={styles.ratingStarsRow}>
+              {[1, 2, 3, 4, 5].map((s) => (
+                <TouchableOpacity
+                  key={s}
+                  onPress={() => setRatingStars(s)}
+                  disabled={ratingSubmitting || ratingSubmitted}
+                  hitSlop={8}
+                >
+                  <Ionicons
+                    name={ratingStars >= s ? 'star' : 'star-outline'}
+                    size={34}
+                    color={ratingStars >= s ? '#f59e0b' : COLORS.border}
+                  />
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <Text style={styles.ratingInputLabel}>Write your review (optional)</Text>
+            <TextInput
+              style={styles.ratingInput}
+              placeholder="Tell us about the driver, the vehicle, or the route..."
+              placeholderTextColor={COLORS.textMuted}
+              value={ratingReview}
+              onChangeText={setRatingReview}
+              multiline
+              editable={!ratingSubmitting && !ratingSubmitted}
+            />
+
+            <TouchableOpacity
+              style={[
+                styles.ratingSubmitBtn,
+                (ratingStars < 1 || ratingSubmitting || ratingSubmitted) && styles.ratingSubmitBtnDisabled,
+              ]}
+              onPress={handleSubmitRating}
+              disabled={ratingStars < 1 || ratingSubmitting || ratingSubmitted}
+            >
+              {ratingSubmitting ? (
+                <ActivityIndicator size="small" color={COLORS.white} />
+              ) : (
+                <Text style={styles.ratingSubmitText}>Submit Feedback</Text>
+              )}
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.ratingCancelBtn}
+              onPress={handleSkipRating}
+              disabled={ratingSubmitting || ratingSubmitted}
+            >
+              <Text style={styles.ratingCancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
       <Modal visible={showEditSheet} transparent animationType="none" onRequestClose={closeEditSheet}>
         <View style={styles.editSheetOverlay}>
           <TouchableOpacity style={styles.editSheetDismissArea} activeOpacity={1} onPress={closeEditSheet} />
@@ -1882,6 +2067,103 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '600',
     color: COLORS.textMuted,
+  },
+  ratingOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'flex-end',
+  },
+  ratingOverlayPressable: {
+    flex: 1,
+  },
+  ratingSheet: {
+    backgroundColor: COLORS.background,
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
+    padding: 16,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.borderLight,
+    maxHeight: '72%',
+  },
+  ratingHandle: {
+    width: 44,
+    height: 5,
+    borderRadius: 999,
+    backgroundColor: COLORS.border,
+    alignSelf: 'center',
+    marginBottom: 8,
+  },
+  ratingCloseBtn: {
+    position: 'absolute',
+    right: 14,
+    top: 12,
+    zIndex: 2,
+    padding: 4,
+  },
+  ratingTitle: {
+    fontSize: 28,
+    fontWeight: '800',
+    color: COLORS.text,
+    textAlign: 'center',
+    marginTop: 6,
+  },
+  ratingSubtitle: {
+    marginTop: 4,
+    fontSize: 15,
+    color: COLORS.textSecondary,
+    textAlign: 'center',
+  },
+  ratingStarsRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 10,
+    marginTop: 18,
+    marginBottom: 14,
+  },
+  ratingInputLabel: {
+    fontSize: 22,
+    fontWeight: '700',
+    color: COLORS.text,
+    marginBottom: 8,
+  },
+  ratingInput: {
+    minHeight: 118,
+    borderWidth: 1,
+    borderColor: COLORS.borderLight,
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    textAlignVertical: 'top',
+    color: COLORS.text,
+    backgroundColor: COLORS.backgroundSecondary,
+  },
+  ratingSubmitBtn: {
+    marginTop: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    borderRadius: 14,
+    backgroundColor: COLORS.primary,
+  },
+  ratingSubmitBtnDisabled: {
+    backgroundColor: '#a5a8ea',
+  },
+  ratingSubmitText: {
+    fontSize: 26,
+    fontWeight: '700',
+    color: COLORS.white,
+  },
+  ratingCancelBtn: {
+    alignSelf: 'center',
+    marginTop: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+  },
+  ratingCancelText: {
+    fontSize: 20,
+    fontWeight: '600',
+    color: COLORS.textSecondary,
   },
   editSheetOverlay: {
     flex: 1,

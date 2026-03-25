@@ -4,15 +4,16 @@
 
 | Item | App behavior |
 |------|----------------|
-| **POST after every login** | `usePushNotifications` runs when `isAuthenticated` + `userId`; POST runs whenever a token is obtained (not only first install) so the logged-in user owns the device token. |
-| **DELETE on logout** | Controlled by `UNREGISTER_PUSH_TOKEN_ON_LOGOUT` in `AuthContext.tsx` (`false` = skip DELETE for testing; set `true` for production). |
+| **POST after every login** | `usePushNotifications` runs when `isAuthenticated` + `userId`; `registerCurrentDevicePushToken` in `pushTokenRegistration.ts` POSTs whenever a token is obtained (not only first install) so the logged-in user owns the device token. |
+| **DELETE on logout** | `AuthContext` awaits `unregisterPushTokenWithBackend()` **before** clearing the session (removes this device’s token; falls back to resolving the live device token if in-memory registration is missing). |
+| **Token refresh** | `Notifications.addPushTokenListener` re-POSTs when FCM/APNs rotates (passes device token into Expo/native paths to avoid re-entrant `getDevicePushTokenAsync`). |
 | **`EXPO_PUBLIC_API_URL`** | Set before **release** builds; no trailing `/`; rebuild after changes. |
 | **Permission** | `requestPermissionsAsync` before token fetch; alert + **Open Settings** if denied. |
 | **Android channels** | `default`, `messages`, `rides` (match server `channelId`). |
 | **Tap → navigate** | `handleNotificationNavigation.ts` reads `data`. |
 | **2xx on POST** | API client treats **204** and empty body as success (`services/api.ts`). |
 
-**End-to-end testing:** See **`docs/PUSH_TESTING.md`** (login → POST token → skip DELETE while testing → read server logs per backend **`docs/PUSH_TESTING_LOGS.md`**).
+**End-to-end testing:** See **`docs/PUSH_TESTING.md`** (login → POST token → logout → DELETE → read server logs per backend **`docs/PUSH_TESTING_LOGS.md`**).
 
 ## Client behavior
 
@@ -23,7 +24,7 @@
      - Android: **`fcmToken`** (Firebase Cloud Messaging)
      - iOS: **`apnsToken`** (APNs device token)  
      Your backend must send with **Firebase Admin (FCM)** or **APNs**, not the Expo Push HTTP API.
-- On logout, if `UNREGISTER_PUSH_TOKEN_ON_LOGOUT` is `true` in `AuthContext.tsx`, the app calls `DELETE /api/user/push-token`. The **backend does not remove tokens on logout by itself** — only **DELETE** (or your POST dedupe rules) changes stored tokens. **`false`** while testing (no DELETE); **`true`** for production.
+- On logout, the app calls **`DELETE /api/user/push-token`** (with the last registered token, or the resolved live device token) **before** clearing auth. The **backend does not remove tokens on logout by itself** — only **DELETE** (or your POST dedupe rules) changes stored tokens.
 
 ## Backend: register token (aligned with API)
 

@@ -14,6 +14,19 @@ export type YourRidesListContext = {
   bookedRideIds: ReadonlySet<string>;
 };
 
+function isCompletedByBackend(r: RideListItem): boolean {
+  return String(r.status ?? '').trim().toLowerCase() === 'completed';
+}
+
+/** All rides tab window: upcoming + at most 10 minutes past departure time. */
+const ALL_RIDES_PAST_BUFFER_MS = 10 * 60 * 1000;
+
+function isWithinAllRidesWindow(r: RideListItem): boolean {
+  const at = getRideScheduledAt(r);
+  if (!at || Number.isNaN(at.getTime())) return false;
+  return at.getTime() >= Date.now() - ALL_RIDES_PAST_BUFFER_MS;
+}
+
 /** True if this user has any booking row on the ride (incl. cancelled) — keeps passenger linked after owner cancels. */
 export function passengerHasBookingRowOnRide(r: RideListItem, userId: string): boolean {
   const uid = (userId ?? '').trim();
@@ -34,6 +47,7 @@ export function isMineOrBooked(r: RideListItem, ctx: YourRidesListContext): bool
 export function matchesMyRidesTab(r: RideListItem, ctx: YourRidesListContext): boolean {
   return (
     isMineOrBooked(r, ctx) &&
+    !isCompletedByBackend(r) &&
     !isRidePastArrivalWindow(r) &&
     !bookingIsCancelled(r.myBookingStatus) &&
     !isRideCancelledByOwner(r)
@@ -41,13 +55,14 @@ export function matchesMyRidesTab(r: RideListItem, ctx: YourRidesListContext): b
 }
 
 export function matchesAllRidesTab(r: RideListItem): boolean {
-  return !isRidePastArrivalWindow(r) && !isRideCancelledByOwner(r);
+  return !isCompletedByBackend(r) && !isRideCancelledByOwner(r) && isWithinAllRidesWindow(r);
 }
 
 export function matchesPastRidesTab(r: RideListItem, ctx: YourRidesListContext): boolean {
   return (
     isMineOrBooked(r, ctx) &&
-    (isRidePastArrivalWindow(r) ||
+    (isCompletedByBackend(r) ||
+      isRidePastArrivalWindow(r) ||
       bookingIsCancelled(r.myBookingStatus) ||
       isRideCancelledByOwner(r))
   );

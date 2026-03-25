@@ -72,6 +72,12 @@ export default function Register(): React.JSX.Element {
           phone: user.phone ?? '',
           email: user.email ?? '',
           name: user.name ?? (username.trim() || undefined),
+          createdAt:
+            typeof (user as { createdAt?: unknown }).createdAt === 'string'
+              ? String((user as { createdAt?: string }).createdAt)
+              : typeof (user as { created_at?: unknown }).created_at === 'string'
+                ? String((user as { created_at?: string }).created_at)
+                : undefined,
         },
         accessToken,
         refreshToken ?? accessToken

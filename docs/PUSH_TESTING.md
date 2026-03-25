@@ -2,8 +2,8 @@
 
 ## App (this repo)
 
-1. **Login** → app obtains device token → **`POST /api/user/push-token`** with `Authorization: Bearer <accessToken>` (`usePushNotifications` + `pushTokenApi.ts`).
-2. **While testing:** **`UNREGISTER_PUSH_TOKEN_ON_LOGOUT = false`** in `src/contexts/AuthContext.tsx` so logout does **not** call **`DELETE /api/user/push-token`** (backend never auto-deletes on logout).
+1. **Login** → app obtains device token → **`POST /api/user/push-token`** with `Authorization: Bearer <accessToken>` (`usePushNotifications` → `registerCurrentDevicePushToken` in `pushTokenRegistration.ts`; POST helper in `pushTokenApi.ts`).
+2. **Logout** → **`DELETE /api/user/push-token`** for this device (runs before session clear; uses last POSTed token or resolves the current device token).
 3. **Trigger** booking / cancel, then confirm behavior on device + **server** logs.
 
 ## Backend (your API repo)

@@ -7,7 +7,7 @@ import SearchStack from './SearchStack';
 import PublishStack from './PublishStack';
 import RidesStack from './RidesStack';
 import InboxStack from './InboxStack';
-import Profile from '../screens/main/Profile';
+import ProfileStack from './ProfileStack';
 import { useInbox } from '../contexts/InboxContext';
 import { COLORS } from '../constants/colors';
 
@@ -139,13 +139,19 @@ export default function BottomTabs(): React.JSX.Element {
       />
       <Tab.Screen
         name="Profile"
-        component={Profile}
-        options={{
-          title: 'Profile',
-          tabBarLabel: 'Profile',
-          tabBarIcon: ({ focused, color, size }) => (
-            <Ionicons name={focused ? 'person' : 'person-outline'} size={size} color={color} />
-          ),
+        component={ProfileStack}
+        options={({ route }) => {
+          const name = getFocusedRouteNameFromRoute(route) ?? 'ProfileHome';
+          const hideTabs = name === 'Ratings';
+          return {
+            headerShown: false,
+            title: 'Profile',
+            tabBarLabel: 'Profile',
+            tabBarStyle: hideTabs ? { display: 'none' } : undefined,
+            tabBarIcon: ({ focused, color, size }) => (
+              <Ionicons name={focused ? 'person' : 'person-outline'} size={size} color={color} />
+            ),
+          };
         }}
       />
     </Tab.Navigator>

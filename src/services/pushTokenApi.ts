@@ -1,7 +1,6 @@
 import { Platform } from 'react-native';
 import { API } from '../constants/API';
 import api from './api';
-import { clearLastRegisteredPushToken, getLastRegisteredPushToken } from './pushTokenMemory';
 
 /**
  * POST /user/push-token body.
@@ -26,34 +25,6 @@ export type RegisterPushTokenBody = {
  */
 export async function registerPushTokenWithBackend(body: RegisterPushTokenBody): Promise<void> {
   await api.post(API.endpoints.user.pushToken, body);
-}
-
-/**
- * Build DELETE body with the same token field the server stored (expo / fcm / apns).
- */
-function deleteBodyForToken(token: string, kind: 'expo' | 'fcm' | 'apns'): Record<string, string> {
-  if (kind === 'expo') return { expoPushToken: token };
-  if (kind === 'fcm') return { fcmToken: token };
-  return { apnsToken: token };
-}
-
-/**
- * Remove push registration for the current user (call before clearing auth on logout).
- * Sends the last registered token in the body when available (recommended by API).
- */
-export async function unregisterPushTokenWithBackend(): Promise<void> {
-  const last = getLastRegisteredPushToken();
-  try {
-    if (last) {
-      await api.delete(API.endpoints.user.pushToken, {
-        body: JSON.stringify(deleteBodyForToken(last.token, last.kind)),
-      });
-    } else {
-      await api.delete(API.endpoints.user.pushToken);
-    }
-  } finally {
-    clearLastRegisteredPushToken();
-  }
 }
 
 export function buildRegisterBodyFromNativeToken(

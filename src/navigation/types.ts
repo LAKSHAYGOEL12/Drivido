@@ -176,6 +176,14 @@ export type InboxStackParamList = {
 };
 
 /**
+ * Profile tab: stack (ProfileHome -> Ratings)
+ */
+export type ProfileStackParamList = {
+  ProfileHome: undefined;
+  Ratings: undefined;
+};
+
+/**
  * Main app: 5 bottom tabs
  */
 export type MainTabParamList = {
@@ -198,7 +206,12 @@ export type MainTabParamList = {
         screen: keyof InboxStackParamList;
         params?: InboxStackParamList[keyof InboxStackParamList];
       };
-  Profile: undefined;
+  Profile:
+    | undefined
+    | {
+        screen: keyof ProfileStackParamList;
+        params?: ProfileStackParamList[keyof ProfileStackParamList];
+      };
 };
 
 /**

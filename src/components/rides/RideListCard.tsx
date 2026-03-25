@@ -20,6 +20,7 @@ import { bookingPassengerDisplayName, ridePublisherDisplayName } from '../../uti
 export type RideListCardProps = {
   ride: RideListItem;
   onPress: () => void;
+  onRatePress?: () => void;
   /** When set and this user owns the ride, card shows booker name(s) instead of driver. */
   currentUserId?: string;
   /** Used for owner avatar initial when there are no passenger names on the card. */
@@ -28,6 +29,10 @@ export type RideListCardProps = {
   showCancelledBadge?: boolean;
   /** Past rides: show “Completed” after destination + 1h window (not cancelled). */
   showCompletedBadge?: boolean;
+  /** Past rides completed: show inline rating CTA row. */
+  showRatePrompt?: boolean;
+  /** Past rides completed and already rated: show read-only rated row. */
+  showRatedState?: boolean;
   /** Search: full ride; viewer has no seat — faded + “Full” badge (tap still handled by parent). */
   seatFullUnavailable?: boolean;
   /** Past rides tab: hide “N seats left” / “offered” in header and “Full” affordances (for everyone). */
@@ -49,10 +54,13 @@ function placePreview(raw: string, maxChars: number): string {
 export default function RideListCard({
   ride,
   onPress,
+  onRatePress,
   currentUserId,
   currentUserName,
   showCancelledBadge,
   showCompletedBadge,
+  showRatePrompt,
+  showRatedState,
   seatFullUnavailable,
   hideSeatAvailability,
   myRidesOwnerSummary,
@@ -70,6 +78,7 @@ export default function RideListCard({
   const isOwner = isViewerRideOwner(ride, currentUserId);
   const bookings = ride.bookings ?? [];
   const activeBookings = bookings.filter((b) => !bookingIsCancelled(b.status));
+  const activePassengerCount = activeBookings.length;
   const bookedSeats = activeBookings.reduce((sum, b) => sum + (b.seats ?? 0), 0);
   const totalBookingsCount = getRideTotalBookingCount(ride);
   const ownerMyRidesSeatOnly = Boolean(isOwner && myRidesOwnerSummary);
@@ -84,9 +93,8 @@ export default function RideListCard({
     ? vehicleSubtitle
     : isOwner
       ? hideSeatAvailability
-        ? totalBookingsCount > 0
-          ? // Past rides (owner): no "Cancelled" under avatar — header badge still shows when applicable
-            `Had ${totalBookingsCount} passenger${totalBookingsCount !== 1 ? 's' : ''}`
+        ? activePassengerCount > 0
+          ? `${activePassengerCount} passenger${activePassengerCount !== 1 ? 's' : ''}`
           : vehicleSubtitle
         : activeBookings.length > 0
           ? `${bookedSeats} seat${bookedSeats !== 1 ? 's' : ''} booked`
@@ -188,7 +196,7 @@ export default function RideListCard({
         )}
       </View>
 
-      <View style={styles.divider} />
+      {!showCompletedBadge ? <View style={styles.divider} /> : null}
 
       <View style={[styles.driverRow, !showAvatarRow && styles.driverRowNoAvatar]}>
         {showAvatarRow ? (
@@ -221,6 +229,32 @@ export default function RideListCard({
         </View>
         <Ionicons name="chevron-forward" size={20} color={COLORS.textMuted} />
       </View>
+
+      {showRatePrompt || showRatedState ? (
+        <>
+          <View style={styles.divider} />
+          <TouchableOpacity
+            style={styles.rateRow}
+            onPress={onRatePress ?? onPress}
+            disabled={showRatedState}
+            activeOpacity={0.75}
+          >
+            <View style={styles.rateRowLeft}>
+              <View style={styles.rateIconCircle}>
+                <Ionicons
+                  name={showRatedState ? 'checkmark-circle' : 'star-outline'}
+                  size={20}
+                  color={showRatedState ? COLORS.success : '#5b5be8'}
+                />
+              </View>
+              <Text style={[styles.rateTitle, showRatedState && styles.ratedTitle]}>
+                {showRatedState ? 'Rated' : 'Rate your ride'}
+              </Text>
+            </View>
+            <Text style={styles.rateActionText}>{showRatedState ? 'Thanks for feedback' : 'Tap to rate'}</Text>
+          </TouchableOpacity>
+        </>
+      ) : null}
     </TouchableOpacity>
   );
 }
@@ -452,5 +486,39 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     color: COLORS.textSecondary,
     marginTop: 1,
+  },
+  rateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingTop: 4,
+    paddingBottom: 2,
+  },
+  rateRowLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+  },
+  rateIconCircle: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#eef0ff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  rateTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#5b5be8',
+  },
+  ratedTitle: {
+    color: COLORS.success,
+  },
+  rateActionText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLORS.textSecondary,
   },
 });

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -22,6 +22,16 @@ import DatePickerModal from '../../components/common/DatePickerModal';
 import PassengersPickerModal from '../../components/common/PassengersPickerModal';
 import { showToast } from '../../utils/toast';
 import { bookingIsCancelled } from '../../utils/bookingStatus';
+
+const MIN_LEAD_MINUTES = 30;
+
+function isDateTimeTooSoon(dateValue: string, hour: number, minute: number, minLeadMinutes: number): boolean {
+  const [y, m, d] = dateValue.split('-').map(Number);
+  if ([y, m, d].some((n) => Number.isNaN(n))) return false;
+  const chosen = new Date(y, (m ?? 1) - 1, d ?? 1, hour, minute, 0, 0);
+  if (Number.isNaN(chosen.getTime())) return false;
+  return chosen.getTime() < Date.now() + minLeadMinutes * 60 * 1000;
+}
 
 type EditRideRouteProp =
   | RouteProp<RidesStackParamList, 'EditRide'>
@@ -93,6 +103,8 @@ export default function EditRideScreen(): React.JSX.Element {
   }, []);
   const [timeHour, setTimeHour] = useState(initialTime.hour);
   const [timeMinute, setTimeMinute] = useState(initialTime.minute);
+  const [timeModalToast, setTimeModalToast] = useState('');
+  const timeModalToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [saving, setSaving] = useState(false);
 
   const majorFieldLocked = hasBookings;
@@ -149,6 +161,27 @@ export default function EditRideScreen(): React.JSX.Element {
     }, [route.params, navigation])
   );
 
+  const showTimeValidationToast = () => {
+    if (timeModalToastTimerRef.current) clearTimeout(timeModalToastTimerRef.current);
+    setTimeModalToast('Choose a time at least 30 minutes from now.');
+    timeModalToastTimerRef.current = setTimeout(() => setTimeModalToast(''), 1800);
+  };
+
+  const applyTimeAndClose = () => {
+    if (isDateTimeTooSoon(dateValue, timeHour, timeMinute, MIN_LEAD_MINUTES)) {
+      showTimeValidationToast();
+      return;
+    }
+    setTimeValue(`${String(timeHour).padStart(2, '0')}:${String(timeMinute).padStart(2, '0')}`);
+    setShowTimeModal(false);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (timeModalToastTimerRef.current) clearTimeout(timeModalToastTimerRef.current);
+    };
+  }, []);
+
   const handleUpdateRide = async () => {
     if (!pickupLocation.trim() || !dropLocation.trim()) {
       Alert.alert('Missing fields', 'Pickup and destination are required.');
@@ -156,6 +189,14 @@ export default function EditRideScreen(): React.JSX.Element {
     }
     if (!totalSeats.trim() || Number(totalSeats) <= 0 || Number.isNaN(Number(totalSeats))) {
       Alert.alert('Invalid seats', 'Please enter a valid seat count.');
+      return;
+    }
+    if (isDateTimeTooSoon(dateValue, timeHour, timeMinute, MIN_LEAD_MINUTES)) {
+      showToast({
+        title: 'Check departure time',
+        message: 'Choose a time at least 30 minutes from now.',
+        variant: 'info',
+      });
       return;
     }
     const payload: Record<string, unknown> = {
@@ -456,8 +497,17 @@ export default function EditRideScreen(): React.JSX.Element {
         </TouchableOpacity>
       </Modal>
 
-      <Modal visible={showTimeModal} transparent animationType="slide" onRequestClose={() => setShowTimeModal(false)}>
-        <TouchableOpacity style={styles.bottomOverlay} activeOpacity={1} onPress={() => setShowTimeModal(false)}>
+      <Modal visible={showTimeModal} transparent animationType="slide" onRequestClose={applyTimeAndClose}>
+        <TouchableOpacity style={styles.bottomOverlay} activeOpacity={1} onPress={applyTimeAndClose}>
+          {timeModalToast ? (
+            <View style={styles.timeModalToastWrap} pointerEvents="none">
+              <Ionicons name="alert-circle" size={22} color={COLORS.error} style={styles.timeModalToastIcon} />
+              <View style={styles.timeModalToastTextCol}>
+                <Text style={styles.timeModalToastTitle}>Check departure time</Text>
+                <Text style={styles.timeModalToastText}>{timeModalToast}</Text>
+              </View>
+            </View>
+          ) : null}
           <View style={styles.bottomSheet} onStartShouldSetResponder={() => true}>
             <Text style={styles.bottomTitle}>Set time</Text>
             <View style={styles.timeRow}>
@@ -483,10 +533,7 @@ export default function EditRideScreen(): React.JSX.Element {
             </View>
             <TouchableOpacity
               style={styles.bottomDoneBtn}
-              onPress={() => {
-                setTimeValue(`${String(timeHour).padStart(2, '0')}:${String(timeMinute).padStart(2, '0')}`);
-                setShowTimeModal(false);
-              }}
+              onPress={applyTimeAndClose}
             >
               <Text style={styles.bottomDoneText}>Done</Text>
             </TouchableOpacity>
@@ -735,6 +782,41 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.45)',
     justifyContent: 'flex-end',
+  },
+  timeModalToastWrap: {
+    position: 'absolute',
+    top: 88,
+    left: 20,
+    right: 20,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    backgroundColor: '#fff1f2',
+    borderRadius: 14,
+    borderLeftWidth: 4,
+    borderLeftColor: COLORS.error,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+  },
+  timeModalToastIcon: {
+    marginTop: 2,
+    marginRight: 12,
+  },
+  timeModalToastTextCol: {
+    flex: 1,
+    minWidth: 0,
+  },
+  timeModalToastTitle: {
+    color: '#991b1b',
+    fontSize: 16,
+    fontWeight: '800',
+    marginBottom: 4,
+    letterSpacing: -0.2,
+  },
+  timeModalToastText: {
+    color: '#7f1d1d',
+    fontSize: 14,
+    fontWeight: '600',
+    lineHeight: 20,
   },
   bottomSheet: {
     backgroundColor: COLORS.background,

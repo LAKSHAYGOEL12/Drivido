@@ -10,6 +10,12 @@ import {
   RefreshControl,
   Animated,
   Easing,
+  Modal,
+  Pressable,
+  TextInput,
+  Platform,
+  Alert,
+  Keyboard,
 } from 'react-native';
 import { useFocusEffect, useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -51,6 +57,8 @@ import {
   type YourRidesListContext,
 } from '../../utils/yourRidesList';
 import { showToast } from '../../utils/toast';
+import { hasCurrentUserRatedRide, submitRideRating } from '../../services/ratings';
+import { hasHandledRatingPrompt, markRatingPromptHandled } from '../../services/ratingPromptStorage';
 
 type FilterTab = YourRidesFilterTab;
 
@@ -334,14 +342,20 @@ function YourRidesRideCard({
   currentUserId,
   currentUserName,
   bookedRideIds,
+  ratedRideIds,
+  ratedTargetsByRide,
   onNavigateDetail,
+  onRateRide,
 }: {
   item: RideListItem;
   filter: FilterTab;
   currentUserId: string;
   currentUserName: string;
   bookedRideIds: Set<string>;
+  ratedRideIds: Set<string>;
+  ratedTargetsByRide: Record<string, string[]>;
   onNavigateDetail: (ride: RideListItem) => void;
+  onRateRide: (ride: RideListItem) => void;
 }): React.JSX.Element {
   const isPassengerContext =
     (item.userId ?? '').trim() !== currentUserId && bookedRideIds.has(item.id);
@@ -362,6 +376,37 @@ function YourRidesRideCard({
     filter === 'pastRides' &&
     (bookingIsCancelled(item.myBookingStatus) ||
       (isRideCancelledByOwner(item) && (isOwnerView || bookedRideIds.has(item.id))));
+  const isCompletedByBackendStatus = String(item.status ?? '').trim().toLowerCase() === 'completed';
+  const showRatePromptPast =
+    filter === 'pastRides' &&
+    isCompletedByBackendStatus &&
+    !bookingIsCancelled(item.myBookingStatus) &&
+    !isRideCancelledByOwner(item) &&
+    (() => {
+      if (!isOwnerView) return !ratedRideIds.has(item.id);
+      const activePassengerIds = (item.bookings ?? [])
+        .filter((b) => !bookingIsCancelled(b.status))
+        .map((b) => (b.userId ?? '').trim())
+        .filter((uid) => uid && uid !== currentUserId);
+      if (activePassengerIds.length === 0) return false;
+      const ratedSet = new Set(ratedTargetsByRide[item.id] ?? []);
+      return activePassengerIds.some((uid) => !ratedSet.has(uid));
+    })();
+  const showRatedStatePast =
+    filter === 'pastRides' &&
+    isCompletedByBackendStatus &&
+    !bookingIsCancelled(item.myBookingStatus) &&
+    !isRideCancelledByOwner(item) &&
+    (() => {
+      if (!isOwnerView) return ratedRideIds.has(item.id);
+      const activePassengerIds = (item.bookings ?? [])
+        .filter((b) => !bookingIsCancelled(b.status))
+        .map((b) => (b.userId ?? '').trim())
+        .filter((uid) => uid && uid !== currentUserId);
+      if (activePassengerIds.length === 0) return false;
+      const ratedSet = new Set(ratedTargetsByRide[item.id] ?? []);
+      return activePassengerIds.every((uid) => ratedSet.has(uid));
+    })();
   const pastCancelledAndRideFull = cancelledByYouInPast && isRideSeatsFull(item);
   return (
     <RideListCard
@@ -369,10 +414,13 @@ function YourRidesRideCard({
       currentUserId={currentUserId}
       currentUserName={currentUserName}
       showCancelledBadge={showCancelledBadgePast}
-      showCompletedBadge={filter === 'pastRides' && isRideCompletedForDisplay(item)}
+      showCompletedBadge={filter === 'pastRides' && isCompletedByBackendStatus}
       seatFullUnavailable={seatFullBlocked || pastCancelledAndRideFull}
       hideSeatAvailability={filter === 'pastRides'}
       myRidesOwnerSummary={filter === 'myRides'}
+      showRatePrompt={showRatePromptPast}
+      showRatedState={showRatedStatePast}
+      onRatePress={() => onRateRide(item)}
       onPress={() => {
         if (seatFullBlocked || pastCancelledAndRideFull) {
           showToast({
@@ -402,6 +450,96 @@ export default function YourRides(): React.JSX.Element {
   /** Softer copy + animation right after booking navigates here. */
   const [justBookedWelcome, setJustBookedWelcome] = useState(false);
   const loaderOpacity = useRef(new Animated.Value(0)).current;
+  const [ratingRide, setRatingRide] = useState<RideListItem | null>(null);
+  const [showRatingSheet, setShowRatingSheet] = useState(false);
+  const [ratingStars, setRatingStars] = useState(0);
+  const [ratingReview, setRatingReview] = useState('');
+  const [ratingSubmitting, setRatingSubmitting] = useState(false);
+  const [selectedRateTargetUserId, setSelectedRateTargetUserId] = useState('');
+  const [selectedRateTargetName, setSelectedRateTargetName] = useState('');
+  const [ratedTargetsByRide, setRatedTargetsByRide] = useState<Record<string, string[]>>({});
+  const [ratingKeyboardVisible, setRatingKeyboardVisible] = useState(false);
+  const ratingKeyboardOffset = useRef(new Animated.Value(0)).current;
+  const [ratedRideIds, setRatedRideIds] = useState<Set<string>>(new Set());
+  const ratingCheckInFlightRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    const tabNav = navigation.getParent();
+    if (!tabNav) return;
+    tabNav.setOptions({
+      tabBarStyle: filter === 'pastRides' ? { display: 'none' } : undefined,
+    });
+    return () => {
+      tabNav.setOptions({ tabBarStyle: undefined });
+    };
+  }, [navigation, filter]);
+
+  useEffect(() => {
+    if (!currentUserId || filter !== 'pastRides') return;
+    const candidates = rides.filter((r) => {
+      const completed = String(r.status ?? '').trim().toLowerCase() === 'completed';
+      return completed && !bookingIsCancelled(r.myBookingStatus) && !isRideCancelledByOwner(r);
+    });
+    if (candidates.length === 0) return;
+
+    let cancelled = false;
+    void (async () => {
+      for (const ride of candidates) {
+        if (cancelled) break;
+        if (ratedRideIds.has(ride.id)) continue;
+        if (ratingCheckInFlightRef.current.has(ride.id)) continue;
+        ratingCheckInFlightRef.current.add(ride.id);
+        try {
+          const targetUserId = isViewerRideOwner(ride, currentUserId)
+            ? undefined
+            : (ride.userId ?? '').trim() || undefined;
+          const rated = await hasCurrentUserRatedRide(ride.id, currentUserId, targetUserId);
+          if (cancelled) break;
+          if (rated) {
+            setRatedRideIds((prev) => {
+              const next = new Set(prev);
+              next.add(ride.id);
+              return next;
+            });
+          }
+        } catch {
+          // ignore pre-check failures; submit path remains backend-protected
+        } finally {
+          ratingCheckInFlightRef.current.delete(ride.id);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [rides, filter, currentUserId, ratedRideIds]);
+
+  useEffect(() => {
+    const onShow = (e: { endCoordinates?: { height?: number } }) => {
+      setRatingKeyboardVisible(true);
+      const h = Math.max(0, e?.endCoordinates?.height ?? 0);
+      Animated.timing(ratingKeyboardOffset, {
+        toValue: h,
+        duration: 220,
+        useNativeDriver: true,
+      }).start();
+    };
+    const onHide = () => {
+      setRatingKeyboardVisible(false);
+      Animated.timing(ratingKeyboardOffset, {
+        toValue: 0,
+        duration: 220,
+        useNativeDriver: true,
+      }).start();
+    };
+    const showSub = Keyboard.addListener('keyboardDidShow', onShow);
+    const hideSub = Keyboard.addListener('keyboardDidHide', onHide);
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, [ratingKeyboardOffset]);
 
   const fetchRides = useCallback(async () => {
     setError(null);
@@ -677,6 +815,254 @@ export default function YourRides(): React.JSX.Element {
     [navigation]
   );
 
+  const closeRatingSheet = useCallback(() => {
+    Keyboard.dismiss();
+    setShowRatingSheet(false);
+    setRatingStars(0);
+    setRatingReview('');
+    setRatingSubmitting(false);
+    setSelectedRateTargetUserId('');
+    setSelectedRateTargetName('');
+    setRatingRide(null);
+    setRatingKeyboardVisible(false);
+    ratingKeyboardOffset.setValue(0);
+  }, [ratingKeyboardOffset]);
+
+  const handleSkipRating = useCallback(async () => {
+    if (currentUserId && ratingRide?.id) {
+      await markRatingPromptHandled(currentUserId, ratingRide.id);
+    }
+    closeRatingSheet();
+  }, [closeRatingSheet, currentUserId, ratingRide?.id]);
+
+  const openRateSheet = useCallback(
+    async (ride: RideListItem) => {
+      if (!currentUserId) return;
+      if (String(ride.status ?? '').trim().toLowerCase() !== 'completed') {
+        showToast({
+          title: 'Rating unavailable',
+          message: 'Ratings are available only after the ride is marked completed.',
+          variant: 'info',
+        });
+        return;
+      }
+      const isOwner = isViewerRideOwner(ride, currentUserId);
+      const activePassengers = (ride.bookings ?? []).filter(
+        (b) => !bookingIsCancelled(b.status) && (b.userId ?? '').trim() && (b.userId ?? '').trim() !== currentUserId
+      );
+      const rideOwnerId = (ride.userId ?? '').trim();
+      if (!isOwner && rideOwnerId) {
+        try {
+          const alreadyRated = await hasCurrentUserRatedRide(ride.id, currentUserId, rideOwnerId);
+          if (alreadyRated) {
+            setRatedRideIds((prev) => {
+              const next = new Set(prev);
+              next.add(ride.id);
+              return next;
+            });
+            showToast({
+              title: 'Already rated',
+              message: 'You have already rated this ride.',
+              variant: 'info',
+            });
+            return;
+          }
+        } catch {
+          // Non-blocking fallback: allow opening; backend duplicate guard still protects POST.
+        }
+      }
+
+      if (isOwner && activePassengers.length > 0) {
+        const ratedForRide = new Set(ratedTargetsByRide[ride.id] ?? []);
+        await Promise.all(
+          activePassengers.map(async (p) => {
+            const passengerId = (p.userId ?? '').trim();
+            if (!passengerId || ratedForRide.has(passengerId)) return;
+            try {
+              const rated = await hasCurrentUserRatedRide(ride.id, currentUserId, passengerId);
+              if (rated) ratedForRide.add(passengerId);
+            } catch {
+              // Keep modal usable even if /check fails.
+            }
+          })
+        );
+        setRatedTargetsByRide((prev) => {
+          const existing = prev[ride.id] ?? [];
+          const merged = new Set(existing);
+          ratedForRide.forEach((id) => merged.add(id));
+          return { ...prev, [ride.id]: [...merged] };
+        });
+        if (ratedForRide.size >= activePassengers.length) {
+          showToast({
+            title: 'Already rated',
+            message: 'You have already rated all passengers for this ride.',
+            variant: 'info',
+          });
+          return;
+        }
+      }
+
+      setRatingRide(ride);
+      if (isOwner && activePassengers.length === 1) {
+        const p = activePassengers[0];
+        setSelectedRateTargetUserId((p.userId ?? '').trim());
+        setSelectedRateTargetName((p.name ?? p.userName ?? 'Passenger').trim() || 'Passenger');
+      } else {
+        setSelectedRateTargetUserId('');
+        setSelectedRateTargetName('');
+      }
+      setShowRatingSheet(true);
+    },
+    [currentUserId, ratedTargetsByRide]
+  );
+
+  const handleSubmitRating = useCallback(async () => {
+    if (!ratingRide || !currentUserId) return;
+    if (ratingSubmitting) return;
+    if (ratingStars < 1 || ratingStars > 5) {
+      Alert.alert('Select rating', 'Please select 1 to 5 stars.');
+      return;
+    }
+
+    const rideOwnerId = (ratingRide.userId ?? '').trim();
+    const isOwner = isViewerRideOwner(ratingRide, currentUserId);
+    const activePassenger = (ratingRide.bookings ?? []).find(
+      (b) => !bookingIsCancelled(b.status) && (b.userId ?? '').trim() && (b.userId ?? '').trim() !== currentUserId
+    );
+    const ownerCandidatesCount = isOwner
+      ? (ratingRide.bookings ?? []).filter(
+          (b) =>
+            !bookingIsCancelled(b.status) &&
+            (b.userId ?? '').trim() &&
+            (b.userId ?? '').trim() !== currentUserId
+        ).length
+      : 0;
+    const toUserId = isOwner
+      ? (selectedRateTargetUserId || (activePassenger?.userId ?? '').trim())
+      : rideOwnerId;
+    if (!toUserId) {
+      Alert.alert(
+        'Select passenger',
+        'Please select a passenger to rate for this completed ride.'
+      );
+      return;
+    }
+
+    setRatingSubmitting(true);
+    try {
+      await submitRideRating({
+        rideId: ratingRide.id,
+        toUserId,
+        rating: ratingStars,
+        review: ratingReview.trim() || undefined,
+      });
+      if (isOwner && toUserId) {
+        setRatedTargetsByRide((prev) => {
+          const existing = prev[ratingRide.id] ?? [];
+          if (existing.includes(toUserId)) return prev;
+          return { ...prev, [ratingRide.id]: [...existing, toUserId] };
+        });
+      }
+      setRatedRideIds((prev) => {
+        const next = new Set(prev);
+        if (!isOwner) next.add(ratingRide.id);
+        return next;
+      });
+      await markRatingPromptHandled(currentUserId, ratingRide.id);
+      if (isOwner && ownerCandidatesCount > 1) {
+        const existingRated = new Set(ratedTargetsByRide[ratingRide.id] ?? []);
+        existingRated.add(toUserId);
+        if (existingRated.size >= ownerCandidatesCount) {
+          closeRatingSheet();
+          showToast({
+            title: 'Thanks for your feedback',
+            message: 'All passengers for this ride are rated.',
+            variant: 'success',
+          });
+          return;
+        }
+        setRatingStars(0);
+        setRatingReview('');
+        setSelectedRateTargetUserId('');
+        setSelectedRateTargetName('');
+        showToast({
+          title: 'Thanks for your feedback',
+          message: 'You can rate other passengers too.',
+          variant: 'success',
+        });
+      } else {
+        closeRatingSheet();
+        showToast({
+          title: 'Thanks for your feedback',
+          variant: 'success',
+        });
+      }
+    } catch (e: unknown) {
+      const statusCode =
+        e && typeof e === 'object' && 'statusCode' in e
+          ? Number((e as { statusCode?: unknown }).statusCode)
+          : undefined;
+      const message =
+        e && typeof e === 'object' && 'message' in e
+          ? String((e as { message: unknown }).message)
+          : 'Could not submit rating right now.';
+      if (statusCode === 409) {
+        if (isOwner && toUserId) {
+          setRatedTargetsByRide((prev) => {
+            const existing = prev[ratingRide.id] ?? [];
+            if (existing.includes(toUserId)) return prev;
+            return { ...prev, [ratingRide.id]: [...existing, toUserId] };
+          });
+          setRatingStars(0);
+          setRatingReview('');
+          setSelectedRateTargetUserId('');
+          setSelectedRateTargetName('');
+        } else {
+          setRatedRideIds((prev) => {
+            const next = new Set(prev);
+            next.add(ratingRide.id);
+            return next;
+          });
+          closeRatingSheet();
+        }
+        showToast({ title: 'Already rated', message, variant: 'info' });
+        return;
+      }
+      Alert.alert('Error', message);
+    } finally {
+      setRatingSubmitting(false);
+    }
+  }, [
+    ratingRide,
+    currentUserId,
+    ratingSubmitting,
+    ratingStars,
+    ratingReview,
+    closeRatingSheet,
+    ratedTargetsByRide,
+  ]);
+
+  const handleRatingModalRequestClose = useCallback(() => {
+    if (ratingKeyboardVisible) {
+      Keyboard.dismiss();
+      return;
+    }
+    void handleSkipRating();
+  }, [ratingKeyboardVisible, handleSkipRating]);
+
+  const ownerRateCandidates = useMemo(() => {
+    if (!ratingRide || !currentUserId) return [];
+    if (!isViewerRideOwner(ratingRide, currentUserId)) return [];
+    return (ratingRide.bookings ?? []).filter(
+      (b) => !bookingIsCancelled(b.status) && (b.userId ?? '').trim() && (b.userId ?? '').trim() !== currentUserId
+    );
+  }, [ratingRide, currentUserId]);
+  const isOwnerRatingFlow = Boolean(
+    ratingRide && currentUserId && isViewerRideOwner(ratingRide, currentUserId)
+  );
+  const ownerHasMultipleCandidates = isOwnerRatingFlow && ownerRateCandidates.length > 1;
+  const showOwnerPickerOnly = ownerHasMultipleCandidates && !selectedRateTargetUserId;
+
   const listCtx = useMemo<YourRidesListContext>(
     () => ({ userId: currentUserId, bookedRideIds }),
     [currentUserId, bookedRideIds]
@@ -830,7 +1216,10 @@ export default function YourRides(): React.JSX.Element {
               currentUserId={currentUserId}
               currentUserName={currentUserName}
               bookedRideIds={bookedRideIds}
+              ratedRideIds={ratedRideIds}
+              ratedTargetsByRide={ratedTargetsByRide}
               onNavigateDetail={goRideDetail}
+              onRateRide={openRateSheet}
             />
           )}
         />
@@ -877,11 +1266,165 @@ export default function YourRides(): React.JSX.Element {
               currentUserId={currentUserId}
               currentUserName={currentUserName}
               bookedRideIds={bookedRideIds}
+              ratedRideIds={ratedRideIds}
+              ratedTargetsByRide={ratedTargetsByRide}
               onNavigateDetail={goRideDetail}
+              onRateRide={openRateSheet}
             />
           )}
         />
       )}
+      <Modal visible={showRatingSheet} transparent animationType="slide" onRequestClose={handleRatingModalRequestClose}>
+        <View
+          style={styles.ratingOverlay}
+        >
+          <Pressable style={styles.ratingOverlayPressable} onPress={() => void handleSkipRating()} />
+          <Animated.View
+            style={[
+              styles.ratingSheet,
+              { transform: [{ translateY: Animated.multiply(ratingKeyboardOffset, -1) }] },
+            ]}
+          >
+            <View style={styles.ratingHandle} />
+            <TouchableOpacity style={styles.ratingCloseBtn} onPress={() => void handleSkipRating()} hitSlop={8}>
+              <Ionicons name="close" size={22} color={COLORS.textMuted} />
+            </TouchableOpacity>
+            <Text style={styles.ratingTitle}>Rate your ride</Text>
+            <Text style={styles.ratingSubtitle}>Tap a star to rate your experience</Text>
+
+            {ownerRateCandidates.length > 1 ? (
+              <View style={styles.rateTargetBlock}>
+                <Text style={styles.rateTargetHeading}>Select passenger</Text>
+                <View style={styles.rateTargetList}>
+                  {ownerRateCandidates.map((p) => {
+                    const uid = (p.userId ?? '').trim();
+                    const name = (p.name ?? p.userName ?? 'Passenger').trim() || 'Passenger';
+                    const selected = selectedRateTargetUserId === uid;
+                    const isRated = Boolean(
+                      ratingRide?.id && (ratedTargetsByRide[ratingRide.id] ?? []).includes(uid)
+                    );
+                    return (
+                      <TouchableOpacity
+                        key={`${ratingRide?.id}-${uid}`}
+                        style={[
+                          styles.rateTargetRow,
+                          selected && !isRated && styles.rateTargetRowSelected,
+                          isRated && styles.rateTargetRowRated,
+                        ]}
+                        onPress={() => {
+                          if (isRated) return;
+                          setSelectedRateTargetUserId(uid);
+                          setSelectedRateTargetName(name);
+                        }}
+                        disabled={isRated}
+                        activeOpacity={isRated ? 1 : 0.75}
+                      >
+                        <View style={styles.rateTargetIcon}>
+                          <Ionicons
+                            name={isRated ? 'checkmark-circle' : 'person-outline'}
+                            size={18}
+                            color={isRated ? COLORS.success : selected ? COLORS.primary : COLORS.textSecondary}
+                          />
+                        </View>
+                        <Text
+                          style={[
+                            styles.rateTargetName,
+                            selected && styles.rateTargetNameSelected,
+                            isRated && styles.rateTargetNameRated,
+                          ]}
+                          numberOfLines={1}
+                        >
+                          {name}
+                        </Text>
+                        {ownerRateCandidates.length > 1 ? (
+                          <View style={styles.rateTargetActionWrap}>
+                            <Text style={[styles.rateTargetActionText, isRated && styles.rateTargetActionRatedText]}>
+                              {isRated ? 'Rated' : 'Rate'}
+                            </Text>
+                            <Ionicons
+                              name={isRated ? 'checkmark' : 'chevron-forward'}
+                              size={14}
+                              color={isRated ? COLORS.success : COLORS.textMuted}
+                            />
+                          </View>
+                        ) : null}
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </View>
+            ) : selectedRateTargetName ? (
+              <View style={styles.rateTargetChosenPill}>
+                <Text style={styles.rateTargetChosenText}>Rating: {selectedRateTargetName}</Text>
+              </View>
+            ) : null}
+
+            {!showOwnerPickerOnly ? (
+              <>
+                <View style={styles.ratingStarsRow}>
+                  {[1, 2, 3, 4, 5].map((s) => (
+                    <TouchableOpacity key={s} onPress={() => setRatingStars(s)} disabled={ratingSubmitting} hitSlop={8}>
+                      <Ionicons
+                        name={ratingStars >= s ? 'star' : 'star-outline'}
+                        size={34}
+                        color={ratingStars >= s ? '#f59e0b' : COLORS.border}
+                      />
+                    </TouchableOpacity>
+                  ))}
+                </View>
+
+                <Text style={styles.ratingInputLabel}>Write your review (optional)</Text>
+                <TextInput
+                  style={styles.ratingInput}
+                  placeholder="Tell us about the driver, the vehicle, or the route..."
+                  placeholderTextColor={COLORS.textMuted}
+                  value={ratingReview}
+                  onChangeText={setRatingReview}
+                  multiline
+                  editable={!ratingSubmitting}
+                />
+
+                <TouchableOpacity
+                  style={[
+                    styles.ratingSubmitBtn,
+                    (ratingStars < 1 || ratingSubmitting || (ownerRateCandidates.length > 0 && !selectedRateTargetUserId)) &&
+                      styles.ratingSubmitBtnDisabled,
+                  ]}
+                  onPress={() => void handleSubmitRating()}
+                  disabled={ratingStars < 1 || ratingSubmitting || (ownerRateCandidates.length > 0 && !selectedRateTargetUserId)}
+                >
+                  {ratingSubmitting ? (
+                    <ActivityIndicator size="small" color={COLORS.white} />
+                  ) : (
+                    <Text style={styles.ratingSubmitText}>Submit Feedback</Text>
+                  )}
+                </TouchableOpacity>
+                {ownerHasMultipleCandidates ? (
+                  <TouchableOpacity
+                    style={styles.ratingCancelBtn}
+                    onPress={() => {
+                      setSelectedRateTargetUserId('');
+                      setSelectedRateTargetName('');
+                      setRatingStars(0);
+                      setRatingReview('');
+                    }}
+                  >
+                    <Text style={styles.ratingCancelText}>Back to passengers</Text>
+                  </TouchableOpacity>
+                ) : (
+                  <TouchableOpacity style={styles.ratingCancelBtn} onPress={() => void handleSkipRating()}>
+                    <Text style={styles.ratingCancelText}>Cancel</Text>
+                  </TouchableOpacity>
+                )}
+              </>
+            ) : (
+              <TouchableOpacity style={styles.ratingCancelBtn} onPress={() => void handleSkipRating()}>
+                <Text style={styles.ratingCancelText}>Cancel</Text>
+              </TouchableOpacity>
+            )}
+          </Animated.View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -998,5 +1541,183 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: COLORS.textSecondary,
     marginTop: 4,
+  },
+  ratingOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'flex-end',
+  },
+  ratingOverlayPressable: {
+    flex: 1,
+  },
+  ratingSheet: {
+    backgroundColor: COLORS.background,
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
+    padding: 16,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.borderLight,
+    maxHeight: '68%',
+  },
+  ratingHandle: {
+    width: 44,
+    height: 5,
+    borderRadius: 999,
+    backgroundColor: COLORS.border,
+    alignSelf: 'center',
+    marginBottom: 8,
+  },
+  ratingCloseBtn: {
+    position: 'absolute',
+    right: 14,
+    top: 12,
+    zIndex: 2,
+    padding: 4,
+  },
+  ratingTitle: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: COLORS.text,
+    textAlign: 'center',
+    marginTop: 4,
+  },
+  ratingSubtitle: {
+    marginTop: 3,
+    fontSize: 13,
+    color: COLORS.textSecondary,
+    textAlign: 'center',
+  },
+  ratingStarsRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 10,
+    marginTop: 18,
+    marginBottom: 14,
+  },
+  ratingInputLabel: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: COLORS.text,
+    marginBottom: 8,
+  },
+  rateTargetBlock: {
+    marginTop: 10,
+    marginBottom: 8,
+  },
+  rateTargetHeading: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: COLORS.textSecondary,
+    marginBottom: 6,
+  },
+  rateTargetList: {
+    borderWidth: 1,
+    borderColor: COLORS.borderLight,
+    borderRadius: 12,
+    backgroundColor: COLORS.backgroundSecondary,
+    overflow: 'hidden',
+  },
+  rateTargetRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: COLORS.border,
+    gap: 8,
+  },
+  rateTargetRowSelected: {
+    backgroundColor: '#eef8f4',
+  },
+  rateTargetRowRated: {
+    backgroundColor: '#f0fdf4',
+  },
+  rateTargetIcon: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: COLORS.background,
+    borderWidth: 1,
+    borderColor: COLORS.borderLight,
+  },
+  rateTargetName: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLORS.text,
+  },
+  rateTargetNameSelected: {
+    color: COLORS.primary,
+  },
+  rateTargetNameRated: {
+    color: COLORS.success,
+  },
+  rateTargetActionWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+  },
+  rateTargetActionText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: COLORS.textMuted,
+  },
+  rateTargetActionRatedText: {
+    color: COLORS.success,
+  },
+  rateTargetChosenPill: {
+    marginTop: 10,
+    marginBottom: 8,
+    alignSelf: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    backgroundColor: '#eef8f4',
+  },
+  rateTargetChosenText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: COLORS.primary,
+  },
+  ratingInput: {
+    minHeight: 100,
+    borderWidth: 1,
+    borderColor: COLORS.borderLight,
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    textAlignVertical: 'top',
+    color: COLORS.text,
+    backgroundColor: COLORS.backgroundSecondary,
+  },
+  ratingSubmitBtn: {
+    marginTop: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: COLORS.primary,
+  },
+  ratingSubmitBtnDisabled: {
+    backgroundColor: '#a5a8ea',
+  },
+  ratingSubmitText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: COLORS.white,
+  },
+  ratingCancelBtn: {
+    alignSelf: 'center',
+    marginTop: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+  },
+  ratingCancelText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: COLORS.textSecondary,
   },
 });

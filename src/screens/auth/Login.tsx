@@ -100,6 +100,12 @@ export default function Login(): React.JSX.Element {
         phone: user.phone ?? '',
         email: (user as { email?: string }).email,
         name: user.name,
+        createdAt:
+          typeof (user as { createdAt?: unknown }).createdAt === 'string'
+            ? String((user as { createdAt?: string }).createdAt)
+            : typeof (user as { created_at?: unknown }).created_at === 'string'
+              ? String((user as { created_at?: string }).created_at)
+              : undefined,
       };
       pendingLoginRef.current = { user: userObj, accessToken, refreshToken: refreshToken ?? accessToken };
       setOverlaySuccess(true);

@@ -52,6 +52,7 @@ const CLOCK_CENTER = CLOCK_SIZE / 2;
 const HOUR_RADIUS = 75;
 const MINUTE_RADIUS = 44;
 const MINUTE_OPTIONS = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55] as const;
+const MIN_LEAD_MINUTES = 30;
 
 function formatDateLabel(d: Date): string {
   const today = new Date();
@@ -127,6 +128,19 @@ function isSelectedDateTimeInPast(selectedDate: Date, selectedTime: { hour: numb
   return chosen.getTime() < now.getTime();
 }
 
+function isSelectedDateTimeTooSoon(
+  selectedDate: Date,
+  selectedTime: { hour: number; minute: number },
+  minLeadMinutes: number
+): boolean {
+  const now = new Date();
+  const y = selectedDate.getFullYear();
+  const m = selectedDate.getMonth();
+  const d = selectedDate.getDate();
+  const chosen = new Date(y, m, d, selectedTime.hour, selectedTime.minute, 0, 0);
+  return chosen.getTime() < now.getTime() + minLeadMinutes * 60 * 1000;
+}
+
 function distanceKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const R = 6371;
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
@@ -172,7 +186,6 @@ export default function PublishRide(): React.JSX.Element {
   const [seats, setSeats] = useState(1);
   const [rate, setRate] = useState('');
   const [instantBooking, setInstantBooking] = useState(true);
-  const [ladiesOnly, setLadiesOnly] = useState(false);
   const [showDateModal, setShowDateModal] = useState(false);
   const [showTimeModal, setShowTimeModal] = useState(false);
   const [showPassengersModal, setShowPassengersModal] = useState(false);
@@ -181,6 +194,8 @@ export default function PublishRide(): React.JSX.Element {
   const [clockHour12, setClockHour12] = useState(9);
   const [clockAM, setClockAM] = useState(true);
   const [clockMinute, setClockMinute] = useState(30);
+  const [timeModalToast, setTimeModalToast] = useState('');
+  const timeModalToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** Selected route travel time (seconds) from PublishPrice / route preview — sent with POST /rides. */
   const [routeDurationSeconds, setRouteDurationSeconds] = useState(0);
   /** Directions / price flow distance (km). Cleared when pickup–destination coords change. */
@@ -284,9 +299,16 @@ export default function PublishRide(): React.JSX.Element {
   }, [clockTo24h]);
 
   const closeTimeModal = useCallback(() => {
+    const candidate = clockTo24h(clockHour12, clockAM, clockMinute);
+    if (isSelectedDateTimeTooSoon(selectedDate, candidate, MIN_LEAD_MINUTES)) {
+      if (timeModalToastTimerRef.current) clearTimeout(timeModalToastTimerRef.current);
+      setTimeModalToast('Choose a time at least 30 minutes from now.');
+      timeModalToastTimerRef.current = setTimeout(() => setTimeModalToast(''), 1800);
+      return;
+    }
     applyClockTime(clockHour12, clockAM, clockMinute);
     setShowTimeModal(false);
-  }, [applyClockTime, clockHour12, clockAM, clockMinute]);
+  }, [applyClockTime, clockHour12, clockAM, clockMinute, clockTo24h, selectedDate]);
 
   const handleClockPress = useCallback((locationX: number, locationY: number) => {
     const dx = locationX - CLOCK_CENTER;
@@ -301,19 +323,39 @@ export default function PublishRide(): React.JSX.Element {
     } else {
       const index = Math.round(angleDeg / 30) % 12;
       const minute = MINUTE_OPTIONS[index];
+      const candidate = clockTo24h(clockHour12, clockAM, minute);
+      if (isSelectedDateTimeTooSoon(selectedDate, candidate, MIN_LEAD_MINUTES)) {
+        if (timeModalToastTimerRef.current) clearTimeout(timeModalToastTimerRef.current);
+        setTimeModalToast('Choose a time at least 30 minutes from now.');
+        timeModalToastTimerRef.current = setTimeout(() => setTimeModalToast(''), 1800);
+        return;
+      }
       setClockMinute(minute);
       applyClockTime(clockHour12, clockAM, minute);
       setShowTimeModal(false);
     }
-  }, [clockMode, clockHour12, clockAM, applyClockTime]);
+  }, [clockMode, clockHour12, clockAM, applyClockTime, clockTo24h, selectedDate]);
 
   const handleSelectTime = (hour: number, minute: number) => {
+    if (isSelectedDateTimeTooSoon(selectedDate, { hour, minute }, MIN_LEAD_MINUTES)) {
+      if (timeModalToastTimerRef.current) clearTimeout(timeModalToastTimerRef.current);
+      setTimeModalToast('Choose a time at least 30 minutes from now.');
+      timeModalToastTimerRef.current = setTimeout(() => setTimeModalToast(''), 1800);
+      return;
+    }
     setSelectedTime({ hour, minute });
     setTimeLabel(formatTimeLabel(hour, minute));
     setShowTimeModal(false);
   };
 
+  useEffect(() => {
+    return () => {
+      if (timeModalToastTimerRef.current) clearTimeout(timeModalToastTimerRef.current);
+    };
+  }, []);
+
   const isTimeInPast = isSelectedDateTimeInPast(selectedDate, selectedTime);
+  const isTimeTooSoon = isSelectedDateTimeTooSoon(selectedDate, selectedTime, MIN_LEAD_MINUTES);
 
   // Prefetch location when user lands on Publish (no prompt; uses cache when possible)
   useFocusEffect(
@@ -363,7 +405,6 @@ export default function PublishRide(): React.JSX.Element {
     setSeats(d.seats || 1);
     setRate(typeof p.selectedRate === 'string' ? p.selectedRate : d.rate);
     setInstantBooking(d.instantBooking);
-    setLadiesOnly(d.ladiesOnly);
     try {
       setCalendarMonth(new Date(d.calendarMonthIso));
     } catch {
@@ -499,7 +540,7 @@ export default function PublishRide(): React.JSX.Element {
       seats,
       rate,
       instantBooking,
-      ladiesOnly,
+      ladiesOnly: false,
       calendarMonthIso: calendarMonth.toISOString(),
       clockHour12,
       clockAM,
@@ -534,7 +575,6 @@ export default function PublishRide(): React.JSX.Element {
     setSeats(1);
     setRate('');
     setInstantBooking(true);
-    setLadiesOnly(false);
     setCalendarMonth(today);
     setClockHour12(defaultTime.hour % 12 || 12);
     setClockAM(defaultTime.hour < 12);
@@ -546,7 +586,7 @@ export default function PublishRide(): React.JSX.Element {
 
   const handlePublish = useCallback(async () => {
     if (publishLoading) return;
-    if (isTimeInPast) {
+    if (isTimeInPast || isTimeTooSoon) {
       alertDepartureTimeInPast();
       return;
     }
@@ -608,6 +648,7 @@ export default function PublishRide(): React.JSX.Element {
   }, [
     resetFormToDefault,
     isTimeInPast,
+    isTimeTooSoon,
     publishLoading,
     pickup,
     destination,
@@ -792,18 +833,6 @@ export default function PublishRide(): React.JSX.Element {
               thumbColor={instantBooking ? COLORS.primary : COLORS.background}
             />
           </View>
-          <View style={styles.toggleCard}>
-            <View>
-              <Text style={styles.toggleTitle}>Ladies Only Trip</Text>
-              <Text style={styles.toggleDesc}>Only female riders can book</Text>
-            </View>
-            <Switch
-              value={ladiesOnly}
-              onValueChange={setLadiesOnly}
-              trackColor={{ false: COLORS.border, true: COLORS.primaryLight }}
-              thumbColor={ladiesOnly ? COLORS.primary : COLORS.background}
-            />
-          </View>
         </View>
 
         <TouchableOpacity
@@ -900,6 +929,11 @@ export default function PublishRide(): React.JSX.Element {
           activeOpacity={1}
           onPress={closeTimeModal}
         >
+          {timeModalToast ? (
+            <View style={styles.timeModalToastWrap} pointerEvents="none">
+              <Text style={styles.timeModalToastText}>{timeModalToast}</Text>
+            </View>
+          ) : null}
           <View style={styles.timeModalContent}>
             <Text style={styles.dateModalHeading}>Select time</Text>
             <Text style={styles.clockTimeDisplay}>
@@ -1436,6 +1470,24 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.5)',
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  timeModalToastWrap: {
+    position: 'absolute',
+    top: 88,
+    left: 20,
+    right: 20,
+    backgroundColor: '#ffffff',
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(239,68,68,0.35)',
+  },
+  timeModalToastText: {
+    color: '#dc2626',
+    fontSize: 13,
+    fontWeight: '600',
+    textAlign: 'center',
   },
   timeModalContent: {
     width: 340,

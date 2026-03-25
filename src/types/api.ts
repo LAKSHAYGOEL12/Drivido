@@ -22,7 +22,7 @@ export interface LoginRequest {
  * RESPONSE: 200 OK, JSON body. App reads the body directly (not response.data):
  *   - res.token (required) → access token
  *   - res.refreshToken (optional) → refresh token
- *   - res.user (required): { id or _id, phone, name?, email? }
+ *   - res.user (required): { id or _id, phone, name?, email?, createdAt? }
  * If user or token is missing, app throws "Invalid response from server".
  */
 export interface LoginResponse {
@@ -32,6 +32,8 @@ export interface LoginResponse {
     phone: string;
     name?: string;
     email?: string;
+    createdAt?: string;
+    created_at?: string;
     avatarUri?: string | null;
     verified?: boolean;
   };
@@ -53,6 +55,8 @@ export interface RegisterResponse {
     phone: string;
     email: string;
     name?: string;
+    createdAt?: string;
+    created_at?: string;
   };
   token: string;
 }

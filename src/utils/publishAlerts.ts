@@ -22,7 +22,7 @@ export function alertDepartureTimeInPast(): void {
   showToast({
     variant: 'info',
     title: 'Check departure time',
-    message: 'Choose a time in the future so passengers know when you’re leaving.',
+    message: 'Choose a time at least 30 minutes from now.',
   });
 }
 

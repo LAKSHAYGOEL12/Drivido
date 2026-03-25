@@ -57,6 +57,11 @@ export const API = {
       /** DELETE – remove thread for current user. Query: rideId, otherUserId */
       deleteConversation: '/chat/conversations',
     },
+    ratings: {
+      check: '/ratings/check',
+      list: '/ratings',
+      create: '/ratings',
+    },
     recentSearches: {
       /** GET - list current user's recent searches */
       list: '/recent-searches',
