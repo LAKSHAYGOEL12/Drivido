@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   StyleSheet,
   TextInput,
@@ -6,7 +6,9 @@ import {
   View,
   Text,
   ViewStyle,
+  TouchableOpacity,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 
 type InputProps = TextInputProps & {
   label?: string;
@@ -20,17 +22,41 @@ export default function Input({
   containerStyle,
   style,
   placeholder,
+  secureTextEntry,
   ...rest
 }: InputProps): React.JSX.Element {
+  const isPasswordField = Boolean(secureTextEntry);
+  const [showPassword, setShowPassword] = useState(false);
+  const effectiveSecureTextEntry = useMemo(() => {
+    if (!isPasswordField) return secureTextEntry;
+    return !showPassword;
+  }, [isPasswordField, secureTextEntry, showPassword]);
+
   return (
     <View style={[styles.container, containerStyle]}>
       {label ? <Text style={styles.label}>{label}</Text> : null}
-      <TextInput
-        style={[styles.input, error && styles.inputError, style]}
-        placeholder={placeholder}
-        placeholderTextColor="#94a3b8"
-        {...rest}
-      />
+      <View style={styles.inputWrap}>
+        <TextInput
+          style={[styles.input, isPasswordField && styles.inputWithRightIcon, error && styles.inputError, style]}
+          placeholder={placeholder}
+          placeholderTextColor="#94a3b8"
+          secureTextEntry={effectiveSecureTextEntry}
+          {...rest}
+        />
+        {isPasswordField ? (
+          <TouchableOpacity
+            onPress={() => setShowPassword((v) => !v)}
+            style={styles.rightIconBtn}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Ionicons
+              name={showPassword ? 'eye-off-outline' : 'eye-outline'}
+              size={20}
+              color="#64748b"
+            />
+          </TouchableOpacity>
+        ) : null}
+      </View>
       {error ? <Text style={styles.error}>{error}</Text> : null}
     </View>
   );
@@ -55,6 +81,17 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#0f172a',
     backgroundColor: '#fff',
+  },
+  inputWrap: {
+    position: 'relative',
+  },
+  inputWithRightIcon: {
+    paddingRight: 46,
+  },
+  rightIconBtn: {
+    position: 'absolute',
+    right: 12,
+    top: 12,
   },
   inputError: {
     borderColor: '#ef4444',

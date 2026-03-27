@@ -275,7 +275,7 @@ export default function PublishPriceScreen(): React.JSX.Element {
 
           <View style={styles.recoCard}>
             <View style={styles.recoCardHeader}>
-              <Ionicons name="sparkles" size={18} color="#7c3aed" />
+              <Ionicons name="sparkles" size={18} color={COLORS.success} />
               <Text style={styles.recoCardTitle}>Recommended range</Text>
             </View>
             <Text style={styles.recoAmount}>
@@ -507,12 +507,12 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
   recoCard: {
-    backgroundColor: '#f5f3ff',
+    backgroundColor: 'rgba(34,197,94,0.08)',
     borderRadius: 16,
     padding: 16,
     marginBottom: 16,
     borderWidth: 1,
-    borderColor: '#ddd6fe',
+    borderColor: 'rgba(34,197,94,0.22)',
   },
   recoCardHeader: {
     flexDirection: 'row',
@@ -523,18 +523,18 @@ const styles = StyleSheet.create({
   recoCardTitle: {
     fontSize: 14,
     fontWeight: '700',
-    color: '#5b21b6',
+    color: '#166534',
   },
   recoAmount: {
     fontSize: 22,
     fontWeight: '800',
-    color: '#4c1d95',
+    color: '#14532d',
     letterSpacing: -0.3,
   },
   recoCaption: {
     marginTop: 6,
     fontSize: 13,
-    color: '#6d28d9',
+    color: '#15803d',
     fontWeight: '500',
     lineHeight: 18,
   },

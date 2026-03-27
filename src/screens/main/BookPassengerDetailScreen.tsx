@@ -1,6 +1,7 @@
 import React from 'react';
 import { StyleSheet, Text, View, TouchableOpacity, ScrollView, Alert } from 'react-native';
-import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
+import { useCallback } from 'react';
+import { useFocusEffect, useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import type { RidesStackParamList, SearchStackParamList } from '../../navigation/types';
@@ -13,10 +14,50 @@ type BookPassengerRouteProp =
   | RouteProp<RidesStackParamList, 'BookPassengerDetail'>
   | RouteProp<SearchStackParamList, 'BookPassengerDetail'>;
 
+function findMainTabNavigator(navigation: any) {
+  let current = navigation?.getParent?.() as any | undefined;
+  for (let i = 0; i < 5 && current; i += 1) {
+    const names: string[] | undefined = current?.getState?.()?.routeNames;
+    if (names?.includes('SearchStack') && names?.includes('YourRides')) return current;
+    current = current.getParent?.();
+  }
+  return null;
+}
+
 export default function BookPassengerDetailScreen(): React.JSX.Element {
   const navigation = useNavigation();
   const route = useRoute<BookPassengerRouteProp>();
   const { ride, booking } = route.params;
+
+  useFocusEffect(
+    useCallback(() => {
+      const tabsNav = findMainTabNavigator(navigation as any);
+      tabsNav?.setOptions?.({ tabBarStyle: { display: 'none' } });
+      return () => {
+        setTimeout(() => {
+          try {
+            const tabState = tabsNav?.getState?.();
+            const activeTabRoute = tabState?.routes?.[tabState?.index ?? 0];
+            const nestedState = activeTabRoute?.state;
+            const nestedName = nestedState?.routes?.[nestedState?.index ?? 0]?.name;
+            const hiddenNestedNames = new Set([
+              'RideDetail',
+              'RideDetailScreen',
+              'BookPassengerDetail',
+              'Chat',
+              'OwnerProfileModal',
+              'OwnerRatingsModal',
+            ]);
+            if (!nestedName || !hiddenNestedNames.has(nestedName)) {
+              tabsNav?.setOptions?.({ tabBarStyle: undefined });
+            }
+          } catch {
+            // ignore
+          }
+        }, 180);
+      };
+    }, [navigation])
+  );
 
   const passengerName = bookingPassengerDisplayName(booking);
   const passengerId = booking.userId ?? '';
@@ -36,6 +77,18 @@ export default function BookPassengerDetailScreen(): React.JSX.Element {
     Alert.alert('Call', 'Phone number is not available for this rider yet.');
   };
 
+  const openPassengerRatings = () => {
+    const targetUserId = passengerId.trim();
+    if (!targetUserId) {
+      Alert.alert('Ratings', 'Passenger ratings are not available yet.');
+      return;
+    }
+    (navigation as { navigate: (n: string, p: Record<string, unknown>) => void }).navigate('OwnerRatingsModal', {
+      userId: targetUserId,
+      displayName: passengerName,
+    });
+  };
+
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
       <View style={styles.header}>
@@ -51,7 +104,7 @@ export default function BookPassengerDetailScreen(): React.JSX.Element {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
-        <TouchableOpacity style={styles.profileRow} activeOpacity={0.75} onPress={() => {}}>
+        <TouchableOpacity style={styles.profileRow} activeOpacity={0.75} onPress={openPassengerRatings}>
           <View style={styles.avatarWrap}>
             <View style={[styles.avatar, { backgroundColor: COLORS.primary }]}>
               <Text style={styles.avatarText}>{initial}</Text>
@@ -64,7 +117,7 @@ export default function BookPassengerDetailScreen(): React.JSX.Element {
             <Text style={styles.profileName}>{passengerName}</Text>
             <View style={styles.ratingRow}>
               <Ionicons name="star" size={16} color={COLORS.warning} />
-              <Text style={styles.ratingText}>Ratings coming soon</Text>
+              <Text style={styles.ratingText}>View ratings</Text>
             </View>
           </View>
           <Ionicons name="chevron-forward" size={22} color={COLORS.textMuted} />

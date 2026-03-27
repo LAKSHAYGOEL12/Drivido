@@ -145,7 +145,7 @@ export default function Login(): React.JSX.Element {
   };
 
   return (
-    <SafeAreaView style={styles.safe} edges={['bottom']}>
+    <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
       <Modal visible={signingIn} transparent animationType="fade">
         <View style={styles.loaderOverlay}>
           <View style={styles.loaderBox}>
@@ -165,12 +165,14 @@ export default function Login(): React.JSX.Element {
       </Modal>
       <KeyboardAvoidingView
         style={styles.container}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 16 : 0}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 16 : 20}
       >
         <ScrollView
           contentContainerStyle={styles.scroll}
           keyboardShouldPersistTaps="handled"
+          keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+          automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
           showsVerticalScrollIndicator={false}
         >
           <View style={styles.header}>
@@ -201,7 +203,7 @@ export default function Login(): React.JSX.Element {
               onChangeText={setPassword}
               placeholder="Your password"
               error={errors.password}
-              secureTextEntry
+              secureTextEntry={true}
               editable={!signingIn}
             />
 
@@ -269,7 +271,6 @@ export default function Login(): React.JSX.Element {
               </View>
             )}
           </View>
-
           <View style={styles.footer}>
             <Text style={styles.footerText}>Don't have an account? </Text>
             <TouchableOpacity
@@ -297,7 +298,7 @@ const styles = StyleSheet.create({
   scroll: {
     flexGrow: 1,
     paddingHorizontal: 24,
-    paddingTop: 24,
+    paddingTop: 12,
     paddingBottom: 32,
   },
   header: {
@@ -331,7 +332,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
   },
   form: {
-    marginBottom: 24,
+    marginBottom: 18,
   },
   button: {
     marginTop: 8,

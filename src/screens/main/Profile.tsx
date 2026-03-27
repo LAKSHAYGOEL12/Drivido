@@ -1,7 +1,7 @@
 import React, { useCallback, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useAuth } from '../../contexts/AuthContext';
 import { COLORS } from '../../constants/colors';
@@ -10,29 +10,46 @@ import { getUserRatingsSummary } from '../../services/ratings';
 
 export default function Profile(): React.JSX.Element {
   const { user, logout } = useAuth();
-  const navigation = useNavigation<NativeStackNavigationProp<ProfileStackParamList, 'ProfileHome'>>();
+  const navigation = useNavigation<NativeStackNavigationProp<ProfileStackParamList>>();
+  const route = useRoute<RouteProp<ProfileStackParamList, 'ProfileHome' | 'ProfileEntry'>>();
   const [profileName, setProfileName] = useState(user?.name?.trim() || 'Drivido User');
   const [avgRating, setAvgRating] = useState(0);
   const [totalRatings, setTotalRatings] = useState(0);
   const [loading, setLoading] = useState(true);
-  const displayName = profileName || user?.name?.trim() || 'Drivido User';
-  const firstLetter = displayName.charAt(0).toUpperCase();
+
+  const routeUserId = route.params?.userId?.trim();
+  const routeDisplayName = route.params?.displayName?.trim();
+
+  const routeName = (route as any)?.name as string | undefined;
+  const isProfileEntryScreen = routeName === 'ProfileEntry';
+
+  // IMPORTANT:
+  // - On owner-profile screen (`ProfileEntry`), NEVER fall back to current user.
+  //   Otherwise you will see your own profile flash while params are still applying.
+  const targetUserId = isProfileEntryScreen ? (routeUserId ?? '') : ((routeUserId ?? user?.id ?? '').trim());
+
+  const targetDisplayName = routeDisplayName || user?.name?.trim() || 'Drivido User';
+  const isSelf = Boolean(user?.id?.trim() && targetUserId === user.id.trim());
+
   const memberSince = (() => {
-    const raw = user?.createdAt?.trim();
-    if (!raw) return 'Today';
+    const raw = targetUserId === (user?.id ?? '').trim() ? user?.createdAt?.trim() : undefined;
+    if (!raw) return '—';
     const dt = new Date(raw);
-    if (Number.isNaN(dt.getTime())) return 'Today';
+    if (Number.isNaN(dt.getTime())) return '—';
     return dt.toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
   })();
 
+  const displayName = profileName || targetDisplayName;
+  const firstLetter = displayName.charAt(0).toUpperCase();
+
   useFocusEffect(
     useCallback(() => {
-      const userId = user?.id?.trim();
-      if (!userId) {
+      if (!targetUserId) {
+        // Keep loader until the owner `userId` arrives (ProfileEntry).
+        // For ProfileHome, we usually always have userId from BottomTabs.
+        setLoading(true);
         setAvgRating(0);
         setTotalRatings(0);
-        setProfileName(user?.name?.trim() || 'Drivido User');
-        setLoading(false);
         return () => {};
       }
 
@@ -40,14 +57,14 @@ export default function Profile(): React.JSX.Element {
       setLoading(true);
       void (async () => {
         try {
-          const summary = await getUserRatingsSummary(userId);
+          const summary = await getUserRatingsSummary(targetUserId);
           if (cancelled) return;
-          setProfileName(user?.name?.trim() || 'Drivido User');
+          setProfileName(targetDisplayName);
           setAvgRating(summary.avgRating);
           setTotalRatings(summary.totalRatings);
         } catch {
           if (cancelled) return;
-          setProfileName(user?.name?.trim() || 'Drivido User');
+          setProfileName(targetDisplayName);
           setAvgRating(0);
           setTotalRatings(0);
         } finally {
@@ -58,7 +75,7 @@ export default function Profile(): React.JSX.Element {
       return () => {
         cancelled = true;
       };
-    }, [user?.id, user?.name])
+    }, [targetUserId, targetDisplayName, isProfileEntryScreen])
   );
 
   if (loading) {
@@ -73,13 +90,33 @@ export default function Profile(): React.JSX.Element {
     <ScrollView style={styles.screen} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
       <View style={styles.headerCard}>
         <View style={styles.headerTopRow}>
-          <Pressable style={styles.circleIconButton} accessibilityRole="button">
-            <Ionicons name="chevron-back" size={18} color={COLORS.textSecondary} />
-          </Pressable>
-          <Text style={styles.headerTitle}>Profile</Text>
-          <Pressable style={styles.circleIconButton} accessibilityRole="button">
-            <Ionicons name="settings-outline" size={18} color={COLORS.textSecondary} />
-          </Pressable>
+          {isSelf ? (
+            <View style={styles.headerLeftSpacer} />
+          ) : (
+            <Pressable
+              style={styles.circleIconButton}
+              accessibilityRole="button"
+              onPress={() => {
+                const returnTo = route.params?._returnToRideDetail;
+                const parentNav = (navigation as any)?.getParent?.();
+                if (returnTo?.tab && returnTo.params) {
+                  // Back to the ride detail we came from (preserves the other tab's state).
+                  parentNav?.navigate?.(returnTo.tab, {
+                    screen: 'RideDetail',
+                    params: returnTo.params,
+                  });
+                  return;
+                }
+                navigation.goBack();
+              }}
+            >
+              <Ionicons name="arrow-back" size={18} color={COLORS.textSecondary} />
+            </Pressable>
+          )}
+          <View style={styles.headerTitleWrap}>
+            <Text style={styles.headerTitle}>Profile</Text>
+          </View>
+          <View style={styles.headerRightSpacer} />
         </View>
 
         <View style={styles.avatarWrap}>
@@ -96,51 +133,63 @@ export default function Profile(): React.JSX.Element {
         <StatItem label="Since" value={memberSince} icon="calendar-outline" />
       </View>
 
-      <Pressable style={styles.editButton} accessibilityRole="button">
-        <Text style={styles.editButtonText}>Edit Profile</Text>
-      </Pressable>
+      {isSelf ? (
+        <Pressable style={styles.editButton} accessibilityRole="button">
+          <Text style={styles.editButtonText}>Edit Profile</Text>
+        </Pressable>
+      ) : null}
 
       <View style={styles.performanceCard}>
         <Text style={styles.performanceLabel}>PERFORMANCE</Text>
         <View style={styles.performanceRow}>
           <View style={styles.performanceLeft}>
             <View style={styles.ratingRow}>
-              <Ionicons name="star-outline" size={16} color="#f59e0b" />
+              <Ionicons name="star-outline" size={16} color={COLORS.warning} />
               <Text style={styles.ratingValue}>{avgRating > 0 ? avgRating.toFixed(1) : '0.0'}</Text>
               <Text style={styles.ratingText}>Excellent</Text>
             </View>
             <Text style={styles.reviewText}>Based on {totalRatings} reviews</Text>
           </View>
+
           <Pressable
             style={styles.performanceArrow}
             accessibilityRole="button"
-            onPress={() => navigation.navigate('Ratings')}
+            onPress={() =>
+              navigation.navigate('Ratings', {
+                userId: targetUserId || undefined,
+                displayName: targetDisplayName,
+              })
+            }
           >
-            <Ionicons name="chevron-forward" size={16} color="#6d6be9" />
+            <Ionicons name="chevron-forward" size={16} color={COLORS.success} />
           </Pressable>
         </View>
       </View>
 
-      <Section title="Personal Details">
-        <InfoRow icon="call-outline" label="Phone Number" value={user?.phone || 'Not provided'} />
-        <InfoRow icon="mail-outline" label="Email Address" value={user?.email || 'Not provided'} />
-      </Section>
+      {isSelf ? (
+        <>
+          <Section title="Personal Details">
+            <InfoRow icon="call-outline" label="Phone Number" value={user?.phone || 'Not provided'} />
+            <InfoRow icon="mail-outline" label="Email Address" value={user?.email || 'Not provided'} />
+          </Section>
 
-      <Section title="Vehicle Information">
-        <InfoRow icon="car-sport-outline" label="Vehicle" value="Add your vehicle details" />
-      </Section>
+          <Section title="Vehicle Information">
+            <InfoRow icon="car-sport-outline" label="Vehicle" value="Add your vehicle details" />
+          </Section>
 
-      <View style={styles.menuCard}>
-        <MenuRow icon="settings-outline" title="Settings & Privacy" />
-        <MenuRow icon="shield-checkmark-outline" title="Account Security" />
-        <Pressable style={styles.menuRow} onPress={logout} accessibilityRole="button">
-          <View style={[styles.rowIcon, styles.logoutIconBg]}>
-            <Ionicons name="log-out-outline" size={16} color={COLORS.error} />
+          <View style={styles.menuCard}>
+            <MenuRow icon="settings-outline" title="Settings & Privacy" />
+            <MenuRow icon="shield-checkmark-outline" title="Account Security" />
+            <Pressable style={styles.menuRow} onPress={logout} accessibilityRole="button">
+              <View style={[styles.rowIcon, styles.logoutIconBg]}>
+                <Ionicons name="log-out-outline" size={16} color={COLORS.error} />
+              </View>
+              <Text style={styles.logoutText}>Log Out</Text>
+              <Ionicons name="chevron-forward" size={16} color={COLORS.textMuted} />
+            </Pressable>
           </View>
-          <Text style={styles.logoutText}>Log Out</Text>
-          <Ionicons name="chevron-forward" size={16} color={COLORS.textMuted} />
-        </Pressable>
-      </View>
+        </>
+      ) : null}
     </ScrollView>
   );
 }
@@ -169,9 +218,10 @@ function StatItem({
   value: string;
   icon: keyof typeof Ionicons.glyphMap;
 }): React.JSX.Element {
+  const iconColor = icon === 'star-outline' || icon === 'star' ? COLORS.warning : COLORS.secondary;
   return (
     <View style={styles.statItem}>
-      <Ionicons name={icon} size={14} color={COLORS.secondary} />
+      <Ionicons name={icon} size={14} color={iconColor} />
       <Text style={styles.statValue}>{value}</Text>
       <Text style={styles.statLabel}>{label}</Text>
     </View>
@@ -221,18 +271,18 @@ function MenuRow({
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: COLORS.backgroundSecondary,
+    backgroundColor: COLORS.white,
   },
   loaderWrap: {
     flex: 1,
-    backgroundColor: COLORS.backgroundSecondary,
+    backgroundColor: COLORS.white,
     alignItems: 'center',
     justifyContent: 'center',
   },
   content: {
     padding: 16,
     paddingBottom: 30,
-    paddingTop: 22,
+    paddingTop: 40,
     gap: 12,
   },
   headerCard: {
@@ -247,9 +297,21 @@ const styles = StyleSheet.create({
   headerTopRow: {
     width: '100%',
     flexDirection: 'row',
-    justifyContent: 'space-between',
+    justifyContent: 'flex-start',
     alignItems: 'center',
     marginBottom: 10,
+  },
+  headerTitleWrap: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  headerRightSpacer: {
+    width: 30,
+    height: 30,
+  },
+  headerLeftSpacer: {
+    width: 30,
+    height: 30,
   },
   headerTitle: {
     fontSize: 20,
@@ -326,7 +388,7 @@ const styles = StyleSheet.create({
     color: COLORS.textSecondary,
   },
   editButton: {
-    backgroundColor: '#5b5be8',
+    backgroundColor: COLORS.primary,
     borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
@@ -338,17 +400,17 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   performanceCard: {
-    backgroundColor: '#f5f6ff',
+    backgroundColor: 'rgba(34,197,94,0.08)',
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: '#dfe2ff',
+    borderColor: 'rgba(34,197,94,0.22)',
     padding: 12,
     gap: 8,
   },
   performanceLabel: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#c2c6d9',
+    color: 'rgba(21,128,61,0.55)',
     letterSpacing: 0.6,
   },
   performanceRow: {
@@ -384,11 +446,97 @@ const styles = StyleSheet.create({
     width: 34,
     height: 34,
     borderRadius: 17,
-    backgroundColor: '#eef0ff',
+    backgroundColor: 'rgba(34,197,94,0.14)',
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
-    borderColor: '#d9ddff',
+    borderColor: 'rgba(34,197,94,0.28)',
+  },
+  performanceExpanded: {
+    marginTop: 6,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.borderLight,
+    paddingTop: 10,
+    gap: 10,
+  },
+  performanceExpandedTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: COLORS.textSecondary,
+  },
+  breakdownCard: {
+    gap: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 2,
+  },
+  breakdownRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  breakdownLabel: {
+    width: 72,
+    fontSize: 12,
+    fontWeight: '700',
+    color: COLORS.textSecondary,
+  },
+  barTrack: {
+    flex: 1,
+    height: 8,
+    backgroundColor: COLORS.borderLight,
+    borderRadius: 999,
+    overflow: 'hidden',
+  },
+  barFill: {
+    height: '100%',
+    backgroundColor: COLORS.primary,
+    borderRadius: 999,
+  },
+  breakdownCount: {
+    width: 34,
+    textAlign: 'right',
+    fontSize: 12,
+    fontWeight: '900',
+    color: COLORS.text,
+  },
+  noReviewsText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: COLORS.textSecondary,
+    paddingVertical: 6,
+  },
+  reviewItem: {
+    borderWidth: 1,
+    borderColor: COLORS.borderLight,
+    borderRadius: 12,
+    padding: 10,
+    gap: 8,
+  },
+  reviewHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  reviewFromName: {
+    fontSize: 13,
+    fontWeight: '900',
+    color: COLORS.text,
+  },
+  reviewTime: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.textSecondary,
+  },
+  reviewStarsRow: {
+    flexDirection: 'row',
+    gap: 4,
+  },
+  reviewTextExpanded: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: COLORS.textSecondary,
+    lineHeight: 18,
   },
   sectionCard: {
     backgroundColor: COLORS.white,

@@ -16,7 +16,7 @@ import {
   KeyboardAvoidingView,
   Pressable,
 } from 'react-native';
-import { useFocusEffect, useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
+import { CommonActions, useFocusEffect, useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import DatePickerModal from '../../components/common/DatePickerModal';
 import PassengersPickerModal from '../../components/common/PassengersPickerModal';
 import { resetTabsToYourRidesAfterBook } from '../../navigation/navigateAfterBook';
@@ -110,6 +110,14 @@ export default function RideDetailScreen(): React.JSX.Element {
   /** Passenger booking: number of seats to request (capped by fresh getRideAvailableSeats). */
   const [bookSeatsCount, setBookSeatsCount] = useState(1);
   const ratingCheckKeyRef = useRef<string | null>(null);
+
+  // NOTE: Do not call ratings API from RideDetail for performance.
+  // Ratings are fetched on the Profile/Ratings screens instead.
+
+  const [cancelBookingSheetVisible, setCancelBookingSheetVisible] = useState(false);
+  const [cancelBookingBid, setCancelBookingBid] = useState<string | null>(null);
+  const [cancelBookingMaxSeats, setCancelBookingMaxSeats] = useState(1);
+  const [cancelBookingSeatsToCancel, setCancelBookingSeatsToCancel] = useState(1);
 
   const currentUserId = (user?.id ?? '').trim();
   const currentUserName = (user?.name ?? '').trim();
@@ -226,6 +234,16 @@ export default function RideDetailScreen(): React.JSX.Element {
     .join(' • ');
   const totalSeats = ride.seats ?? 0;
   const bookedSeats = activePassengers.reduce((sum, b) => sum + (b.seats ?? 0), 0);
+  // Passenger UI should show "X seats booked" (not just "seats left").
+  // Active only (exclude cancelled bookings) and sum seat counts for the current viewer.
+  const viewerBookedSeats = passengers.reduce((sum, b) => {
+    const uid = (b.userId ?? '').trim();
+    if (!uid || uid !== currentUserId) return sum;
+    if (bookingIsCancelled(b.status)) return sum;
+    const rawSeats = typeof b.seats === 'number' && !Number.isNaN(b.seats) ? b.seats : 0;
+    const seats = rawSeats > 0 ? Math.max(1, Math.floor(rawSeats)) : 0;
+    return sum + seats;
+  }, 0);
   /** Owner: no booker names on main card — show your ride + capacity / vehicle. */
   const cardPersonName = isOwner ? 'Your ride' : driverName;
   const cardPersonSubtitle = isOwner
@@ -255,6 +273,48 @@ export default function RideDetailScreen(): React.JSX.Element {
     : driverName;
   const chatOtherUserId = isOwner ? firstPassenger?.userId : ride.userId;
   const priceDisplay = formatRidePrice(ride);
+
+  const parseSeatPriceNumber = (r: RideListItem): number | null => {
+    // Keep in sync with `formatRidePrice` raw selection.
+    const anyRide = r as RideListItem & {
+      fare?: unknown;
+      amount?: unknown;
+      pricePerSeat?: unknown;
+      price_per_seat?: unknown;
+      farePerSeat?: unknown;
+      fare_per_seat?: unknown;
+    };
+    const raw =
+      r.price ??
+      (anyRide.fare as string | number | undefined) ??
+      (anyRide.amount as string | number | undefined) ??
+      (anyRide.pricePerSeat as string | number | undefined) ??
+      (anyRide.price_per_seat as string | number | undefined) ??
+      (anyRide.farePerSeat as string | number | undefined) ??
+      (anyRide.fare_per_seat as string | number | undefined);
+    if (raw == null || String(raw).trim() === '') return null;
+    const cleaned = String(raw).replace(/[₹$,]/g, '').trim();
+    const n = Number(cleaned);
+    return Number.isFinite(n) ? n : null;
+  };
+
+  const formatRupees = (n: number): string => {
+    const pretty = Number.isInteger(n) ? String(n) : String(Number(n.toFixed(2)));
+    return `₹${pretty}`;
+  };
+
+  // Payment box should show total amount based on seats booked by the viewer.
+  // - Passenger: use only their active booking seats
+  // - Owner: use total booked seats for the ride
+  const pricingSeats =
+    isOwner
+      ? bookedSeats
+      : myPassengerBooking && !bookingIsCancelled(myPassengerBooking.status)
+        ? myPassengerBooking.seats ?? 0
+        : 0;
+  const seatPriceNumber = parseSeatPriceNumber(ride);
+  const totalBookedPriceText =
+    seatPriceNumber != null && pricingSeats > 0 ? formatRupees(seatPriceNumber * pricingSeats) : null;
   const rideDetailRatingPromptEnabled = false;
   const ratingTargetUserId = (() => {
     if (!currentUserId) return '';
@@ -312,8 +372,10 @@ export default function RideDetailScreen(): React.JSX.Element {
           if (mine.length > 0) {
             next.myBookingStatus = pickPreferredBookingStatus(mine.map((b) => b.status ?? ''));
           } else {
-            const mergedStatus = (candidate as RideListItem).myBookingStatus ?? prev.myBookingStatus;
-            if (mergedStatus !== undefined) next.myBookingStatus = mergedStatus;
+            // Avoid carrying stale local state if the server doesn't include this viewer's booking rows.
+            // We only trust server-provided `myBookingStatus` when present; otherwise clear it.
+            const mergedStatus = (candidate as RideListItem).myBookingStatus;
+            next.myBookingStatus = mergedStatus !== undefined ? mergedStatus : '';
           }
           if (isRideCancelledByOwner(prev) && !isRideCancelledByOwner(next)) {
             next.status = prev.status ?? 'cancelled';
@@ -359,9 +421,47 @@ export default function RideDetailScreen(): React.JSX.Element {
   // Ensure edited values are shown immediately after returning from EditRide.
   useFocusEffect(
     useCallback(() => {
+      // Hide bottom tabs while this screen is focused.
+      const parentNav = (navigation as any)?.getParent?.();
+      parentNav?.setOptions?.({ tabBarStyle: { display: 'none' } });
+
       void fetchRideDetail({ force: true });
-    }, [fetchRideDetail])
+      return () => {
+        // Avoid "tab bar flash" during fast transitions (e.g. RideDetail -> OwnerProfileModal).
+        // Only restore tab bar after a short delay and only when the next focused nested screen
+        // is NOT one of our full-screen/hidden routes.
+        setTimeout(() => {
+          try {
+            const tabState = parentNav?.getState?.();
+            const activeTabRoute = tabState?.routes?.[tabState?.index ?? 0];
+            const nestedState = activeTabRoute?.state;
+            const nestedName = nestedState?.routes?.[nestedState?.index ?? 0]?.name;
+
+            const hiddenNestedNames = new Set([
+              'RideDetail',
+              'RideDetailScreen',
+              'BookPassengerDetail',
+              'Chat',
+              'OwnerProfileModal',
+              'OwnerRatingsModal',
+              'ProfileHome',
+              'ProfileEntry',
+              'Ratings',
+              'RatingsScreen',
+            ]);
+
+            if (!nestedName || !hiddenNestedNames.has(nestedName)) {
+              parentNav?.setOptions?.({ tabBarStyle: undefined });
+            }
+          } catch {
+            // If we can't inspect navigation state, keep the last known option.
+          }
+        }, 180);
+      };
+    }, [fetchRideDetail, navigation])
   );
+
+  // Ratings are intentionally not fetched here.
 
   useEffect(() => {
     setBookSeatsCount(1);
@@ -546,37 +646,67 @@ export default function RideDetailScreen(): React.JSX.Element {
       Alert.alert('Cancel booking', 'Could not find your booking. Try again in a moment.');
       return;
     }
-    Alert.alert(
-      'Cancel booking',
-      'Are you sure you want to cancel your seat on this ride?',
-      [
-        { text: 'Keep booking', style: 'cancel' },
-        {
-          text: 'Cancel',
-          style: 'destructive',
-          onPress: async () => {
-            setCancellingBooking(true);
-            try {
-              await api.delete(API.endpoints.bookings.cancel(bid));
-              setRide((prev) => ({ ...prev, myBookingStatus: 'cancelled' }));
-              await fetchRideDetail({ force: true });
-              Alert.alert('Cancelled', 'Your booking was cancelled. You can find it under Past rides.', [
-                { text: 'OK', onPress: () => navigation.goBack() },
-              ]);
-            } catch (e: unknown) {
-              const message =
-                e && typeof e === 'object' && 'message' in e
-                  ? String((e as { message: unknown }).message)
-                  : 'Could not cancel booking.';
-              Alert.alert('Error', message);
-            } finally {
-              setCancellingBooking(false);
-            }
-          },
-        },
-      ]
-    );
+    // Max seats to show in the cancellation sheet should reflect the viewer's active booked seats.
+    const myBookingSeats = viewerBookedSeats > 0 ? Math.max(1, Math.floor(viewerBookedSeats)) : 1;
+
+    setCancelBookingBid(bid);
+    setCancelBookingMaxSeats(myBookingSeats);
+    setCancelBookingSeatsToCancel(1);
+    setCancelBookingSheetVisible(true);
   };
+
+  const closeCancelBookingSheet = useCallback(() => {
+    if (cancellingBooking) return;
+    setCancelBookingSheetVisible(false);
+    setCancelBookingBid(null);
+    setCancelBookingMaxSeats(1);
+    setCancelBookingSeatsToCancel(1);
+  }, [cancellingBooking]);
+
+  const confirmCancelSeats = useCallback(
+    async (seatsToCancel: number) => {
+      const bid = cancelBookingBid;
+      if (!bid) return;
+      if (seatsToCancel < 1) return;
+
+      setCancelBookingSheetVisible(false);
+      setCancellingBooking(true);
+      try {
+        const cancelAll = seatsToCancel >= cancelBookingMaxSeats;
+        // Backend enhancement (expected): allow partial seat cancellation via query params.
+        const url = `${API.endpoints.bookings.cancel(bid)}?seats=${encodeURIComponent(
+          seatsToCancel
+        )}&seatsToCancel=${encodeURIComponent(seatsToCancel)}`;
+
+        await api.delete(url);
+        // Always reload from the server so seat counts / booking status stay source-of-truth.
+        await fetchRideDetail({ force: true });
+
+        if (cancelAll) {
+          Alert.alert('Cancelled', 'Your booking was cancelled. You can find it under Past rides.', [
+            { text: 'OK', onPress: () => navigation.goBack() },
+          ]);
+        } else {
+          Alert.alert(
+            'Updated',
+            `Cancelled ${seatsToCancel} seat${seatsToCancel !== 1 ? 's' : ''}.`
+          );
+        }
+      } catch (e: unknown) {
+        const message =
+          e && typeof e === 'object' && 'message' in e
+            ? String((e as { message: unknown }).message)
+            : 'Could not cancel booking.';
+        Alert.alert('Error', message);
+      } finally {
+        setCancellingBooking(false);
+        setCancelBookingBid(null);
+        setCancelBookingMaxSeats(1);
+        setCancelBookingSeatsToCancel(1);
+      }
+    },
+    [cancelBookingBid, cancelBookingMaxSeats, fetchRideDetail, navigation]
+  );
 
   const handleCancelRide = () => {
     if (!isOwnerStrict) {
@@ -872,7 +1002,22 @@ export default function RideDetailScreen(): React.JSX.Element {
             {!isOwner ? (
               <TouchableOpacity
                 style={styles.detailsPill}
-                onPress={() => scrollRef.current?.scrollToEnd({ animated: true })}
+                onPress={() => {
+                  const ownerId = (ride.userId ?? '').trim();
+                  if (!ownerId) {
+                    scrollRef.current?.scrollToEnd({ animated: true });
+                    return;
+                  }
+
+                  // Hide bottom tabs immediately while the profile screen mounts.
+                  const parentNav = (navigation as any)?.getParent?.();
+                  parentNav?.setOptions?.({ tabBarStyle: { display: 'none' } });
+
+                  (navigation as any).navigate('OwnerProfileModal', {
+                    userId: ownerId,
+                    displayName: driverName || ride.name || ride.username || 'User',
+                  });
+                }}
                 activeOpacity={0.75}
               >
                 <Text style={styles.detailsPillText}>Details</Text>
@@ -881,7 +1026,7 @@ export default function RideDetailScreen(): React.JSX.Element {
             ) : null}
           </View>
 
-          {!isOwner ? (
+          {false ? (
             <View style={styles.cardQuickActions}>
               <TouchableOpacity style={styles.driverActionBtn} onPress={() => {}} activeOpacity={0.7}>
                 <Ionicons name="call-outline" size={22} color={COLORS.text} />
@@ -910,7 +1055,9 @@ export default function RideDetailScreen(): React.JSX.Element {
               <Text style={styles.paymentMethod}>Pay in cash (₹)</Text>
               <Text style={styles.paymentSeats}>
                 {!isOwner
-                  ? getRideAvailabilityShort(ride) || '—'
+                  ? viewerBookedSeats > 0
+                    ? `${viewerBookedSeats} seat${viewerBookedSeats !== 1 ? 's' : ''} booked · ${availableSeatsCount} left`
+                    : getRideAvailabilityShort(ride) || '—'
                   : bookedSeats > 0
                     ? `${bookedSeats} seat${bookedSeats !== 1 ? 's' : ''} booked · ${availableSeatsCount} left`
                     : totalBookingsCount > 0
@@ -919,7 +1066,9 @@ export default function RideDetailScreen(): React.JSX.Element {
                         `${totalSeats} seat${totalSeats !== 1 ? 's' : ''} offered`}
               </Text>
             </View>
-            <Text style={styles.paymentPrice}>{priceDisplay !== '—' ? priceDisplay : '₹—'}</Text>
+            <Text style={styles.paymentPrice}>
+              {totalBookedPriceText ?? (priceDisplay !== '—' ? priceDisplay : '₹—')}
+            </Text>
           </View>
         </View>
 
@@ -1218,7 +1367,7 @@ export default function RideDetailScreen(): React.JSX.Element {
                   <Ionicons
                     name={ratingStars >= s ? 'star' : 'star-outline'}
                     size={34}
-                    color={ratingStars >= s ? '#f59e0b' : COLORS.border}
+                    color={COLORS.warning}
                   />
                 </TouchableOpacity>
               ))}
@@ -1382,6 +1531,95 @@ export default function RideDetailScreen(): React.JSX.Element {
         </View>
       </Modal>
 
+      <Modal
+        visible={cancelBookingSheetVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={closeCancelBookingSheet}
+      >
+        <TouchableOpacity
+          style={styles.cancelBookingSheetOverlay}
+          activeOpacity={1}
+          onPress={closeCancelBookingSheet}
+          disabled={cancellingBooking}
+        >
+          <View style={styles.cancelBookingSheetCard} onStartShouldSetResponder={() => true}>
+            <View style={styles.cancelBookingSheetHandleArea}>
+              <View style={styles.cancelBookingSheetHandle} />
+            </View>
+            <View style={styles.cancelBookingSheetHeader}>
+              <Text style={styles.cancelBookingSheetTitle}>Cancel booking</Text>
+              <TouchableOpacity onPress={closeCancelBookingSheet} hitSlop={10} disabled={cancellingBooking}>
+                <Ionicons name="close" size={20} color={COLORS.textSecondary} />
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.cancelBookingSheetSubText}>
+              {`You booked ${cancelBookingMaxSeats} seat${cancelBookingMaxSeats !== 1 ? 's' : ''}. Select how many to cancel.`}
+            </Text>
+
+            <View style={styles.cancelBookingCounterRow}>
+              <TouchableOpacity
+                style={[
+                  styles.cancelBookingCounterBtn,
+                  cancelBookingSeatsToCancel <= 1 && styles.cancelBookingCounterBtnDisabled,
+                ]}
+                onPress={() => setCancelBookingSeatsToCancel((s) => Math.max(1, s - 1))}
+                disabled={cancellingBooking || cancelBookingSeatsToCancel <= 1}
+                hitSlop={8}
+                activeOpacity={0.85}
+              >
+                <Ionicons name="remove" size={20} color={COLORS.primary} />
+              </TouchableOpacity>
+
+              <View style={styles.cancelBookingCounterValueWrap}>
+                <Text style={styles.cancelBookingCounterValue}>{cancelBookingSeatsToCancel}</Text>
+                <Text style={styles.cancelBookingCounterUnit}>
+                  seat{cancelBookingSeatsToCancel !== 1 ? 's' : ''} to cancel
+                </Text>
+              </View>
+
+              <TouchableOpacity
+                style={[
+                  styles.cancelBookingCounterBtn,
+                  cancelBookingSeatsToCancel >= cancelBookingMaxSeats && styles.cancelBookingCounterBtnDisabled,
+                ]}
+                onPress={() => setCancelBookingSeatsToCancel((s) => Math.min(cancelBookingMaxSeats, s + 1))}
+                disabled={cancellingBooking || cancelBookingSeatsToCancel >= cancelBookingMaxSeats}
+                hitSlop={8}
+                activeOpacity={0.85}
+              >
+                <Ionicons name="add" size={20} color={COLORS.primary} />
+              </TouchableOpacity>
+            </View>
+
+            <TouchableOpacity
+              style={styles.cancelBookingConfirmBtn}
+              onPress={() => void confirmCancelSeats(cancelBookingSeatsToCancel)}
+              disabled={cancellingBooking}
+              activeOpacity={0.9}
+            >
+              {cancellingBooking ? (
+                <ActivityIndicator size="small" color={COLORS.white} />
+              ) : (
+                <Text style={styles.cancelBookingConfirmText}>
+                  Cancel {cancelBookingSeatsToCancel} seat{cancelBookingSeatsToCancel !== 1 ? 's' : ''}
+                </Text>
+              )}
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.cancelBookingKeepBtn}
+              onPress={closeCancelBookingSheet}
+              disabled={cancellingBooking}
+              activeOpacity={0.9}
+            >
+              <Text style={styles.cancelBookingKeepText}>Keep booking</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
       <DatePickerModal
         visible={showEditDateModal}
         onClose={() => setShowEditDateModal(false)}
@@ -1444,6 +1682,24 @@ const styles = StyleSheet.create({
     marginTop: 16,
     fontSize: 16,
     color: COLORS.textSecondary,
+  },
+  openingDetailsOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: COLORS.white,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 50,
+  },
+  openingDetailsText: {
+    marginTop: 10,
+    fontSize: 14,
+    fontWeight: '700',
+    color: COLORS.textSecondary,
+    textAlign: 'center',
   },
   header: {
     flexDirection: 'row',
@@ -2147,7 +2403,7 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.primary,
   },
   ratingSubmitBtnDisabled: {
-    backgroundColor: '#a5a8ea',
+    backgroundColor: 'rgba(34,197,94,0.45)',
   },
   ratingSubmitText: {
     fontSize: 26,
@@ -2363,5 +2619,131 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
     color: COLORS.primary,
+  },
+  cancelBookingSheetOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'flex-end',
+  },
+  cancelBookingSheetCard: {
+    backgroundColor: COLORS.background,
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 24,
+    minHeight: 240,
+  },
+  cancelBookingSheetHandleArea: {
+    alignItems: 'center',
+    paddingTop: 6,
+    paddingBottom: 10,
+  },
+  cancelBookingSheetHandle: {
+    width: 46,
+    height: 5,
+    borderRadius: 999,
+    backgroundColor: COLORS.border,
+  },
+  cancelBookingSheetHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingBottom: 8,
+  },
+  cancelBookingSheetTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: COLORS.text,
+  },
+  cancelBookingSheetSubText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLORS.textSecondary,
+    marginBottom: 16,
+    lineHeight: 20,
+  },
+  cancelBookingCounterRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginBottom: 14,
+  },
+  cancelBookingCounterBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: COLORS.borderLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: COLORS.backgroundSecondary,
+  },
+  cancelBookingCounterBtnDisabled: {
+    opacity: 0.45,
+  },
+  cancelBookingCounterValueWrap: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 6,
+  },
+  cancelBookingCounterValue: {
+    fontSize: 26,
+    fontWeight: '900',
+    color: COLORS.error,
+    lineHeight: 30,
+  },
+  cancelBookingCounterUnit: {
+    marginTop: 2,
+    fontSize: 13,
+    fontWeight: '700',
+    color: COLORS.textSecondary,
+  },
+  cancelBookingConfirmBtn: {
+    marginTop: 10,
+    paddingVertical: 15,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: COLORS.error,
+  },
+  cancelBookingConfirmText: {
+    color: COLORS.white,
+    fontWeight: '900',
+    fontSize: 16,
+  },
+  cancelBookingSheetOptions: {
+    gap: 10,
+  },
+  cancelBookingSheetOption: {
+    width: '100%',
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(239,68,68,0.45)',
+    backgroundColor: 'rgba(239,68,68,0.10)',
+    alignItems: 'center',
+  },
+  cancelBookingSheetOptionText: {
+    color: COLORS.error,
+    fontWeight: '800',
+    fontSize: 15,
+  },
+  cancelBookingKeepBtn: {
+    marginTop: 12,
+    paddingVertical: 13,
+    borderRadius: 16,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: COLORS.borderLight,
+    backgroundColor: COLORS.backgroundSecondary,
+  },
+  cancelBookingKeepText: {
+    color: COLORS.text,
+    fontWeight: '800',
+    fontSize: 15,
   },
 });

@@ -1,5 +1,6 @@
 import React from 'react';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
+import { CommonActions } from '@react-navigation/native';
 import { getFocusedRouteNameFromRoute } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import type { MainTabParamList } from './types';
@@ -9,25 +10,37 @@ import RidesStack from './RidesStack';
 import InboxStack from './InboxStack';
 import ProfileStack from './ProfileStack';
 import { useInbox } from '../contexts/InboxContext';
+import { useAuth } from '../contexts/AuthContext';
 import { COLORS } from '../constants/colors';
 
 const Tab = createBottomTabNavigator<MainTabParamList>();
 
+function findMainTabNavigator(navigation: any) {
+  let current = navigation?.getParent?.() as any | undefined;
+  for (let i = 0; i < 5 && current; i += 1) {
+    const names: string[] | undefined = current?.getState?.()?.routeNames;
+    if (names?.includes('SearchStack') && names?.includes('YourRides')) return current;
+    current = current.getParent?.();
+  }
+  return null;
+}
+
 export default function BottomTabs(): React.JSX.Element {
   const { hasUnread } = useInbox();
+  const { user } = useAuth();
 
   return (
     <Tab.Navigator
-      /** Keep inactive tab views attached — less detach flicker when switching. */
-      detachInactiveScreens={false}
+      /** Detach inactive screens to reduce initial mount work / startup lag. */
+      detachInactiveScreens={true}
       screenOptions={{
         headerShown: true,
         tabBarActiveTintColor: COLORS.primary,
         tabBarInactiveTintColor: '#64748b',
         tabBarIconStyle: { marginBottom: -2 },
         tabBarHideOnKeyboard: true,
-        /** Render tab screens up front — avoids cold mount flash. */
-        lazy: false,
+        /** Lazy mount tab screens — smoother first open of BottomTabs. */
+        lazy: true,
         /** No cross-fade — `fade` caused a visible flash / "lighting" effect between tabs. */
         animation: 'none',
         sceneStyle: {
@@ -55,10 +68,12 @@ export default function BottomTabs(): React.JSX.Element {
           const name = getFocusedRouteNameFromRoute(route) ?? 'SearchRides';
           const hideTabs =
             name === 'RideDetail' ||
-            name === 'EditRide' ||
+            name === 'RideDetailScreen' ||
+            name === 'LocationPicker' ||
             name === 'BookPassengerDetail' ||
             name === 'Chat' ||
-            name === 'LocationPicker';
+            name === 'OwnerProfileModal' ||
+            name === 'OwnerRatingsModal';
           return {
             headerShown: false,
             title: 'Search',
@@ -76,7 +91,11 @@ export default function BottomTabs(): React.JSX.Element {
         options={({ route }) => {
           const name = getFocusedRouteNameFromRoute(route) ?? 'PublishRide';
           const hideTabs =
-            name === 'LocationPicker' || name === 'PublishRoutePreview' || name === 'PublishPrice';
+            name === 'RideDetail' ||
+            name === 'Chat' ||
+            name === 'LocationPicker' ||
+            name === 'PublishRoutePreview' ||
+            name === 'PublishPrice';
           return {
             headerShown: false,
             title: 'Publish a Ride',
@@ -107,7 +126,12 @@ export default function BottomTabs(): React.JSX.Element {
         options={({ route }) => {
           const name = getFocusedRouteNameFromRoute(route) ?? 'YourRidesList';
           const hideTabs =
-            name === 'RideDetail' || name === 'EditRide' || name === 'BookPassengerDetail' || name === 'Chat';
+            name === 'RideDetail' ||
+            name === 'RideDetailScreen' ||
+            name === 'BookPassengerDetail' ||
+            name === 'Chat' ||
+            name === 'OwnerProfileModal' ||
+            name === 'OwnerRatingsModal';
           return {
             headerShown: false,
             title: 'Your Rides',
@@ -124,7 +148,7 @@ export default function BottomTabs(): React.JSX.Element {
         component={InboxStack}
         options={({ route }) => {
           const name = getFocusedRouteNameFromRoute(route) ?? 'InboxList';
-          const hideTabs = name === 'Chat';
+          const hideTabs = name === 'RideDetail' || name === 'Chat';
           return {
             headerShown: false,
             title: 'Inbox',
@@ -140,9 +164,92 @@ export default function BottomTabs(): React.JSX.Element {
       <Tab.Screen
         name="Profile"
         component={ProfileStack}
+        listeners={({ navigation }) => ({
+          focus: () => {
+            // If the Profile tab becomes focused (even indirectly), always show *my* profile.
+            // This prevents "other user profile" sticking in the tab history.
+            const uid = user?.id?.trim();
+            if (!uid) return;
+
+            const mainTabs = findMainTabNavigator(navigation);
+            if (!mainTabs?.dispatch || !mainTabs?.getState) return;
+            const tabState = mainTabs.getState();
+            const routes = (tabState?.routes ?? []) as any[];
+            const profileIndex = routes.findIndex((r) => r?.name === 'Profile');
+
+            const nextProfileParams = { userId: uid, displayName: user?.name };
+            // Always overwrite the Profile tab nested stack to ProfileHome.
+            const nextRoutes = routes.map((r) => {
+              if (r?.name !== 'Profile') return r;
+              return {
+                ...r,
+                state: {
+                  routes: [{ name: 'ProfileHome', params: nextProfileParams }],
+                  index: 0,
+                },
+              };
+            });
+
+            mainTabs.dispatch(
+              CommonActions.reset({
+                index: profileIndex >= 0 ? profileIndex : tabState?.index ?? 4,
+                routes: nextRoutes,
+              })
+            );
+          },
+          tabPress: (e) => {
+            // Always return to *my* profile when the user taps Profile tab.
+            e.preventDefault();
+            const uid = user?.id?.trim();
+
+            const mainTabs = findMainTabNavigator(navigation);
+            if (mainTabs?.dispatch && mainTabs?.getState) {
+              const tabState = mainTabs.getState?.();
+              const routes = (tabState?.routes ?? []) as any[];
+              const profileIndex = routes.findIndex((r) => r?.name === 'Profile');
+              const nextProfileParams = uid
+                ? { userId: uid, displayName: user?.name }
+                : undefined;
+
+              const nextRoutes = routes.map((r) => {
+                if (r?.name !== 'Profile') return r;
+                return {
+                  ...r,
+                  state: {
+                    routes: [
+                      {
+                        name: 'ProfileHome',
+                        params: nextProfileParams,
+                      },
+                    ],
+                    index: 0,
+                  },
+                };
+              });
+
+              mainTabs.dispatch(
+                CommonActions.reset({
+                  index: profileIndex >= 0 ? profileIndex : tabState?.index ?? 4,
+                  routes: nextRoutes,
+                })
+              );
+              return;
+            }
+
+            // Fallback: if we can’t find parent state, just navigate.
+            navigation.navigate('Profile', {
+              screen: 'ProfileHome',
+              params: uid ? { userId: uid, displayName: user?.name } : undefined,
+            } as any);
+          },
+        })}
         options={({ route }) => {
           const name = getFocusedRouteNameFromRoute(route) ?? 'ProfileHome';
-          const hideTabs = name === 'Ratings';
+          // Show tabs on your main Profile screen, hide only for nested views.
+          const hideTabs =
+            name === 'ProfileEntry' ||
+            name === 'Ratings' ||
+            name === 'RatingsScreen';
           return {
             headerShown: false,
             title: 'Profile',

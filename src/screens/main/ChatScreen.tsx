@@ -105,6 +105,15 @@ export default function ChatScreen(): React.JSX.Element {
   const canSend = true;
 
   useEffect(() => {
+    // Robustly hide bottom tab bar while inside chat.
+    const parentNav = (navigation as any)?.getParent?.();
+    parentNav?.setOptions?.({ tabBarStyle: { display: 'none' } });
+    return () => {
+      parentNav?.setOptions?.({ tabBarStyle: undefined });
+    };
+  }, [navigation]);
+
+  useEffect(() => {
     addOrUpdateConversation(ride, otherUserName, otherUserId);
   }, [ride.id, otherUserName, otherUserId, addOrUpdateConversation]);
 
@@ -238,7 +247,7 @@ export default function ChatScreen(): React.JSX.Element {
               <View style={styles.headerNameRow}>
                 <Text style={styles.headerName}>{displayName}</Text>
                 <View style={styles.ratingBadge}>
-                  <Ionicons name="star" size={12} color={COLORS.text} />
+                  <Ionicons name="star" size={12} color={COLORS.warning} />
                   <Text style={styles.ratingText}>4.5/5</Text>
                 </View>
               </View>

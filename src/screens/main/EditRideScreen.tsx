@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   Alert,
   Modal,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -24,6 +25,11 @@ import { showToast } from '../../utils/toast';
 import { bookingIsCancelled } from '../../utils/bookingStatus';
 
 const MIN_LEAD_MINUTES = 30;
+const CLOCK_SIZE = 232;
+const CLOCK_CENTER = CLOCK_SIZE / 2;
+const HOUR_OUTER_RADIUS = 90;
+const HOUR_INNER_RADIUS = 60;
+const MINUTE_OPTIONS = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55] as const;
 
 function isDateTimeTooSoon(dateValue: string, hour: number, minute: number, minLeadMinutes: number): boolean {
   const [y, m, d] = dateValue.split('-').map(Number);
@@ -103,6 +109,7 @@ export default function EditRideScreen(): React.JSX.Element {
   }, []);
   const [timeHour, setTimeHour] = useState(initialTime.hour);
   const [timeMinute, setTimeMinute] = useState(initialTime.minute);
+  const [clockMode, setClockMode] = useState<'hour' | 'minute'>('hour');
   const [timeModalToast, setTimeModalToast] = useState('');
   const timeModalToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [saving, setSaving] = useState(false);
@@ -118,6 +125,38 @@ export default function EditRideScreen(): React.JSX.Element {
 
   const timeLabel = `${String(timeHour).padStart(2, '0')}:${String(timeMinute).padStart(2, '0')}`;
   const PRICE_STEP = 5;
+
+  const openTimeModal = () => {
+    setClockMode('hour');
+    setShowTimeModal(true);
+  };
+
+  const handleClockPress = (locationX: number, locationY: number) => {
+    const dx = locationX - CLOCK_CENTER;
+    const dy = locationY - CLOCK_CENTER;
+    const radius = Math.sqrt(dx * dx + dy * dy);
+    let angleDeg = (Math.atan2(dy, dx) * 180 / Math.PI) + 90;
+    if (angleDeg < 0) angleDeg += 360;
+
+    if (clockMode === 'hour') {
+      const dialHour = Math.round(angleDeg / 30) % 12;
+      const isInnerRing = radius < (HOUR_OUTER_RADIUS + HOUR_INNER_RADIUS) / 2;
+      const nextHour24 = isInnerRing ? dialHour + 12 : dialHour;
+      setTimeHour(nextHour24);
+      setClockMode('minute');
+      return;
+    }
+
+    const index = Math.round(angleDeg / 30) % 12;
+    const minute = MINUTE_OPTIONS[index];
+    if (isDateTimeTooSoon(dateValue, timeHour, minute, MIN_LEAD_MINUTES)) {
+      showTimeValidationToast();
+      return;
+    }
+    setTimeMinute(minute);
+    setTimeValue(`${String(timeHour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`);
+    setShowTimeModal(false);
+  };
 
   const openLocationPicker = (field: 'from' | 'to') => {
     if (majorFieldLocked) return;
@@ -323,12 +362,12 @@ export default function EditRideScreen(): React.JSX.Element {
           <View style={styles.rowDivider} />
           <TouchableOpacity
             style={[styles.fieldRow, majorFieldLocked && styles.fieldRowDisabled]}
-            onPress={() => !majorFieldLocked && setShowTimeModal(true)}
+            onPress={() => !majorFieldLocked && openTimeModal()}
             activeOpacity={majorFieldLocked ? 1 : 0.75}
           >
             <View style={styles.fieldLeft}>
               <View style={styles.timeIconCircle}>
-                <Ionicons name="time-outline" size={20} color="#6366f1" />
+                <Ionicons name="time-outline" size={20} color={COLORS.success} />
               </View>
             </View>
             <View style={styles.fieldInputWrap}>
@@ -346,7 +385,7 @@ export default function EditRideScreen(): React.JSX.Element {
           >
             <View style={styles.fieldLeft}>
               <View style={styles.fareIconCircle}>
-                <Ionicons name="wallet-outline" size={20} color="#6366f1" />
+                <Ionicons name="wallet-outline" size={20} color={COLORS.success} />
               </View>
             </View>
             <View style={styles.fieldInputWrap}>
@@ -510,27 +549,103 @@ export default function EditRideScreen(): React.JSX.Element {
           ) : null}
           <View style={styles.bottomSheet} onStartShouldSetResponder={() => true}>
             <Text style={styles.bottomTitle}>Set time</Text>
-            <View style={styles.timeRow}>
-              <View style={styles.timeStepper}>
-                <TouchableOpacity onPress={() => setTimeHour((h) => (h + 23) % 24)} style={styles.timeStepBtn}>
-                  <Ionicons name="remove" size={22} color={COLORS.text} />
-                </TouchableOpacity>
-                <Text style={styles.timeStepValue}>{String(timeHour).padStart(2, '0')}</Text>
-                <TouchableOpacity onPress={() => setTimeHour((h) => (h + 1) % 24)} style={styles.timeStepBtn}>
-                  <Ionicons name="add" size={22} color={COLORS.text} />
-                </TouchableOpacity>
-              </View>
-              <Text style={styles.timeColon}>:</Text>
-              <View style={styles.timeStepper}>
-                <TouchableOpacity onPress={() => setTimeMinute((m) => (m + 55) % 60)} style={styles.timeStepBtn}>
-                  <Ionicons name="remove" size={22} color={COLORS.text} />
-                </TouchableOpacity>
-                <Text style={styles.timeStepValue}>{String(timeMinute).padStart(2, '0')}</Text>
-                <TouchableOpacity onPress={() => setTimeMinute((m) => (m + 5) % 60)} style={styles.timeStepBtn}>
-                  <Ionicons name="add" size={22} color={COLORS.text} />
-                </TouchableOpacity>
-              </View>
+            <View style={styles.clockTimeSelectRow}>
+              <TouchableOpacity
+                style={[styles.clockTimeBox, clockMode === 'hour' && styles.clockTimeBoxActive]}
+                onPress={() => setClockMode('hour')}
+                activeOpacity={0.85}
+              >
+                <Text style={[styles.clockTimeBoxText, clockMode === 'hour' && styles.clockTimeBoxTextActive]}>
+                  {String(timeHour).padStart(2, '0')}
+                </Text>
+              </TouchableOpacity>
+              <Text style={styles.clockTimeColon}>:</Text>
+              <TouchableOpacity
+                style={[styles.clockTimeBox, clockMode === 'minute' && styles.clockTimeBoxActive]}
+                onPress={() => setClockMode('minute')}
+                activeOpacity={0.85}
+              >
+                <Text style={[styles.clockTimeBoxText, clockMode === 'minute' && styles.clockTimeBoxTextActive]}>
+                  {String(timeMinute).padStart(2, '0')}
+                </Text>
+              </TouchableOpacity>
             </View>
+
+            <Pressable
+              style={styles.clockFaceWrap}
+              onPress={(e) => {
+                const { locationX, locationY } = e.nativeEvent;
+                handleClockPress(locationX, locationY);
+              }}
+            >
+              <View style={[styles.clockFace, { width: CLOCK_SIZE, height: CLOCK_SIZE }]} pointerEvents="none">
+                {clockMode === 'hour' &&
+                  [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map((h) => {
+                    const angleDeg = h * 30 - 90;
+                    const rad = (angleDeg * Math.PI) / 180;
+                    const x = CLOCK_CENTER + HOUR_OUTER_RADIUS * Math.cos(rad) - 8;
+                    const y = CLOCK_CENTER + HOUR_OUTER_RADIUS * Math.sin(rad) - 9;
+                    return (
+                      <Text key={`outer_${h}`} style={[styles.clockHourLabel, { left: x, top: y }]} pointerEvents="none">
+                        {h}
+                      </Text>
+                    );
+                  })}
+                {clockMode === 'hour' &&
+                  [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23].map((h) => {
+                    const angleDeg = (h % 12) * 30 - 90;
+                    const rad = (angleDeg * Math.PI) / 180;
+                    const x = CLOCK_CENTER + HOUR_INNER_RADIUS * Math.cos(rad) - 8;
+                    const y = CLOCK_CENTER + HOUR_INNER_RADIUS * Math.sin(rad) - 9;
+                    return (
+                      <Text
+                        key={`inner_${h}`}
+                        style={[styles.clockHourLabel, styles.clockHourLabelInner, { left: x, top: y }]}
+                        pointerEvents="none"
+                      >
+                        {h}
+                      </Text>
+                    );
+                  })}
+                {clockMode === 'minute' &&
+                  MINUTE_OPTIONS.map((min, idx) => {
+                    const angleDeg = idx * 30 - 90;
+                    const rad = (angleDeg * Math.PI) / 180;
+                    const x = CLOCK_CENTER + HOUR_OUTER_RADIUS * Math.cos(rad) - 10;
+                    const y = CLOCK_CENTER + HOUR_OUTER_RADIUS * Math.sin(rad) - 10;
+                    return (
+                      <Text key={min} style={[styles.clockMinuteLabel, { left: x, top: y }]} pointerEvents="none">
+                        {min.toString().padStart(2, '0')}
+                      </Text>
+                    );
+                  })}
+                <View
+                  style={[
+                    styles.clockHandWrap,
+                    {
+                      left: CLOCK_CENTER - 15,
+                      top: CLOCK_CENTER - 15,
+                      transform: [{ rotate: `${(timeHour % 12) * 30 + (timeMinute / 60) * 30 - 90}deg` }],
+                    },
+                  ]}
+                >
+                  <View style={styles.clockHourHand} />
+                </View>
+                <View
+                  style={[
+                    styles.clockHandWrapMinute,
+                    {
+                      left: CLOCK_CENTER - 21,
+                      top: CLOCK_CENTER - 21,
+                      transform: [{ rotate: `${timeMinute * 6 - 90}deg` }],
+                    },
+                  ]}
+                >
+                  <View style={styles.clockMinuteHand} />
+                </View>
+              </View>
+            </Pressable>
+
             <TouchableOpacity
               style={styles.bottomDoneBtn}
               onPress={applyTimeAndClose}
@@ -727,7 +842,7 @@ const styles = StyleSheet.create({
     width: 26,
     height: 26,
     borderRadius: 13,
-    backgroundColor: '#eef2ff',
+    backgroundColor: 'rgba(34,197,94,0.12)',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -735,15 +850,15 @@ const styles = StyleSheet.create({
     width: 26,
     height: 26,
     borderRadius: 13,
-    backgroundColor: '#eef2ff',
+    backgroundColor: 'rgba(34,197,94,0.12)',
     alignItems: 'center',
     justifyContent: 'center',
   },
   timeValue: {
-    color: '#4338ca',
+    color: COLORS.success,
   },
   fareValue: {
-    color: '#4338ca',
+    color: COLORS.success,
   },
   label: { fontSize: 12, color: COLORS.textSecondary, marginBottom: 6, marginTop: 8, fontWeight: '600' },
   row: { flexDirection: 'row', gap: 10 },
@@ -886,6 +1001,105 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
     color: COLORS.primary,
+  },
+  clockTimeSelectRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 4,
+    marginBottom: 12,
+    gap: 8,
+  },
+  clockTimeBox: {
+    minWidth: 96,
+    height: 68,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.backgroundSecondary,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  clockTimeBoxActive: {
+    borderColor: COLORS.primary,
+    backgroundColor: 'rgba(34,197,94,0.12)',
+  },
+  clockTimeBoxText: {
+    fontSize: 44,
+    fontWeight: '700',
+    color: COLORS.text,
+    lineHeight: 48,
+  },
+  clockTimeBoxTextActive: {
+    color: COLORS.primary,
+  },
+  clockTimeColon: {
+    fontSize: 44,
+    fontWeight: '700',
+    color: COLORS.text,
+    lineHeight: 48,
+    marginHorizontal: 2,
+  },
+  clockFaceWrap: {
+    width: CLOCK_SIZE,
+    height: CLOCK_SIZE,
+    marginVertical: 6,
+    alignSelf: 'center',
+  },
+  clockFace: {
+    borderRadius: CLOCK_SIZE / 2,
+    borderWidth: 3,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.backgroundSecondary,
+    position: 'relative',
+    overflow: 'visible',
+  },
+  clockHourLabel: {
+    position: 'absolute',
+    width: 20,
+    fontSize: 15,
+    fontWeight: '700',
+    color: COLORS.text,
+    textAlign: 'center',
+  },
+  clockHourLabelInner: {
+    fontSize: 13,
+    width: 20,
+    color: COLORS.textSecondary,
+  },
+  clockMinuteLabel: {
+    position: 'absolute',
+    width: 24,
+    fontSize: 15,
+    fontWeight: '700',
+    color: COLORS.text,
+    textAlign: 'center',
+  },
+  clockHandWrap: {
+    position: 'absolute',
+    width: 30,
+    height: 30,
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+  },
+  clockHandWrapMinute: {
+    position: 'absolute',
+    width: 42,
+    height: 42,
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+  },
+  clockHourHand: {
+    width: 4,
+    height: 30,
+    backgroundColor: COLORS.text,
+    borderRadius: 2,
+  },
+  clockMinuteHand: {
+    width: 2.5,
+    height: 42,
+    backgroundColor: COLORS.primary,
+    borderRadius: 1.5,
   },
   timeRow: {
     flexDirection: 'row',

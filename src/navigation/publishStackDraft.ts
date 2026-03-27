@@ -18,8 +18,7 @@ export type PublishRideFormDraft = {
   instantBooking: boolean;
   ladiesOnly: boolean;
   calendarMonthIso: string;
-  clockHour12: number;
-  clockAM: boolean;
+  clockHour24: number;
   clockMinute: number;
 };
 

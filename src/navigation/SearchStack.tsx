@@ -10,6 +10,8 @@ import RideDetailScreen from '../screens/main/RideDetailScreen';
 import EditRideScreen from '../screens/main/EditRideScreen';
 import BookPassengerDetailScreen from '../screens/main/BookPassengerDetailScreen';
 import ChatScreen from '../screens/main/ChatScreen';
+import OwnerProfileModal from '../screens/main/OwnerProfileModal';
+import OwnerRatingsModal from '../screens/main/OwnerRatingsModal';
 
 const Stack = createNativeStackNavigator<SearchStackParamList>();
 
@@ -63,6 +65,16 @@ export default function SearchStack(): React.JSX.Element {
       <Stack.Screen
         name="Chat"
         component={ChatScreen}
+        options={{ headerShown: false }}
+      />
+      <Stack.Screen
+        name="OwnerProfileModal"
+        component={OwnerProfileModal}
+        options={{ headerShown: false }}
+      />
+      <Stack.Screen
+        name="OwnerRatingsModal"
+        component={OwnerRatingsModal}
         options={{ headerShown: false }}
       />
     </Stack.Navigator>

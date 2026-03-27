@@ -62,6 +62,10 @@ export type SearchStackParamList = {
     toLongitude?: number;
   };
   RideDetail: { ride: RideListItem; passengerSearch?: PassengerSearchParams };
+  /** Open another user's profile from ride details without switching bottom tab. */
+  OwnerProfileModal: { userId: string; displayName?: string } | undefined;
+  /** Ratings view for an arbitrary user opened from ride details modal. */
+  OwnerRatingsModal: { userId: string; displayName?: string } | undefined;
   EditRide: { ride: RideListItem };
   BookPassengerDetail: {
     ride: RideListItem;
@@ -147,6 +151,10 @@ export type RidesStackParamList = {
     selectedFrom?: string;
     selectedTo?: string;
   };
+  /** Open another user's profile from ride details without switching bottom tab. */
+  OwnerProfileModal: { userId: string; displayName?: string } | undefined;
+  /** Ratings view for an arbitrary user opened from ride details modal. */
+  OwnerRatingsModal: { userId: string; displayName?: string } | undefined;
   LocationPicker: {
     field?: 'from' | 'to';
     currentFrom?: string;
@@ -179,8 +187,36 @@ export type InboxStackParamList = {
  * Profile tab: stack (ProfileHome -> Ratings)
  */
 export type ProfileStackParamList = {
-  ProfileHome: undefined;
-  Ratings: undefined;
+  ProfileEntry:
+    | {
+        userId?: string;
+        displayName?: string;
+        _returnToRideDetail?: {
+          tab: string;
+          params: unknown;
+        };
+      }
+    | undefined;
+  ProfileHome:
+    | {
+        userId?: string;
+        displayName?: string;
+        _returnToRideDetail?: {
+          tab: string;
+          params: unknown;
+        };
+      }
+    | undefined;
+  Ratings:
+    | {
+        userId?: string;
+        displayName?: string;
+        _returnToRideDetail?: {
+          tab: string;
+          params: unknown;
+        };
+      }
+    | undefined;
 };
 
 /**

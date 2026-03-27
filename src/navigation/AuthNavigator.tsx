@@ -1,4 +1,5 @@
 import React from 'react';
+import { Platform } from 'react-native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import type { AuthStackParamList } from './types';
 import Login from '../screens/auth/Login';
@@ -11,12 +12,15 @@ export default function AuthNavigator(): React.JSX.Element {
     <Stack.Navigator
       initialRouteName="Login"
       screenOptions={{
-        headerShown: true,
+        headerShown: false,
         headerBackTitle: 'Back',
+        animation: 'slide_from_right',
+        gestureEnabled: true,
+        ...(Platform.OS === 'ios' ? { animationDuration: 320 } : {}),
       }}
     >
-      <Stack.Screen name="Login" component={Login} options={{ title: 'Login' }} />
-      <Stack.Screen name="Register" component={Register} options={{ title: 'Sign up' }} />
+      <Stack.Screen name="Login" component={Login} />
+      <Stack.Screen name="Register" component={Register} />
     </Stack.Navigator>
   );
 }

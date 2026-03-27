@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Dimensions, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { CommonActions, useNavigation, useRoute } from '@react-navigation/native';
+import { useNavigation, useRoute } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import type { RouteProp } from '@react-navigation/native';
@@ -136,22 +136,7 @@ export default function PublishRoutePreviewScreen(): React.JSX.Element {
     return `${h} hr ${m} min`;
   };
   const backToPublish = () => {
-    const params: Record<string, unknown> = {
-      selectedFrom,
-      selectedTo,
-      pickupLatitude,
-      pickupLongitude,
-      destinationLatitude,
-      destinationLongitude,
-      clearRouteFare: true,
-    };
-    if (publishRestoreKey) params._publishRestoreKey = publishRestoreKey;
-    navigation.dispatch(
-      CommonActions.reset({
-        index: 0,
-        routes: [{ name: 'PublishRide', params }],
-      })
-    );
+    navigation.goBack();
   };
 
   return (

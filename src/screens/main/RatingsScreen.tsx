@@ -1,16 +1,20 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAuth } from '../../contexts/AuthContext';
 import { COLORS } from '../../constants/colors';
 import { getUserRatingsSummary, type UserRatingReview } from '../../services/ratings';
+import type { ProfileStackParamList } from '../../navigation/types';
 
 export default function RatingsScreen(): React.JSX.Element {
   const navigation = useNavigation();
   const { user } = useAuth();
-  const displayName = user?.name?.trim() || 'Drivido User';
+  const route = useRoute<RouteProp<ProfileStackParamList, 'Ratings'>>();
+  const targetUserId = (route.params?.userId ?? user?.id ?? '').trim();
+  const targetDisplayName = route.params?.displayName?.trim() || user?.name?.trim() || 'Drivido User';
+  const displayName = targetDisplayName;
   const avatarLetter = displayName.charAt(0).toUpperCase();
   const [avgRating, setAvgRating] = useState(0);
   const [totalRatings, setTotalRatings] = useState(0);
@@ -19,7 +23,7 @@ export default function RatingsScreen(): React.JSX.Element {
 
   useFocusEffect(
     useCallback(() => {
-      const userId = user?.id?.trim();
+      const userId = targetUserId;
       if (!userId) {
         setAvgRating(0);
         setTotalRatings(0);
@@ -48,20 +52,72 @@ export default function RatingsScreen(): React.JSX.Element {
       return () => {
         cancelled = true;
       };
-    }, [user?.id])
+    }, [targetUserId, targetDisplayName])
   );
 
   const breakdown = useMemo(() => {
-    const counts = recentReviews.reduce<Record<number, number>>((acc, row) => {
-      const k = Math.min(5, Math.max(1, Math.round(row.rating || 0)));
-      acc[k] = (acc[k] ?? 0) + 1;
-      return acc;
-    }, {});
-    const total = Math.max(1, recentReviews.length);
-    return [5, 4, 3, 2, 1].map((stars) => ({ stars, count: counts[stars] ?? 0, total }));
-  }, [recentReviews]);
+    const buildFromAvgTotal = (avg: number, totalRaw: number) => {
+      const total = Math.max(0, totalRaw);
+      if (total <= 0) {
+        return [5, 4, 3, 2, 1].map((stars) => ({ stars, count: 0, total: 1 }));
+      }
 
-  const renderStars = Math.max(0, Math.min(5, Math.round(avgRating)));
+      const sumTarget = Math.round(avg * total);
+      const minSum = 1 * total;
+      const maxSum = 5 * total;
+      const clampedSum = Math.min(maxSum, Math.max(minSum, sumTarget));
+
+      let remainingCount = total;
+      let remainingSum = clampedSum;
+      const counts: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+
+      for (let s = 5; s >= 1; s -= 1) {
+        const maxC = Math.min(remainingCount, Math.floor(remainingSum / s));
+        let chosen = 0;
+        for (let c = maxC; c >= 0; c -= 1) {
+          const newCount = remainingCount - c;
+          const newSum = remainingSum - c * s;
+          const minPossible = newCount * 1;
+          const maxPossible = newCount * 5;
+          const feasible = newCount === 0 ? true : newSum >= minPossible && newSum <= maxPossible;
+          if (feasible) {
+            chosen = c;
+            break;
+          }
+        }
+        counts[s] = chosen;
+        remainingCount -= chosen;
+        remainingSum -= chosen * s;
+      }
+
+      return [5, 4, 3, 2, 1].map((stars) => ({ stars, count: counts[stars] ?? 0, total }));
+    };
+
+    const totalFromReviews = recentReviews.length;
+    if (totalFromReviews > 0) {
+      const counts = recentReviews.reduce<Record<number, number>>((acc, row) => {
+        const k = Math.min(5, Math.max(1, Math.round(row.rating || 0)));
+        acc[k] = (acc[k] ?? 0) + 1;
+        return acc;
+      }, {});
+      const total = Math.max(1, recentReviews.length);
+      const breakdownFromReviews = [5, 4, 3, 2, 1].map((stars) => ({ stars, count: counts[stars] ?? 0, total }));
+
+      // If review-bucket average drifts from shown avg, trust avg+total for distribution.
+      const derivedAvg =
+        totalFromReviews > 0
+          ? recentReviews.reduce((acc, r) => acc + Math.max(0, Math.min(5, Number(r.rating) || 0)), 0) / totalFromReviews
+          : 0;
+      if (avgRating > 0 && totalRatings > 0 && Math.abs(derivedAvg - avgRating) > 0.2) {
+        return buildFromAvgTotal(avgRating, totalRatings);
+      }
+      return breakdownFromReviews;
+    }
+
+    return buildFromAvgTotal(avgRating, totalRatings);
+  }, [recentReviews, avgRating, totalRatings]);
+
+  const normalizedAvgRating = Math.max(0, Math.min(5, Number(avgRating) || 0));
 
   const toRelativeText = (iso: string): string => {
     if (!iso) return 'Recent';
@@ -116,16 +172,22 @@ export default function RatingsScreen(): React.JSX.Element {
                 {[1, 2, 3, 4, 5].map((idx) => (
                   <Ionicons
                     key={idx}
-                    name={idx <= renderStars ? 'star' : 'star-outline'}
+                    name={
+                      normalizedAvgRating >= idx
+                        ? 'star'
+                        : normalizedAvgRating > idx - 1
+                          ? 'star-half'
+                          : 'star-outline'
+                    }
                     size={14}
-                    color="#7c78f2"
+                    color={COLORS.warning}
                   />
                 ))}
               </View>
               <Text style={styles.reviewsCount}>Based on {totalRatings} reviews</Text>
             </View>
             <View style={styles.feedbackButton}>
-              <Ionicons name="chatbox-outline" size={22} color="#7c78f2" />
+              <Ionicons name="chatbox-outline" size={22} color={COLORS.success} />
               <Text style={styles.feedbackText}>FEEDBACK</Text>
             </View>
           </View>
@@ -140,7 +202,7 @@ export default function RatingsScreen(): React.JSX.Element {
                 <View key={row.stars} style={styles.breakdownRow}>
                   <Text style={styles.breakdownLabel}>
                     {row.stars}
-                    <Ionicons name="star-outline" size={11} color={COLORS.textSecondary} />
+                    <Ionicons name="star-outline" size={11} color={COLORS.warning} />
                   </Text>
                   <View style={styles.barTrack}>
                     <View style={[styles.barFill, { width }]} />
@@ -166,15 +228,29 @@ export default function RatingsScreen(): React.JSX.Element {
             </View>
           ) : (
             recentReviews.map((review, idx) => (
-              <View key={review.id} style={[styles.reviewItem, idx > 0 && styles.reviewDivider]}>
+              <Pressable
+                key={review.id}
+                style={[styles.reviewItem, idx > 0 && styles.reviewDivider]}
+                accessibilityRole={review.fromUserId ? 'button' : 'none'}
+                disabled={!review.fromUserId}
+                onPress={() => {
+                  if (!review.fromUserId) return;
+                  navigation.navigate('ProfileEntry', {
+                    userId: review.fromUserId,
+                    displayName: review.fromUserName,
+                  } as any);
+                }}
+              >
                 <View style={styles.reviewHead}>
                   <View style={styles.avatar}>
                     <Text style={styles.avatarText}>
-                      {(review.fromUserName || 'U').charAt(0).toUpperCase()}
+                      {(review.fromUserName?.charAt(0) || review.fromUserId?.charAt(0) || 'U')?.toUpperCase()}
                     </Text>
                   </View>
                   <View style={styles.reviewNameWrap}>
-                    <Text style={styles.reviewName}>{review.fromUserName || 'Anonymous'}</Text>
+                    <Text style={styles.reviewName}>
+                      {review.fromUserName || '—'}
+                    </Text>
                     <Text style={styles.reviewTime}>{toRelativeText(review.createdAt).toUpperCase()}</Text>
                   </View>
                   <Ionicons name="ellipsis-vertical" size={16} color={COLORS.textMuted} />
@@ -185,17 +261,17 @@ export default function RatingsScreen(): React.JSX.Element {
                       key={`${review.id}-star-${idx}`}
                       name={idx <= review.rating ? 'star' : 'star-outline'}
                       size={12}
-                      color="#ef5da8"
+                      color={COLORS.warning}
                     />
                   ))}
                 </View>
-                <Text style={styles.reviewText}>{review.review}</Text>
+                <Text style={styles.reviewText}>{review.review?.trim() ? review.review : '—'}</Text>
                 <View style={styles.rolePill}>
                   <Text style={styles.rolePillText}>
                     {(review.role || 'review').replace(/_/g, ' ')}
                   </Text>
                 </View>
-              </View>
+              </Pressable>
             ))
           )}
           </View>
@@ -267,10 +343,10 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   summaryCard: {
-    backgroundColor: '#efeffb',
+    backgroundColor: 'rgba(34,197,94,0.08)',
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: '#e4e6fb',
+    borderColor: 'rgba(34,197,94,0.22)',
     padding: 14,
   },
   summaryRow: {
@@ -286,7 +362,7 @@ const styles = StyleSheet.create({
     fontSize: 46,
     lineHeight: 46,
     fontWeight: '800',
-    color: '#5a5be8',
+    color: COLORS.success,
   },
   starsRow: {
     flexDirection: 'row',
@@ -302,8 +378,8 @@ const styles = StyleSheet.create({
     height: 88,
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: '#dfe3ff',
-    backgroundColor: '#f5f6ff',
+    borderColor: 'rgba(34,197,94,0.3)',
+    backgroundColor: 'rgba(34,197,94,0.08)',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
@@ -311,7 +387,7 @@ const styles = StyleSheet.create({
   feedbackText: {
     fontSize: 10,
     fontWeight: '800',
-    color: '#7c78f2',
+    color: COLORS.success,
     letterSpacing: 0.4,
   },
   section: {
@@ -352,7 +428,7 @@ const styles = StyleSheet.create({
   barFill: {
     height: '100%',
     borderRadius: 999,
-    backgroundColor: '#6266ea',
+    backgroundColor: COLORS.primary,
   },
   breakdownCount: {
     width: 34,
@@ -429,7 +505,7 @@ const styles = StyleSheet.create({
   },
   rolePill: {
     alignSelf: 'flex-start',
-    backgroundColor: '#eef2ff',
+    backgroundColor: 'rgba(34,197,94,0.12)',
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 999,
@@ -437,7 +513,7 @@ const styles = StyleSheet.create({
   rolePillText: {
     fontSize: 11,
     fontWeight: '700',
-    color: '#6366f1',
+    color: COLORS.success,
   },
   emptyReviewsWrap: {
     paddingVertical: 22,

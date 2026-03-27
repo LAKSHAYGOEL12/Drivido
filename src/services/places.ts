@@ -1,8 +1,6 @@
-/**
- * Google Places Autocomplete (legacy) for address suggestions.
- * In Google Cloud Console, enable "Places API" for the same key used for Maps
- * (EXPO_PUBLIC_GOOGLE_MAPS_ANDROID_KEY). Otherwise suggestions will stay empty.
- */
+import api from './api';
+
+/** Still used for direct Directions fallback flow. */
 const API_KEY = process.env.EXPO_PUBLIC_GOOGLE_MAPS_ANDROID_KEY || '';
 
 export type PlacePrediction = {
@@ -17,15 +15,13 @@ export async function getPlaceSuggestions(
   opts?: { sessionToken?: string }
 ): Promise<PlacePrediction[]> {
   const trimmed = input?.trim() || '';
-  if (trimmed.length < 2 || !API_KEY) return [];
+  if (trimmed.length < 2) return [];
 
   try {
     const tokenPart = opts?.sessionToken ? `&sessiontoken=${encodeURIComponent(opts.sessionToken)}` : '';
-    const url =
-      `https://maps.googleapis.com/maps/api/place/autocomplete/json?input=${encodeURIComponent(trimmed)}&key=${API_KEY}` +
-      tokenPart;
-    const res = await fetch(url);
-    const data = await res.json();
+    const data = await api.get<any>(
+      `/places/autocomplete?query=${encodeURIComponent(trimmed)}${tokenPart}`
+    );
     if (data.status !== 'OK' && data.status !== 'ZERO_RESULTS') return [];
     const predictions = data.predictions || [];
     return predictions.map((p: { description: string; place_id: string }) => ({
@@ -47,7 +43,24 @@ export async function getPlaceSuggestions(
  * - For search/autocomplete: **Places API** (optional but recommended)
  */
 export async function geocodeAddress(address: string): Promise<PlaceCoords | null> {
-  return geocodeInternal(address, { restrictCountry: 'IN' });
+  const trimmed = address?.trim() || '';
+  if (!trimmed) return null;
+  try {
+    const data = (await api.get<any>(
+      `/places/geocode?query=${encodeURIComponent(trimmed)}`
+    )) as {
+      status?: string;
+      results?: { geometry?: { location?: { lat: number; lng: number } } }[];
+    };
+    const loc = data?.results?.[0]?.geometry?.location;
+    if (data?.status !== 'OK' || !loc) return null;
+    const latitude = Number(loc.lat);
+    const longitude = Number(loc.lng);
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+    return { latitude, longitude };
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -57,80 +70,22 @@ export async function geocodeAddress(address: string): Promise<PlaceCoords | nul
 export async function geocodeAddressWithFallbacks(address: string): Promise<PlaceCoords | null> {
   const trimmed = address?.trim() || '';
   if (!trimmed) return null;
-
-  const first = await geocodeInternal(trimmed, { restrictCountry: 'IN' });
-  if (first) return first;
-
-  const alreadyHasIndia = /,\s*india\b/i.test(trimmed);
-  if (!alreadyHasIndia) {
-    const second = await geocodeInternal(`${trimmed}, India`, { restrictCountry: 'IN' });
-    if (second) return second;
-  }
-
-  const last = await geocodeInternal(trimmed, { restrictCountry: null });
-  if (__DEV__ && !last) {
-    console.warn(
-      '[Geocode] all attempts failed for:',
-      trimmed.length > 40 ? `${trimmed.slice(0, 37)}…` : trimmed,
-      '→ ride search will use TEXT matching only (no map distance rules).'
-    );
-  }
-  return last;
-}
-
-type GeocodeOpts = { restrictCountry: string | null };
-
-async function geocodeInternal(address: string, opts: GeocodeOpts): Promise<PlaceCoords | null> {
-  const trimmed = address?.trim() || '';
-  if (!trimmed) {
-    if (__DEV__) console.log('[Geocode] skipped — empty address');
-    return null;
-  }
-  if (!API_KEY) {
-    if (__DEV__) {
-      console.warn(
-        '[Geocode] NOT WORKING — EXPO_PUBLIC_GOOGLE_MAPS_ANDROID_KEY is empty. Set it in .env and run: npx expo start --clear'
-      );
-    }
-    return null;
-  }
   try {
-    let url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(trimmed)}&key=${API_KEY}`;
-    if (opts.restrictCountry) {
-      url += `&components=country:${encodeURIComponent(opts.restrictCountry)}`;
-    }
-    const res = await fetch(url);
-    const data = (await res.json()) as {
+    const data = (await api.get<any>(
+      `/places/geocode-with-fallbacks?query=${encodeURIComponent(trimmed)}`
+    )) as {
       status?: string;
-      error_message?: string;
       results?: { geometry?: { location?: { lat: number; lng: number } } }[];
     };
-    const status = data.status ?? 'UNKNOWN';
     const loc = data.results?.[0]?.geometry?.location;
-
-    if (status !== 'OK' || !loc) {
-      if (__DEV__) {
-        console.warn('[Geocode] failed', {
-          query: trimmed.length > 55 ? `${trimmed.slice(0, 52)}…` : trimmed,
-          countryFilter: opts.restrictCountry ?? 'off',
-          status,
-          error_message: data.error_message,
-        });
-      }
+    if (data.status !== 'OK' || !loc) {
+      if (__DEV__) console.warn('[Geocode] all attempts failed for:', trimmed);
       return null;
     }
-
     const coords = { latitude: Number(loc.lat), longitude: Number(loc.lng) };
-    if (__DEV__) {
-      console.log('[Geocode] OK', {
-        query: trimmed.length > 45 ? `${trimmed.slice(0, 42)}…` : trimmed,
-        lat: coords.latitude.toFixed(5),
-        lng: coords.longitude.toFixed(5),
-      });
-    }
+    if (__DEV__) console.log('[Geocode] OK', { lat: coords.latitude, lng: coords.longitude });
     return coords;
-  } catch (e) {
-    if (__DEV__) console.warn('[Geocode] request error', e);
+  } catch {
     return null;
   }
 }
@@ -147,15 +102,12 @@ export async function getPlaceDetails(
   placeId: string,
   opts?: { sessionToken?: string }
 ): Promise<PlaceDetails | null> {
-  if (!placeId || !API_KEY) return null;
+  if (!placeId) return null;
   try {
     const tokenPart = opts?.sessionToken ? `&sessiontoken=${encodeURIComponent(opts.sessionToken)}` : '';
-    const url =
-      `https://maps.googleapis.com/maps/api/place/details/json?place_id=${encodeURIComponent(placeId)}` +
-      `&fields=geometry,name,formatted_address&key=${API_KEY}` +
-      tokenPart;
-    const res = await fetch(url);
-    const data = await res.json();
+    const data = await api.get<any>(
+      `/places/place-details?placeId=${encodeURIComponent(placeId)}${tokenPart}`
+    );
     if (data.status !== 'OK' || !data.result?.geometry?.location) return null;
     const loc = data.result.geometry.location;
     const latitude = Number(loc.lat);
@@ -201,17 +153,20 @@ export type DirectionAlternative = {
 export async function nearbyPlaces(
   latitude: number,
   longitude: number,
-  radiusMeters = 1400
+  radiusMeters = 1400,
+  opts?: { keyword?: string; type?: string }
 ): Promise<NearbyPlace[]> {
-  if (!API_KEY) return [];
   try {
-    const url =
-      `https://maps.googleapis.com/maps/api/place/nearbysearch/json` +
-      `?location=${latitude},${longitude}` +
-      `&radius=${Math.min(Math.max(radiusMeters, 200), 5000)}` +
-      `&key=${API_KEY}`;
-    const res = await fetch(url);
-    const data = await res.json();
+    const radius = Math.min(Math.max(radiusMeters, 200), 5000);
+    const keywordPart = opts?.keyword ? `&keyword=${encodeURIComponent(opts.keyword)}` : '';
+    const typePart = opts?.type ? `&type=${encodeURIComponent(opts.type)}` : '';
+    const data = await api.get<any>(
+      `/places/nearby?lat=${encodeURIComponent(String(latitude))}` +
+        `&lng=${encodeURIComponent(String(longitude))}` +
+        `&radius=${encodeURIComponent(String(radius))}` +
+        keywordPart +
+        typePart
+    );
     if (data.status !== 'OK' && data.status !== 'ZERO_RESULTS') return [];
     const results = data.results || [];
     return results.slice(0, 18).map(

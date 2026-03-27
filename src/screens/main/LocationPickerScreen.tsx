@@ -1118,8 +1118,9 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.backgroundSecondary,
     borderWidth: 1,
     borderColor: COLORS.border,
-    borderRadius: 14,
-    paddingHorizontal: 8,
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    minHeight: 46,
   },
   searchBackButton: {
     width: 32,
@@ -1135,6 +1136,7 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: COLORS.text,
     flex: 1,
+    textAlignVertical: 'center',
   },
   searchInputEmbedded: {
     borderWidth: 0,
@@ -1144,10 +1146,10 @@ const styles = StyleSheet.create({
   suggestionsList: {
     maxHeight: 180,
     marginTop: 8,
-    backgroundColor: COLORS.background,
+    backgroundColor: 'rgba(255,255,255,0.72)',
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: COLORS.border,
+    borderColor: 'rgba(226,232,240,0.85)',
     overflow: 'hidden',
   },
   suggestionsListPublish: {
@@ -1163,7 +1165,7 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: COLORS.borderLight,
-    backgroundColor: COLORS.backgroundSecondary,
+    backgroundColor: 'rgba(248,250,252,0.72)',
   },
   sectionHeaderText: {
     fontSize: 13,
@@ -1179,6 +1181,7 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: COLORS.borderLight,
     gap: 12,
+    backgroundColor: 'rgba(255,255,255,0.35)',
   },
   recentRowLeft: {
     width: 18,

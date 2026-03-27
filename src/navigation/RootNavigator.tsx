@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Animated, Text, View } from 'react-native';
+import { ActivityIndicator, Animated, Easing, Text, View } from 'react-native';
 import { NavigationContainer, useNavigationContainerRef } from '@react-navigation/native';
 import { useAuth } from '../contexts/AuthContext';
 import { useLocation } from '../contexts/LocationContext';
@@ -21,21 +21,17 @@ export default function RootNavigator(): React.JSX.Element | null {
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const navigationRef = useNavigationContainerRef<MainTabParamList>();
   const [navReady, setNavReady] = useState(false);
-  const MIN_HOME_GATE_MS = 1000;
-  const authBecameAuthenticatedAtRef = useRef<number | null>(null);
-  const [showHomeGate, setShowHomeGate] = useState(false);
-
-  // Home gate loader: prevents abrupt/empty transitions after login/signup.
-  useEffect(() => {
-    if (!isAuthenticated) {
-      authBecameAuthenticatedAtRef.current = null;
-      setShowHomeGate(false);
-      fadeAnim.setValue(0);
-      return;
-    }
-    authBecameAuthenticatedAtRef.current = Date.now();
-    setShowHomeGate(true);
-  }, [isAuthenticated, fadeAnim]);
+  const [startupGateOpen, setStartupGateOpen] = useState(true);
+  const startupMountedAtRef = useRef<number>(Date.now());
+  const STARTUP_MIN_MS = 500;
+  const [authHomeGateOpen, setAuthHomeGateOpen] = useState(false);
+  const [logoutGateOpen, setLogoutGateOpen] = useState(false);
+  const prevIsAuthenticatedRef = useRef<boolean>(false);
+  const AUTH_HOME_GATE_MS = 420;
+  const LOGOUT_GATE_MS = 360;
+  const authTransitionFrameGate =
+    !prevIsAuthenticatedRef.current && isAuthenticated && !isLoading;
+  const showAuthGate = authHomeGateOpen || authTransitionFrameGate;
 
   usePushNotifications(
     navigationRef,
@@ -49,35 +45,60 @@ export default function RootNavigator(): React.JSX.Element | null {
       // Fetch location when user logs in so it's ready when they open picker
       prefetchLocation();
     }
-  }, [isAuthenticated, fadeAnim, prefetchLocation]);
+  }, [isAuthenticated, prefetchLocation]);
 
   useEffect(() => {
-    if (!isAuthenticated || !navReady) return;
-    if (authBecameAuthenticatedAtRef.current == null) return;
-    const elapsed = Date.now() - authBecameAuthenticatedAtRef.current;
-    const remaining = Math.max(0, MIN_HOME_GATE_MS - elapsed);
-    const t = setTimeout(() => setShowHomeGate(false), remaining);
-    return () => clearTimeout(t);
-  }, [isAuthenticated, navReady]);
+    const wasAuthenticated = prevIsAuthenticatedRef.current;
+    prevIsAuthenticatedRef.current = isAuthenticated;
+
+    // Show a short "Thinking" gate specifically when transitioning
+    // from Auth screens to Main tabs.
+    if (!wasAuthenticated && isAuthenticated && !isLoading) {
+      setAuthHomeGateOpen(true);
+      const t = setTimeout(() => setAuthHomeGateOpen(false), AUTH_HOME_GATE_MS);
+      return () => clearTimeout(t);
+    }
+    // Show a short shutdown gate before showing Auth screens.
+    if (wasAuthenticated && !isAuthenticated && !isLoading) {
+      setLogoutGateOpen(true);
+      const t = setTimeout(() => setLogoutGateOpen(false), LOGOUT_GATE_MS);
+      return () => clearTimeout(t);
+    }
+    if (!isAuthenticated) {
+      setAuthHomeGateOpen(false);
+    }
+  }, [isAuthenticated, isLoading]);
 
   useEffect(() => {
-    // Ensure fade doesn't start too early. When gate is visible, keep opacity at 0.
-    if (!isAuthenticated || showHomeGate) {
-      fadeAnim.setValue(0);
+    if (!isAuthenticated || showAuthGate) {
+      fadeAnim.setValue(1);
       return;
     }
+    fadeAnim.setValue(0);
     Animated.timing(fadeAnim, {
       toValue: 1,
-      duration: 220,
+      duration: 320,
+      easing: Easing.out(Easing.cubic),
       useNativeDriver: true,
     }).start();
-  }, [isAuthenticated, showHomeGate, fadeAnim]);
+  }, [isAuthenticated, showAuthGate, fadeAnim]);
 
-  if (isLoading) {
+  useEffect(() => {
+    if (!startupGateOpen) return;
+    if (isLoading) return;
+    const elapsed = Date.now() - startupMountedAtRef.current;
+    const remaining = Math.max(0, STARTUP_MIN_MS - elapsed);
+    const t = setTimeout(() => setStartupGateOpen(false), remaining);
+    return () => clearTimeout(t);
+  }, [isLoading, startupGateOpen]);
+
+  if (startupGateOpen || (isAuthenticated && showAuthGate) || logoutGateOpen) {
     return (
       <View style={{ flex: 1, backgroundColor: COLORS.backgroundSecondary, alignItems: 'center', justifyContent: 'center' }}>
         <ActivityIndicator size="large" color={COLORS.primary} />
-        <Text style={{ marginTop: 12, color: COLORS.textSecondary, fontWeight: '600' }}>Loading…</Text>
+        <Text style={{ marginTop: 12, color: COLORS.textSecondary, fontWeight: '600' }}>
+          {logoutGateOpen ? 'Shutting down' : 'Thinking'}
+        </Text>
       </View>
     );
   }
@@ -90,18 +111,22 @@ export default function RootNavigator(): React.JSX.Element | null {
       }}
     >
       {isAuthenticated ? (
-        <View style={{ flex: 1 }}>
-          {showHomeGate ? (
-            <View style={{ flex: 1, backgroundColor: COLORS.backgroundSecondary, alignItems: 'center', justifyContent: 'center' }}>
-              <ActivityIndicator size="large" color={COLORS.primary} />
-              <Text style={{ marginTop: 12, color: COLORS.textSecondary, fontWeight: '600' }}>Preparing home…</Text>
-            </View>
-          ) : (
-            <Animated.View style={{ flex: 1, opacity: fadeAnim }}>
-              <BottomTabs />
-            </Animated.View>
-          )}
-        </View>
+        <Animated.View
+          style={{
+            flex: 1,
+            opacity: fadeAnim,
+            transform: [
+              {
+                translateY: fadeAnim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [14, 0],
+                }),
+              },
+            ],
+          }}
+        >
+          <BottomTabs />
+        </Animated.View>
       ) : (
         <AuthNavigator />
       )}

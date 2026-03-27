@@ -16,6 +16,7 @@ import {
   Platform,
   Alert,
   Keyboard,
+  BackHandler,
 } from 'react-native';
 import { useFocusEffect, useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -463,6 +464,24 @@ export default function YourRides(): React.JSX.Element {
   const [ratedRideIds, setRatedRideIds] = useState<Set<string>>(new Set());
   const ratingCheckInFlightRef = useRef<Set<string>>(new Set());
 
+  // Block "navigate back" while the initial loader is visible.
+  // Prevents accidental stack pops if the user taps back during refresh/loading.
+  const isInitialLoaderVisible = loading && rides.length === 0;
+  useEffect(() => {
+    if (!isInitialLoaderVisible) return;
+
+    const unsubscribe = navigation.addListener('beforeRemove', (e) => {
+      e.preventDefault();
+    });
+
+    const backSub = BackHandler.addEventListener('hardwareBackPress', () => true);
+
+    return () => {
+      unsubscribe();
+      backSub.remove();
+    };
+  }, [isInitialLoaderVisible, navigation]);
+
   useEffect(() => {
     const tabNav = navigation.getParent();
     if (!tabNav) return;
@@ -873,25 +892,10 @@ export default function YourRides(): React.JSX.Element {
       }
 
       if (isOwner && activePassengers.length > 0) {
+        // Do not block opening with pre-check calls for owner flow.
+        // Some backends may return broad "rated" results, which can falsely mark all passengers as rated.
+        // Duplicate submissions are still guarded by backend (409) in submit handler.
         const ratedForRide = new Set(ratedTargetsByRide[ride.id] ?? []);
-        await Promise.all(
-          activePassengers.map(async (p) => {
-            const passengerId = (p.userId ?? '').trim();
-            if (!passengerId || ratedForRide.has(passengerId)) return;
-            try {
-              const rated = await hasCurrentUserRatedRide(ride.id, currentUserId, passengerId);
-              if (rated) ratedForRide.add(passengerId);
-            } catch {
-              // Keep modal usable even if /check fails.
-            }
-          })
-        );
-        setRatedTargetsByRide((prev) => {
-          const existing = prev[ride.id] ?? [];
-          const merged = new Set(existing);
-          ratedForRide.forEach((id) => merged.add(id));
-          return { ...prev, [ride.id]: [...merged] };
-        });
         if (ratedForRide.size >= activePassengers.length) {
           showToast({
             title: 'Already rated',
@@ -946,6 +950,48 @@ export default function YourRides(): React.JSX.Element {
         'Please select a passenger to rate for this completed ride.'
       );
       return;
+    }
+
+    // Targeted duplicate guard for owner flow:
+    // check only the selected passenger to avoid backend 409/noisy network warnings.
+    if (isOwner && toUserId) {
+      try {
+        const alreadyRatedSelected = await hasCurrentUserRatedRide(ratingRide.id, currentUserId, toUserId);
+        if (alreadyRatedSelected) {
+          setRatedTargetsByRide((prev) => {
+            const existing = prev[ratingRide.id] ?? [];
+            if (existing.includes(toUserId)) return prev;
+            return { ...prev, [ratingRide.id]: [...existing, toUserId] };
+          });
+          const existingRated = new Set(ratedTargetsByRide[ratingRide.id] ?? []);
+          existingRated.add(toUserId);
+          if (existingRated.size >= ownerCandidatesCount) {
+            closeRatingSheet();
+            showToast({
+              title: 'Already rated',
+              message: 'All passengers for this ride are rated.',
+              variant: 'info',
+            });
+            return;
+          }
+          showToast({
+            title: 'Already rated',
+            message: selectedRateTargetName
+              ? `${selectedRateTargetName} is already rated for this ride.`
+              : 'This passenger is already rated for this ride.',
+            variant: 'info',
+          });
+          if (ownerCandidatesCount > 1) {
+            setSelectedRateTargetUserId('');
+            setSelectedRateTargetName('');
+          } else {
+            closeRatingSheet();
+          }
+          return;
+        }
+      } catch {
+        // Non-blocking: continue and let submit endpoint enforce dedupe.
+      }
     }
 
     setRatingSubmitting(true);
@@ -1013,6 +1059,17 @@ export default function YourRides(): React.JSX.Element {
             if (existing.includes(toUserId)) return prev;
             return { ...prev, [ratingRide.id]: [...existing, toUserId] };
           });
+          const existingRated = new Set(ratedTargetsByRide[ratingRide.id] ?? []);
+          existingRated.add(toUserId);
+          if (existingRated.size >= ownerCandidatesCount) {
+            closeRatingSheet();
+            showToast({
+              title: 'Already rated',
+              message: 'All passengers for this ride are rated.',
+              variant: 'info',
+            });
+            return;
+          }
           setRatingStars(0);
           setRatingReview('');
           setSelectedRateTargetUserId('');
@@ -1315,6 +1372,9 @@ export default function YourRides(): React.JSX.Element {
                           if (isRated) return;
                           setSelectedRateTargetUserId(uid);
                           setSelectedRateTargetName(name);
+                          // Reset inputs when changing target passenger.
+                          setRatingStars(0);
+                          setRatingReview('');
                         }}
                         disabled={isRated}
                         activeOpacity={isRated ? 1 : 0.75}
@@ -1367,7 +1427,7 @@ export default function YourRides(): React.JSX.Element {
                       <Ionicons
                         name={ratingStars >= s ? 'star' : 'star-outline'}
                         size={34}
-                        color={ratingStars >= s ? '#f59e0b' : COLORS.border}
+                    color={COLORS.warning}
                       />
                     </TouchableOpacity>
                   ))}
@@ -1702,7 +1762,7 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.primary,
   },
   ratingSubmitBtnDisabled: {
-    backgroundColor: '#a5a8ea',
+    backgroundColor: 'rgba(34,197,94,0.45)',
   },
   ratingSubmitText: {
     fontSize: 16,

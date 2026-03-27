@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   StyleSheet,
   Text,
@@ -37,6 +37,25 @@ export default function Register(): React.JSX.Element {
     username?: string;
     password?: string;
   }>({});
+  const scrollRef = useRef<ScrollView | null>(null);
+  const passwordFieldYRef = useRef(0);
+
+  const scrollFieldIntoView = () => {
+    setTimeout(() => {
+      scrollRef.current?.scrollToEnd({ animated: true });
+    }, 80);
+  };
+
+  const scrollPasswordIntoView = () => {
+    setTimeout(() => {
+      const target = Math.max(0, passwordFieldYRef.current - 24);
+      scrollRef.current?.scrollTo({ y: target, animated: true });
+    }, 80);
+    setTimeout(() => {
+      const target = Math.max(0, passwordFieldYRef.current - 24);
+      scrollRef.current?.scrollTo({ y: target, animated: true });
+    }, 260);
+  };
 
   const validate = (): boolean => {
     const next: typeof errors = {};
@@ -97,15 +116,18 @@ export default function Register(): React.JSX.Element {
   };
 
   return (
-    <SafeAreaView style={styles.safe} edges={['bottom']}>
+    <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
       <KeyboardAvoidingView
         style={styles.container}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 16 : 0}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 16 : 20}
       >
         <ScrollView
+          ref={scrollRef}
           contentContainerStyle={styles.scroll}
           keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="none"
+          automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
           showsVerticalScrollIndicator={false}
         >
           <View style={styles.header}>
@@ -149,16 +171,24 @@ export default function Register(): React.JSX.Element {
               autoCapitalize="words"
               autoComplete="name"
               editable={!isLoading}
+              onFocus={scrollFieldIntoView}
             />
-            <Input
-              label="Password"
-              value={password}
-              onChangeText={setPassword}
-              placeholder="Min 8 characters, letter + number"
-              error={errors.password}
-              secureTextEntry
-              editable={!isLoading}
-            />
+            <View
+              onLayout={(e) => {
+                passwordFieldYRef.current = e.nativeEvent.layout.y;
+              }}
+            >
+              <Input
+                label="Password"
+                value={password}
+                onChangeText={setPassword}
+                placeholder="Min 8 characters, letter + number"
+                error={errors.password}
+                secureTextEntry={true}
+                editable={!isLoading}
+                onFocus={scrollPasswordIntoView}
+              />
+            </View>
 
             <Button
               title={isLoading ? 'Signing up…' : 'Sign up'}
@@ -168,7 +198,6 @@ export default function Register(): React.JSX.Element {
               style={styles.button}
             />
           </View>
-
           <View style={styles.footer}>
             <Text style={styles.footerText}>Already have an account? </Text>
             <TouchableOpacity
@@ -196,7 +225,7 @@ const styles = StyleSheet.create({
   scroll: {
     flexGrow: 1,
     paddingHorizontal: 24,
-    paddingTop: 24,
+    paddingTop: 12,
     paddingBottom: 32,
   },
   header: {
@@ -230,7 +259,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
   },
   form: {
-    marginBottom: 24,
+    marginBottom: 18,
   },
   button: {
     marginTop: 8,

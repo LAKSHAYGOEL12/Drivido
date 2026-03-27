@@ -47,10 +47,10 @@ const MAX_PASSENGERS = 4;
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-const CLOCK_SIZE = 200;
+const CLOCK_SIZE = 232;
 const CLOCK_CENTER = CLOCK_SIZE / 2;
-const HOUR_RADIUS = 75;
-const MINUTE_RADIUS = 44;
+const HOUR_OUTER_RADIUS = 90;
+const HOUR_INNER_RADIUS = 60;
 const MINUTE_OPTIONS = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55] as const;
 const MIN_LEAD_MINUTES = 30;
 
@@ -80,9 +80,7 @@ function getCalendarDays(year: number, month: number): (number | null)[] {
 }
 
 function formatTimeLabel(hour: number, minute: number): string {
-  const h = hour % 12 || 12;
-  const ampm = hour < 12 ? 'AM' : 'PM';
-  return `${h.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')} ${ampm}`;
+  return `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
 }
 
 function getMinTimeForToday(): { hour: number; minute: number } {
@@ -191,8 +189,7 @@ export default function PublishRide(): React.JSX.Element {
   const [showPassengersModal, setShowPassengersModal] = useState(false);
   const [calendarMonth, setCalendarMonth] = useState(() => new Date());
   const [clockMode, setClockMode] = useState<'hour' | 'minute'>('hour');
-  const [clockHour12, setClockHour12] = useState(9);
-  const [clockAM, setClockAM] = useState(true);
+  const [clockHour24, setClockHour24] = useState(9);
   const [clockMinute, setClockMinute] = useState(30);
   const [timeModalToast, setTimeModalToast] = useState('');
   const timeModalToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -277,53 +274,46 @@ export default function PublishRide(): React.JSX.Element {
     setCalendarMonth((m) => new Date(m.getFullYear(), m.getMonth() + 1));
   };
 
-  const clockTo24h = useCallback((h12: number, am: boolean, min: number) => {
-    const hour24 = h12 === 12 ? (am ? 0 : 12) : (am ? h12 : h12 + 12);
-    return { hour: hour24, minute: min };
-  }, []);
-
   const openTimeModal = () => {
-    const h = selectedTime.hour;
-    const m = selectedTime.minute;
-    setClockHour12(h % 12 || 12);
-    setClockAM(h < 12);
-    setClockMinute(Math.round(m / 5) * 5 % 60);
+    setClockHour24(selectedTime.hour);
+    setClockMinute(Math.round(selectedTime.minute / 5) * 5 % 60);
     setClockMode('hour');
     setShowTimeModal(true);
   };
 
-  const applyClockTime = useCallback((h12: number, am: boolean, min: number) => {
-    const { hour, minute } = clockTo24h(h12, am, min);
+  const applyClockTime = useCallback((hour: number, minute: number) => {
     setSelectedTime({ hour, minute });
     setTimeLabel(formatTimeLabel(hour, minute));
-  }, [clockTo24h]);
+  }, []);
 
   const closeTimeModal = useCallback(() => {
-    const candidate = clockTo24h(clockHour12, clockAM, clockMinute);
+    const candidate = { hour: clockHour24, minute: clockMinute };
     if (isSelectedDateTimeTooSoon(selectedDate, candidate, MIN_LEAD_MINUTES)) {
       if (timeModalToastTimerRef.current) clearTimeout(timeModalToastTimerRef.current);
       setTimeModalToast('Choose a time at least 30 minutes from now.');
       timeModalToastTimerRef.current = setTimeout(() => setTimeModalToast(''), 1800);
       return;
     }
-    applyClockTime(clockHour12, clockAM, clockMinute);
+    applyClockTime(clockHour24, clockMinute);
     setShowTimeModal(false);
-  }, [applyClockTime, clockHour12, clockAM, clockMinute, clockTo24h, selectedDate]);
+  }, [applyClockTime, clockHour24, clockMinute, selectedDate]);
 
   const handleClockPress = useCallback((locationX: number, locationY: number) => {
     const dx = locationX - CLOCK_CENTER;
     const dy = locationY - CLOCK_CENTER;
+    const radius = Math.sqrt(dx * dx + dy * dy);
     let angleDeg = (Math.atan2(dy, dx) * 180 / Math.PI) + 90;
     if (angleDeg < 0) angleDeg += 360;
     if (clockMode === 'hour') {
-      let h12 = Math.round(angleDeg / 30) % 12;
-      if (h12 === 0) h12 = 12;
-      setClockHour12(h12);
+      const dialHour = Math.round(angleDeg / 30) % 12;
+      const isInnerRing = radius < (HOUR_OUTER_RADIUS + HOUR_INNER_RADIUS) / 2;
+      const nextHour24 = isInnerRing ? dialHour + 12 : dialHour;
+      setClockHour24(nextHour24);
       setClockMode('minute');
     } else {
       const index = Math.round(angleDeg / 30) % 12;
       const minute = MINUTE_OPTIONS[index];
-      const candidate = clockTo24h(clockHour12, clockAM, minute);
+      const candidate = { hour: clockHour24, minute };
       if (isSelectedDateTimeTooSoon(selectedDate, candidate, MIN_LEAD_MINUTES)) {
         if (timeModalToastTimerRef.current) clearTimeout(timeModalToastTimerRef.current);
         setTimeModalToast('Choose a time at least 30 minutes from now.');
@@ -331,10 +321,10 @@ export default function PublishRide(): React.JSX.Element {
         return;
       }
       setClockMinute(minute);
-      applyClockTime(clockHour12, clockAM, minute);
+      applyClockTime(clockHour24, minute);
       setShowTimeModal(false);
     }
-  }, [clockMode, clockHour12, clockAM, applyClockTime, clockTo24h, selectedDate]);
+  }, [clockMode, clockHour24, applyClockTime, selectedDate]);
 
   const handleSelectTime = (hour: number, minute: number) => {
     if (isSelectedDateTimeTooSoon(selectedDate, { hour, minute }, MIN_LEAD_MINUTES)) {
@@ -410,8 +400,19 @@ export default function PublishRide(): React.JSX.Element {
     } catch {
       setCalendarMonth(new Date());
     }
-    setClockHour12(d.clockHour12);
-    setClockAM(d.clockAM);
+    const draftHour24 =
+      typeof (d as { clockHour24?: unknown }).clockHour24 === 'number'
+        ? Math.max(0, Math.min(23, Math.floor((d as { clockHour24: number }).clockHour24)))
+        : (() => {
+            const h12 = typeof (d as { clockHour12?: unknown }).clockHour12 === 'number'
+              ? Math.max(1, Math.min(12, Math.floor((d as { clockHour12: number }).clockHour12)))
+              : 12;
+            const am = typeof (d as { clockAM?: unknown }).clockAM === 'boolean'
+              ? Boolean((d as { clockAM: boolean }).clockAM)
+              : true;
+            return h12 === 12 ? (am ? 0 : 12) : (am ? h12 : h12 + 12);
+          })();
+    setClockHour24(draftHour24);
     setClockMinute(d.clockMinute);
     schedulePublishDraftCleanup(publishRestoreKey);
     // Don't call setParams(all undefined) — RN dispatches SET_PARAMS with {} and no navigator handles it.
@@ -472,9 +473,7 @@ export default function PublishRide(): React.JSX.Element {
         const m = Math.max(0, Math.min(59, Math.floor(p.selectedTimeMinute)));
         setSelectedTime({ hour: h, minute: m });
         setTimeLabel(formatTimeLabel(h, m));
-        const h12 = h % 12 || 12;
-        setClockHour12(h12);
-        setClockAM(h < 12);
+        setClockHour24(h);
         setClockMinute(Math.round(m / 5) * 5 % 60);
       }
       if (p.selectedRate !== undefined) setRate(String(p.selectedRate));
@@ -542,8 +541,7 @@ export default function PublishRide(): React.JSX.Element {
       instantBooking,
       ladiesOnly: false,
       calendarMonthIso: calendarMonth.toISOString(),
-      clockHour12,
-      clockAM,
+      clockHour24,
       clockMinute,
     });
     navigation.navigate('LocationPicker', {
@@ -576,8 +574,7 @@ export default function PublishRide(): React.JSX.Element {
     setRate('');
     setInstantBooking(true);
     setCalendarMonth(today);
-    setClockHour12(defaultTime.hour % 12 || 12);
-    setClockAM(defaultTime.hour < 12);
+    setClockHour24(defaultTime.hour);
     setClockMinute(Math.round(defaultTime.minute / 5) * 5 % 60);
     setRouteDurationSeconds(0);
     setSelectedRouteDistanceKm(null);
@@ -936,21 +933,25 @@ export default function PublishRide(): React.JSX.Element {
           ) : null}
           <View style={styles.timeModalContent}>
             <Text style={styles.dateModalHeading}>Select time</Text>
-            <Text style={styles.clockTimeDisplay}>
-              {formatTimeLabel(clockTo24h(clockHour12, clockAM, clockMinute).hour, clockMinute)}
-            </Text>
-            <View style={styles.clockAmPmRow}>
+            <View style={styles.clockTimeSelectRow}>
               <TouchableOpacity
-                style={[styles.clockAmPmBtn, clockAM && styles.clockAmPmBtnActive]}
-                onPress={() => setClockAM(true)}
+                style={[styles.clockTimeBox, clockMode === 'hour' && styles.clockTimeBoxActive]}
+                onPress={() => setClockMode('hour')}
+                activeOpacity={0.85}
               >
-                <Text style={[styles.clockAmPmText, clockAM && styles.clockAmPmTextActive]}>AM</Text>
+                <Text style={[styles.clockTimeBoxText, clockMode === 'hour' && styles.clockTimeBoxTextActive]}>
+                  {clockHour24.toString().padStart(2, '0')}
+                </Text>
               </TouchableOpacity>
+              <Text style={styles.clockTimeColon}>:</Text>
               <TouchableOpacity
-                style={[styles.clockAmPmBtn, !clockAM && styles.clockAmPmBtnActive]}
-                onPress={() => setClockAM(false)}
+                style={[styles.clockTimeBox, clockMode === 'minute' && styles.clockTimeBoxActive]}
+                onPress={() => setClockMode('minute')}
+                activeOpacity={0.85}
               >
-                <Text style={[styles.clockAmPmText, !clockAM && styles.clockAmPmTextActive]}>PM</Text>
+                <Text style={[styles.clockTimeBoxText, clockMode === 'minute' && styles.clockTimeBoxTextActive]}>
+                  {clockMinute.toString().padStart(2, '0')}
+                </Text>
               </TouchableOpacity>
             </View>
             <Pressable
@@ -961,20 +962,39 @@ export default function PublishRide(): React.JSX.Element {
               }}
             >
               <View style={[styles.clockFace, { width: CLOCK_SIZE, height: CLOCK_SIZE }]} pointerEvents="none">
-                {clockMode === 'hour' && [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((h) => {
+                {clockMode === 'hour' &&
+                  [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map((h) => {
+                  const angleDeg = h * 30 - 90;
+                  const rad = (angleDeg * Math.PI) / 180;
+                  const x = CLOCK_CENTER + HOUR_OUTER_RADIUS * Math.cos(rad) - 8;
+                  const y = CLOCK_CENTER + HOUR_OUTER_RADIUS * Math.sin(rad) - 9;
+                  return (
+                    <Text key={`outer_${h}`} style={[styles.clockHourLabel, { left: x, top: y }]} pointerEvents="none">
+                      {h}
+                    </Text>
+                  );
+                })}
+                {clockMode === 'hour' &&
+                  [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23].map((h) => {
                   const angleDeg = (h % 12) * 30 - 90;
                   const rad = (angleDeg * Math.PI) / 180;
-                  const x = CLOCK_CENTER + HOUR_RADIUS * Math.cos(rad) - 8;
-                  const y = CLOCK_CENTER + HOUR_RADIUS * Math.sin(rad) - 9;
+                  const x = CLOCK_CENTER + HOUR_INNER_RADIUS * Math.cos(rad) - 8;
+                  const y = CLOCK_CENTER + HOUR_INNER_RADIUS * Math.sin(rad) - 9;
                   return (
-                    <Text key={h} style={[styles.clockHourLabel, { left: x, top: y }]} pointerEvents="none">{h}</Text>
+                    <Text
+                      key={`inner_${h}`}
+                      style={[styles.clockHourLabel, styles.clockHourLabelInner, { left: x, top: y }]}
+                      pointerEvents="none"
+                    >
+                      {h}
+                    </Text>
                   );
                 })}
                 {clockMode === 'minute' && MINUTE_OPTIONS.map((min, idx) => {
                   const angleDeg = idx * 30 - 90;
                   const rad = (angleDeg * Math.PI) / 180;
-                  const x = CLOCK_CENTER + HOUR_RADIUS * Math.cos(rad) - 10;
-                  const y = CLOCK_CENTER + HOUR_RADIUS * Math.sin(rad) - 10;
+                  const x = CLOCK_CENTER + HOUR_OUTER_RADIUS * Math.cos(rad) - 10;
+                  const y = CLOCK_CENTER + HOUR_OUTER_RADIUS * Math.sin(rad) - 10;
                   return (
                     <Text key={min} style={[styles.clockMinuteLabel, { left: x, top: y }]} pointerEvents="none">
                       {min.toString().padStart(2, '0')}
@@ -987,7 +1007,7 @@ export default function PublishRide(): React.JSX.Element {
                     {
                       left: CLOCK_CENTER - 15,
                       top: CLOCK_CENTER - 15,
-                      transform: [{ rotate: `${(clockHour12 % 12) * 30 + (clockMinute / 60) * 30 - 90}deg` }],
+                      transform: [{ rotate: `${(clockHour24 % 12) * 30 + (clockMinute / 60) * 30 - 90}deg` }],
                     },
                   ]}
                 >
@@ -1499,35 +1519,41 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  clockTimeDisplay: {
-    fontSize: 24,
+  clockTimeSelectRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+    gap: 8,
+  },
+  clockTimeBox: {
+    minWidth: 96,
+    height: 68,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.backgroundSecondary,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  clockTimeBoxActive: {
+    borderColor: COLORS.primary,
+    backgroundColor: 'rgba(34,197,94,0.12)',
+  },
+  clockTimeBoxText: {
+    fontSize: 44,
     fontWeight: '700',
     color: COLORS.text,
-    letterSpacing: 0.5,
-    marginBottom: 10,
+    lineHeight: 48,
   },
-  clockAmPmRow: {
-    flexDirection: 'row',
-    marginBottom: 14,
-    backgroundColor: COLORS.borderLight,
-    borderRadius: 12,
-    padding: 4,
+  clockTimeBoxTextActive: {
+    color: COLORS.primary,
   },
-  clockAmPmBtn: {
-    paddingVertical: 10,
-    paddingHorizontal: 28,
-    borderRadius: 10,
-  },
-  clockAmPmBtnActive: {
-    backgroundColor: COLORS.primary,
-  },
-  clockAmPmText: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: COLORS.textSecondary,
-  },
-  clockAmPmTextActive: {
-    color: COLORS.white,
+  clockTimeColon: {
+    fontSize: 44,
+    fontWeight: '700',
+    color: COLORS.text,
+    lineHeight: 48,
+    marginHorizontal: 2,
   },
   clockFaceWrap: {
     width: CLOCK_SIZE,
@@ -1544,16 +1570,21 @@ const styles = StyleSheet.create({
   },
   clockHourLabel: {
     position: 'absolute',
-    width: 16,
-    fontSize: 14,
+    width: 20,
+    fontSize: 15,
     fontWeight: '700',
     color: COLORS.text,
     textAlign: 'center',
   },
+  clockHourLabelInner: {
+    fontSize: 13,
+    width: 20,
+    color: COLORS.textSecondary,
+  },
   clockMinuteLabel: {
     position: 'absolute',
-    width: 20,
-    fontSize: 14,
+    width: 24,
+    fontSize: 15,
     fontWeight: '700',
     color: COLORS.text,
     textAlign: 'center',

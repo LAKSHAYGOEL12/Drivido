@@ -92,14 +92,28 @@ export async function addRecentSearch(
   userKey?: string
 ): Promise<RecentSearchEntry[]> {
   try {
+    // Frontend de-dupe: don't call backend if the same recent already exists locally.
+    // This prevents the "same from/to again" action from creating additional rows.
+    const local = await loadLocal(userKey);
+    const fromN = entry.from.trim().toLowerCase();
+    const toN = entry.to.trim().toLowerCase();
+    const paxN = String(entry.passengers ?? '1').trim();
+    const alreadyExists = local.some((x) => {
+      const xf = x.from.trim().toLowerCase();
+      const xt = x.to.trim().toLowerCase();
+      return xf === fromN && xt === toN && String(x.passengers ?? '1').trim() === paxN;
+    });
+    if (alreadyExists) return local;
+
     await api.post(API.endpoints.recentSearches.upsert, entry);
     return loadRecentSearches(userKey);
   } catch {
     const list = await loadLocal(userKey);
-    const dedupeKey = `${entry.from.trim().toLowerCase()}|${entry.to.trim().toLowerCase()}|${entry.date}`;
+    // Local fallback de-dupe should not depend on date; user wants "same route" to stay one row.
+    const dedupeKey = `${entry.from.trim().toLowerCase()}|${entry.to.trim().toLowerCase()}|${String(entry.passengers ?? '1').trim()}`;
     const filtered = list.filter(
       (x) =>
-        `${x.from.trim().toLowerCase()}|${x.to.trim().toLowerCase()}|${x.date}` !== dedupeKey
+        `${x.from.trim().toLowerCase()}|${x.to.trim().toLowerCase()}|${String(x.passengers ?? '1').trim()}` !== dedupeKey
     );
     const next: RecentSearchEntry[] = [
       {

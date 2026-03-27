@@ -244,7 +244,7 @@ export default function RideListCard({
                 <Ionicons
                   name={showRatedState ? 'checkmark-circle' : 'star-outline'}
                   size={20}
-                  color={showRatedState ? COLORS.success : '#5b5be8'}
+                  color={showRatedState ? COLORS.success : '#6366f1'}
                 />
               </View>
               <Text style={[styles.rateTitle, showRatedState && styles.ratedTitle]}>
@@ -504,14 +504,14 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 18,
-    backgroundColor: '#eef0ff',
+    backgroundColor: 'rgba(34,197,94,0.12)',
     alignItems: 'center',
     justifyContent: 'center',
   },
   rateTitle: {
     fontSize: 14,
     fontWeight: '700',
-    color: '#5b5be8',
+    color: '#6366f1',
   },
   ratedTitle: {
     color: COLORS.success,

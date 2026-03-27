@@ -5,6 +5,7 @@ import type { ProfileStackParamList } from './types';
 import { COLORS } from '../constants/colors';
 import Profile from '../screens/main/Profile';
 import RatingsScreen from '../screens/main/RatingsScreen';
+import UserProfileEntry from '../screens/main/UserProfileEntry';
 
 const Stack = createNativeStackNavigator<ProfileStackParamList>();
 
@@ -23,6 +24,7 @@ export default function ProfileStack(): React.JSX.Element {
       initialRouteName="ProfileHome"
     >
       <Stack.Screen name="ProfileHome" component={Profile} />
+      <Stack.Screen name="ProfileEntry" component={UserProfileEntry} />
       <Stack.Screen name="Ratings" component={RatingsScreen} />
     </Stack.Navigator>
   );

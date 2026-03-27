@@ -26,6 +26,14 @@ import {
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
+function todayDateValue(): string {
+  const t = new Date();
+  const y = t.getFullYear();
+  const m = String(t.getMonth() + 1).padStart(2, '0');
+  const d = String(t.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
 function formatDateLabel(d: Date): string {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -222,7 +230,8 @@ export default function SearchRides(): React.JSX.Element {
   const applyRecentSearch = (e: RecentSearchEntry) => {
     setFrom(e.from);
     setTo(e.to);
-    setDate(e.date);
+    const today = todayDateValue();
+    setDate(today);
     setPassengers(e.passengers);
     setFromLat(e.fromLatitude);
     setFromLon(e.fromLongitude);
@@ -231,7 +240,7 @@ export default function SearchRides(): React.JSX.Element {
     navigation.navigate('SearchResults', {
       from: e.from.trim(),
       to: e.to.trim(),
-      date: e.date,
+      date: today,
       passengers: e.passengers,
       ...(e.fromLatitude != null &&
         e.fromLongitude != null && {
@@ -583,10 +592,10 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     overflow: 'hidden',
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.04,
-    shadowRadius: 4,
-    elevation: 1,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    elevation: 3,
   },
   recentItemMain: {
     flex: 1,
