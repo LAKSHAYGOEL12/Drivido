@@ -1,6 +1,6 @@
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { BottomTabScreenProps } from '@react-navigation/bottom-tabs';
-import type { CompositeScreenProps } from '@react-navigation/native';
+import type { CompositeScreenProps, NavigatorScreenParams } from '@react-navigation/native';
 import type { RideListItem } from '../types/api';
 
 /** Searcher's trip when opening ride detail from search (booking may differ from driver's end-to-end route). */
@@ -63,15 +63,23 @@ export type SearchStackParamList = {
   };
   RideDetail: { ride: RideListItem; passengerSearch?: PassengerSearchParams };
   /** Open another user's profile from ride details without switching bottom tab. */
-  OwnerProfileModal: { userId: string; displayName?: string } | undefined;
+  OwnerProfileModal: {
+    userId: string;
+    displayName?: string;
+    avatarUrl?: string;
+    /** From ride payload for signed-in users (backend); avoids client ratings fetch on profile. */
+    publisherAvgRating?: number;
+    publisherRatingCount?: number;
+  } | undefined;
   /** Ratings view for an arbitrary user opened from ride details modal. */
-  OwnerRatingsModal: { userId: string; displayName?: string } | undefined;
+  OwnerRatingsModal: { userId: string; displayName?: string; avatarUrl?: string } | undefined;
   EditRide: { ride: RideListItem };
   BookPassengerDetail: {
     ride: RideListItem;
     booking: NonNullable<RideListItem['bookings']>[number];
+    requestMode?: boolean;
   };
-  Chat: { ride: RideListItem; otherUserName: string; otherUserId?: string };
+  Chat: { ride: RideListItem; otherUserName: string; otherUserId?: string; otherUserAvatarUrl?: string };
 };
 
 /**
@@ -152,9 +160,15 @@ export type RidesStackParamList = {
     selectedTo?: string;
   };
   /** Open another user's profile from ride details without switching bottom tab. */
-  OwnerProfileModal: { userId: string; displayName?: string } | undefined;
+  OwnerProfileModal: {
+    userId: string;
+    displayName?: string;
+    avatarUrl?: string;
+    publisherAvgRating?: number;
+    publisherRatingCount?: number;
+  } | undefined;
   /** Ratings view for an arbitrary user opened from ride details modal. */
-  OwnerRatingsModal: { userId: string; displayName?: string } | undefined;
+  OwnerRatingsModal: { userId: string; displayName?: string; avatarUrl?: string } | undefined;
   LocationPicker: {
     field?: 'from' | 'to';
     currentFrom?: string;
@@ -171,8 +185,9 @@ export type RidesStackParamList = {
   BookPassengerDetail: {
     ride: RideListItem;
     booking: NonNullable<RideListItem['bookings']>[number];
+    requestMode?: boolean;
   };
-  Chat: { ride: RideListItem; otherUserName: string; otherUserId?: string };
+  Chat: { ride: RideListItem; otherUserName: string; otherUserId?: string; otherUserAvatarUrl?: string };
 };
 
 /**
@@ -180,7 +195,7 @@ export type RidesStackParamList = {
  */
 export type InboxStackParamList = {
   InboxList: undefined;
-  Chat: { ride: RideListItem; otherUserName: string; otherUserId?: string };
+  Chat: { ride: RideListItem; otherUserName: string; otherUserId?: string; otherUserAvatarUrl?: string };
 };
 
 /**
@@ -191,6 +206,7 @@ export type ProfileStackParamList = {
     | {
         userId?: string;
         displayName?: string;
+        avatarUrl?: string;
         _returnToRideDetail?: {
           tab: string;
           params: unknown;
@@ -201,6 +217,7 @@ export type ProfileStackParamList = {
     | {
         userId?: string;
         displayName?: string;
+        avatarUrl?: string;
         _returnToRideDetail?: {
           tab: string;
           params: unknown;
@@ -211,6 +228,8 @@ export type ProfileStackParamList = {
     | {
         userId?: string;
         displayName?: string;
+        /** Profile photo URL when known (e.g. current user from auth). */
+        avatarUrl?: string;
         _returnToRideDetail?: {
           tab: string;
           params: unknown;
@@ -251,11 +270,12 @@ export type MainTabParamList = {
 };
 
 /**
- * Root: Auth stack OR Main tabs
+ * Root: main tabs + auth modals (guests browse Search; book / other tabs open Login).
  */
 export type RootStackParamList = {
-  Auth: undefined;
-  Main: undefined;
+  Main: NavigatorScreenParams<MainTabParamList> | undefined;
+  Login: { reason?: 'book' | 'tab' } | undefined;
+  Register: undefined;
 };
 
 // Screen prop types for use in components
@@ -265,11 +285,15 @@ export type AuthStackScreenProps<T extends keyof AuthStackParamList> =
 export type MainTabScreenProps<T extends keyof MainTabParamList> =
   BottomTabScreenProps<MainTabParamList, T>;
 
-export type RootStackScreenProps<T extends keyof RootStackParamList> =
-  NativeStackScreenProps<RootStackParamList, T>;
+export type RootStackScreenProps<T extends keyof RootStackParamList> = NativeStackScreenProps<
+  RootStackParamList,
+  T
+>;
 
-export type MainTabScreenPropsFromRoot<T extends keyof MainTabParamList> =
-  CompositeScreenProps<
-    MainTabScreenProps<T>,
-    RootStackScreenProps<keyof RootStackParamList>
-  >;
+/** Auth screens mounted on root stack (modal) — same props shape as old Auth stack. */
+export type RootAuthScreenProps<T extends 'Login' | 'Register'> = RootStackScreenProps<T>;
+
+export type MainTabScreenPropsFromRoot<T extends keyof MainTabParamList> = CompositeScreenProps<
+  MainTabScreenProps<T>,
+  RootStackScreenProps<'Main'>
+>;

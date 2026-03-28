@@ -2,7 +2,7 @@ import { useEffect, useRef, useCallback } from 'react';
 import * as Device from 'expo-device';
 import * as Notifications from 'expo-notifications';
 import type { NavigationContainerRef } from '@react-navigation/native';
-import type { MainTabParamList } from '../navigation/types';
+import type { RootStackParamList } from '../navigation/types';
 import { navigateFromNotificationPayload } from '../navigation/handleNotificationNavigation';
 import {
   registerCurrentDevicePushToken,
@@ -27,7 +27,7 @@ Notifications.setNotificationHandler({
  * **Re-register on every session:** POST runs when auth is active so the logged-in user owns the device token.
  */
 export function usePushNotifications(
-  navigationRef: NavigationContainerRef<MainTabParamList> | null,
+  navigationRef: NavigationContainerRef<RootStackParamList> | null,
   navigationReady: boolean,
   shouldRegister: boolean,
   userId: string | null

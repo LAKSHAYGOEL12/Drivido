@@ -19,7 +19,10 @@ import {
 import { CommonActions, useFocusEffect, useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import DatePickerModal from '../../components/common/DatePickerModal';
 import PassengersPickerModal from '../../components/common/PassengersPickerModal';
-import { resetTabsToYourRidesAfterBook } from '../../navigation/navigateAfterBook';
+import {
+  resetTabsToYourRidesAfterBook,
+  resetToYourRidesAfterGuestLoginGate,
+} from '../../navigation/navigateAfterBook';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import type { RidesStackParamList, SearchStackParamList } from '../../navigation/types';
 import { Ionicons } from '@expo/vector-icons';
@@ -58,6 +61,11 @@ import {
   isRideSeatsFull,
 } from '../../utils/rideSeats';
 import { bookingPassengerDisplayName, ridePublisherDisplayName } from '../../utils/displayNames';
+import type { NavigationProp, ParamListBase } from '@react-navigation/native';
+import LoginBottomSheet from '../../components/auth/LoginBottomSheet';
+import UserAvatar from '../../components/common/UserAvatar';
+import { mapRawToBookingRow } from '../../utils/bookingNormalize';
+import { pickAvatarUrlFromRecord, pickPublisherAvatarUrl } from '../../utils/avatarUrl';
 
 type RideDetailRouteProp = RouteProp<RidesStackParamList, 'RideDetail'> | RouteProp<SearchStackParamList, 'RideDetail'>;
 
@@ -71,6 +79,7 @@ type BookingItem = {
   bookedAt: string;
   pickupLocationName?: string;
   destinationLocationName?: string;
+  avatarUrl?: string;
 };
 
 export default function RideDetailScreen(): React.JSX.Element {
@@ -79,7 +88,7 @@ export default function RideDetailScreen(): React.JSX.Element {
   const { height: windowHeight } = useWindowDimensions();
   const scrollRef = useRef<ScrollView>(null);
   const fullRideBlockAlertShownRef = useRef(false);
-  const { user } = useAuth();
+  const { user, isAuthenticated } = useAuth();
   const { ride: initialRide, passengerSearch } = route.params;
   const [ride, setRide] = useState<RideListItem>(initialRide);
   const [cancelling, setCancelling] = useState(false);
@@ -109,27 +118,44 @@ export default function RideDetailScreen(): React.JSX.Element {
   const [ratingSubmitted, setRatingSubmitted] = useState(false);
   /** Passenger booking: number of seats to request (capped by fresh getRideAvailableSeats). */
   const [bookSeatsCount, setBookSeatsCount] = useState(1);
+  const [seatRequests, setSeatRequests] = useState<BookingItem[]>([]);
+  const [seatRequestsLoading, setSeatRequestsLoading] = useState(false);
+  const [seatRequestsHydrated, setSeatRequestsHydrated] = useState(false);
+  const [seatRequestActionBookingId, setSeatRequestActionBookingId] = useState<string | null>(null);
+  const [openingSeatRequestDetailId, setOpeningSeatRequestDetailId] = useState<string | null>(null);
+  const autoRejectPendingInFlightRef = useRef(false);
   const ratingCheckKeyRef = useRef<string | null>(null);
-
-  // NOTE: Do not call ratings API from RideDetail for performance.
-  // Ratings are fetched on the Profile/Ratings screens instead.
 
   const [cancelBookingSheetVisible, setCancelBookingSheetVisible] = useState(false);
   const [cancelBookingBid, setCancelBookingBid] = useState<string | null>(null);
   const [cancelBookingMaxSeats, setCancelBookingMaxSeats] = useState(1);
   const [cancelBookingSeatsToCancel, setCancelBookingSeatsToCancel] = useState(1);
+  const [cancelBookingSheetMode, setCancelBookingSheetMode] = useState<'booking' | 'request'>('booking');
+  const [guestLoginSheetVisible, setGuestLoginSheetVisible] = useState(false);
 
   const currentUserId = (user?.id ?? '').trim();
   const currentUserName = (user?.name ?? '').trim();
   const myPassengerBooking = pickPreferredBookingForUser(passengers, currentUserId);
   const mergedBookingStatus = ride.myBookingStatus;
-  const hasMergedActiveBooking =
+  const normalizedMergedBookingStatus = String(mergedBookingStatus ?? '').trim().toLowerCase();
+  const hasMergedConfirmedBooking =
     mergedBookingStatus != null &&
-    String(mergedBookingStatus).trim() !== '' &&
-    !bookingIsCancelled(mergedBookingStatus);
-  /** Include merged list status so we’re not “not booked” before detail bookings[] loads. */
+    normalizedMergedBookingStatus !== '' &&
+    !bookingIsCancelled(mergedBookingStatus) &&
+    normalizedMergedBookingStatus !== 'pending' &&
+    normalizedMergedBookingStatus !== 'rejected';
+  const myBookingStatusNormalized = String(
+    myPassengerBooking?.status ?? mergedBookingStatus ?? ''
+  ).trim().toLowerCase();
+  const isMyBookingPending = myBookingStatusNormalized === 'pending';
+  const isMyBookingRejected = myBookingStatusNormalized === 'rejected';
+  /** Include merged list status so we’re not “not booked” before detail bookings[] loads. Pending is handled separately. */
   const isBookedByMe = Boolean(
-    (myPassengerBooking && !bookingIsCancelled(myPassengerBooking.status)) || hasMergedActiveBooking
+    (myPassengerBooking &&
+      !bookingIsCancelled(myPassengerBooking.status) &&
+      String(myPassengerBooking.status ?? '').trim().toLowerCase() !== 'pending' &&
+      String(myPassengerBooking.status ?? '').trim().toLowerCase() !== 'rejected') ||
+      hasMergedConfirmedBooking
   );
   const userHasPassengerBookingRow = passengers.some(
     (b) => (b.userId ?? '').trim() === currentUserId
@@ -153,11 +179,34 @@ export default function RideDetailScreen(): React.JSX.Element {
   const isPastRide = rideIsCompleted || isRidePastArrivalWindow(ride);
   /** Cancelled rides may still be “upcoming” by time — hide edit/cancel anyway. */
   const isOwnerRideCancelled = isOwnerStrict && isRideCancelledByOwner(ride);
+  const bookingModeSource = ride as RideListItem & {
+    bookingMode?: string;
+    booking_mode?: string;
+    instantBooking?: boolean;
+    instant_booking?: boolean;
+  };
+  const bookingModeRaw = String(
+    bookingModeSource.bookingMode ??
+      bookingModeSource.booking_mode ??
+      (
+        bookingModeSource.instantBooking === false || bookingModeSource.instant_booking === false
+          ? 'request'
+          : 'instant'
+      )
+  ).trim().toLowerCase();
+  const isRequestBookingMode = bookingModeRaw === 'request';
   /** Whole ride pulled by driver — passenger UI must not imply *they* cancelled or offer re-book. */
   const rideCancelledByOwner = isRideCancelledByOwner(ride);
   const passengerSelfCancelledBooking = isMyBookingCancelled && !rideCancelledByOwner;
 
+  const pendingSeatRequests = seatRequests.filter(
+    (b) => String(b.status ?? '').trim().toLowerCase() === 'pending'
+  );
   const activePassengers = passengers.filter((b) => !bookingIsCancelled(b.status));
+  const confirmedPassengers = passengers.filter((b) => {
+    const s = String(b.status ?? '').trim().toLowerCase();
+    return !bookingIsCancelled(s) && s !== 'pending' && s !== 'rejected';
+  });
   const activePassengerUserIds = new Set(
     activePassengers.map((p) => (p.userId ?? '').trim()).filter(Boolean)
   );
@@ -189,6 +238,16 @@ export default function RideDetailScreen(): React.JSX.Element {
     }
     return [...out, ...byUser.values()];
   })();
+  const passengersForDisplayFiltered = passengersForDisplay.filter((p) => {
+    const status = String(p.status ?? '').trim().toLowerCase();
+    const seats = typeof p.seats === 'number' && Number.isFinite(p.seats) ? Math.floor(p.seats) : 0;
+    if (isOwner) {
+      // Owner list should reflect actually booked passengers only.
+      return status === 'confirmed' && seats > 0;
+    }
+    // Passenger/co-passenger list hides request/rejected rows.
+    return status !== 'pending' && status !== 'rejected';
+  });
   const totalBookingsCount = getRideTotalBookingCount(ride);
   const availableSeatsCount = getRideAvailableSeats(ride);
 
@@ -233,13 +292,15 @@ export default function RideDetailScreen(): React.JSX.Element {
     .filter((s) => typeof s === 'string' && s.trim())
     .join(' • ');
   const totalSeats = ride.seats ?? 0;
-  const bookedSeats = activePassengers.reduce((sum, b) => sum + (b.seats ?? 0), 0);
+  const bookedSeats = confirmedPassengers.reduce((sum, b) => sum + (b.seats ?? 0), 0);
   // Passenger UI should show "X seats booked" (not just "seats left").
   // Active only (exclude cancelled bookings) and sum seat counts for the current viewer.
   const viewerBookedSeats = passengers.reduce((sum, b) => {
     const uid = (b.userId ?? '').trim();
     if (!uid || uid !== currentUserId) return sum;
     if (bookingIsCancelled(b.status)) return sum;
+    const status = String(b.status ?? '').trim().toLowerCase();
+    if (status === 'pending' || status === 'rejected') return sum;
     const rawSeats = typeof b.seats === 'number' && !Number.isNaN(b.seats) ? b.seats : 0;
     const seats = rawSeats > 0 ? Math.max(1, Math.floor(rawSeats)) : 0;
     return sum + seats;
@@ -262,17 +323,50 @@ export default function RideDetailScreen(): React.JSX.Element {
         return parts.join(' · ') || 'Share your ride to get passengers';
       })()
     : vehicleSubtitle;
-  const cardAvatarLetter = (
-    isOwner
-      ? (currentUserName || user?.name || 'Y').trim().charAt(0) || 'Y'
-      : driverName.charAt(0)
-  ).toUpperCase();
+  const cardAvatarUri = (
+    isOwner ? (user?.avatarUrl ?? '').trim() : (ride.publisherAvatarUrl ?? '').trim()
+  ) || undefined;
+  const cardAvatarName = isOwner
+    ? (currentUserName || user?.name || 'You').trim() || 'You'
+    : driverName;
   const firstPassenger = activePassengers[0] ?? passengers[0];
   const chatOtherUserName = isOwner
     ? (firstPassenger ? bookingPassengerDisplayName(firstPassenger, 'Rider') : 'Rider')
     : driverName;
   const chatOtherUserId = isOwner ? firstPassenger?.userId : ride.userId;
   const priceDisplay = formatRidePrice(ride);
+  const normalizeRequestBookingItem = useCallback((raw: unknown): BookingItem | null => {
+    if (!raw || typeof raw !== 'object') return null;
+    const row = raw as Record<string, unknown>;
+    const id = String(row.id ?? row._id ?? '').trim();
+    if (!id) return null;
+    const userObj = row.user && typeof row.user === 'object' ? (row.user as Record<string, unknown>) : null;
+    const userId = String(row.userId ?? row.user_id ?? userObj?._id ?? userObj?.id ?? '').trim();
+    const seatsRaw = row.seats;
+    const seats =
+      typeof seatsRaw === 'number'
+        ? seatsRaw
+        : typeof seatsRaw === 'string' && seatsRaw.trim() !== ''
+          ? Number(seatsRaw)
+          : 1;
+    const status = String(row.status ?? 'pending').trim().toLowerCase() || 'pending';
+    const bookedAt = String(row.createdAt ?? row.bookedAt ?? row.updatedAt ?? new Date().toISOString());
+    const avatarUrl =
+      pickAvatarUrlFromRecord(row) ?? (userObj ? pickAvatarUrlFromRecord(userObj) : undefined);
+    return {
+      id,
+      userId,
+      name: String(row.name ?? row.userName ?? row.username ?? userObj?.name ?? '').trim() || undefined,
+      userName: String(row.userName ?? row.username ?? userObj?.username ?? '').trim() || undefined,
+      seats: Number.isFinite(seats) ? Math.max(1, Math.floor(seats)) : 1,
+      status,
+      bookedAt,
+      pickupLocationName: String(row.pickupLocationName ?? row.pickup ?? '').trim() || undefined,
+      destinationLocationName:
+        String(row.destinationLocationName ?? row.dropoff ?? row.destination ?? '').trim() || undefined,
+      ...(avatarUrl ? { avatarUrl } : {}),
+    };
+  }, []);
 
   const parseSeatPriceNumber = (r: RideListItem): number | null => {
     // Keep in sync with `formatRidePrice` raw selection.
@@ -307,14 +401,14 @@ export default function RideDetailScreen(): React.JSX.Element {
   // - Passenger: use only their active booking seats
   // - Owner: use total booked seats for the ride
   const pricingSeats =
-    isOwner
-      ? bookedSeats
-      : myPassengerBooking && !bookingIsCancelled(myPassengerBooking.status)
+    myPassengerBooking && !bookingIsCancelled(myPassengerBooking.status)
         ? myPassengerBooking.seats ?? 0
         : 0;
   const seatPriceNumber = parseSeatPriceNumber(ride);
   const totalBookedPriceText =
-    seatPriceNumber != null && pricingSeats > 0 ? formatRupees(seatPriceNumber * pricingSeats) : null;
+    !isOwner && seatPriceNumber != null && pricingSeats > 0
+      ? formatRupees(seatPriceNumber * pricingSeats)
+      : null;
   const rideDetailRatingPromptEnabled = false;
   const ratingTargetUserId = (() => {
     if (!currentUserId) return '';
@@ -325,8 +419,9 @@ export default function RideDetailScreen(): React.JSX.Element {
     return (ride.userId ?? '').trim();
   })();
 
-  const fetchRideDetail = useCallback(async (opts?: { force?: boolean }) => {
+  const fetchRideDetail = useCallback(async (opts?: { force?: boolean }): Promise<RideListItem | null> => {
     setDetailLoading(true);
+    let nextRideSnapshot: RideListItem | null = null;
     try {
       const res = await fetchRideDetailRaw(initialRide.id, {
         ...opts,
@@ -343,7 +438,15 @@ export default function RideDetailScreen(): React.JSX.Element {
                 : (root.data as Record<string, unknown>))
             : null) ??
           root;
-        const list = Array.isArray(candidate.bookings) ? (candidate.bookings as BookingItem[]) : [];
+        const list: BookingItem[] = Array.isArray(candidate.bookings)
+          ? (candidate.bookings as unknown[])
+              .map((b) => {
+                if (!b || typeof b !== 'object') return null;
+                const row = mapRawToBookingRow(b as Record<string, unknown>);
+                return row as BookingItem | null;
+              })
+              .filter((x): x is BookingItem => x != null)
+          : [];
         const rawRes = candidate as RideListItem & Record<string, unknown>;
         const pricing = (rawRes.pricing && typeof rawRes.pricing === 'object')
           ? (rawRes.pricing as Record<string, unknown>)
@@ -360,13 +463,28 @@ export default function RideDetailScreen(): React.JSX.Element {
           (pricing?.fare as string | number | undefined);
         setPassengers(list);
         setRide((prev) => {
+          const candidateModeRaw = String(
+            candidate.bookingMode ??
+              candidate.booking_mode ??
+              (
+                candidate.instantBooking === false || candidate.instant_booking === false
+                  ? 'request'
+                  : 'instant'
+              )
+          )
+            .trim()
+            .toLowerCase();
+          const pubAvatar = pickPublisherAvatarUrl(candidate as Record<string, unknown>);
           const next = {
             ...prev,
             ...candidate,
+            bookingMode: candidateModeRaw === 'request' ? 'request' : 'instant',
+            instantBooking: candidateModeRaw !== 'request',
             ...(mergedPrice != null && String(mergedPrice).trim() !== ''
               ? { price: String(mergedPrice) }
               : {}),
             bookings: list,
+            ...(pubAvatar ? { publisherAvatarUrl: pubAvatar } : {}),
           } as RideListItem;
           const mine = list.filter((b) => (b.userId ?? '').trim() === currentUserId);
           if (mine.length > 0) {
@@ -375,7 +493,14 @@ export default function RideDetailScreen(): React.JSX.Element {
             // Avoid carrying stale local state if the server doesn't include this viewer's booking rows.
             // We only trust server-provided `myBookingStatus` when present; otherwise clear it.
             const mergedStatus = (candidate as RideListItem).myBookingStatus;
-            next.myBookingStatus = mergedStatus !== undefined ? mergedStatus : '';
+            if (mergedStatus !== undefined) {
+              next.myBookingStatus = mergedStatus;
+            } else if (String(prev.myBookingStatus ?? '').trim().toLowerCase() === 'pending') {
+              // Keep local pending state when backend detail temporarily omits my_booking_status.
+              next.myBookingStatus = 'pending';
+            } else {
+              next.myBookingStatus = '';
+            }
           }
           if (isRideCancelledByOwner(prev) && !isRideCancelledByOwner(next)) {
             next.status = prev.status ?? 'cancelled';
@@ -404,19 +529,183 @@ export default function RideDetailScreen(): React.JSX.Element {
           if (typeof viRaw === 'boolean') next.viewerIsOwner = viRaw;
           else if (viRaw === 'true') next.viewerIsOwner = true;
           else if (viRaw === 'false') next.viewerIsOwner = false;
+          const candRec = candidate as Record<string, unknown>;
+          const numFrom = (v: unknown): number | undefined => {
+            if (typeof v === 'number' && Number.isFinite(v)) return v;
+            if (typeof v === 'string' && v.trim() !== '') {
+              const n = Number(v);
+              return Number.isFinite(n) ? n : undefined;
+            }
+            return undefined;
+          };
+          const pubAvg =
+            numFrom(candRec.publisherAvgRating) ??
+            numFrom(candRec.publisher_avg_rating) ??
+            numFrom(candRec.driverAvgRating) ??
+            numFrom(candRec.driver_avg_rating);
+          const pubCount =
+            numFrom(candRec.publisherRatingCount) ??
+            numFrom(candRec.publisher_rating_count) ??
+            numFrom(candRec.publisherTotalRatings) ??
+            numFrom(candRec.publisher_total_ratings) ??
+            numFrom(candRec.driverRatingCount) ??
+            numFrom(candRec.driver_rating_count);
+          if (pubAvg != null && pubAvg >= 0 && pubAvg <= 5) {
+            next.publisherAvgRating = Number(pubAvg.toFixed(1));
+          }
+          if (pubCount != null && pubCount >= 0) {
+            next.publisherRatingCount = Math.max(0, Math.floor(pubCount));
+          }
+          nextRideSnapshot = next;
           return next;
         });
       }
     } catch {
       // keep list params; UI may be slightly stale
+      return null;
     } finally {
       setDetailLoading(false);
     }
+    return nextRideSnapshot;
   }, [initialRide.id, currentUserId]);
+
+  const fetchSeatRequests = useCallback(async () => {
+    if (!isOwner || !isRequestBookingMode) {
+      setSeatRequests([]);
+      return;
+    }
+    setSeatRequestsLoading(true);
+    try {
+      const response = await api.get(API.endpoints.rides.bookingRequests(ride.id));
+      const payload = response?.data ?? response;
+      const root = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {};
+      const listRaw =
+        (Array.isArray(root.requests) ? root.requests : null) ??
+        (Array.isArray(root.bookings) ? root.bookings : null) ??
+        (Array.isArray(root.data) ? root.data : null) ??
+        [];
+      const list = listRaw
+        .map((item) => normalizeRequestBookingItem(item))
+        .filter((item): item is BookingItem => Boolean(item))
+        .sort((a, b) => {
+          const at = new Date(a.bookedAt).getTime();
+          const bt = new Date(b.bookedAt).getTime();
+          const aValid = Number.isFinite(at) && !Number.isNaN(at);
+          const bValid = Number.isFinite(bt) && !Number.isNaN(bt);
+          if (aValid && bValid) return at - bt; // Oldest first
+          if (aValid) return -1;
+          if (bValid) return 1;
+          return String(a.id).localeCompare(String(b.id));
+        });
+      setSeatRequests(list);
+    } catch {
+      setSeatRequests([]);
+    } finally {
+      setSeatRequestsLoading(false);
+      setSeatRequestsHydrated(true);
+    }
+  }, [isOwner, isRequestBookingMode, ride.id, normalizeRequestBookingItem]);
+
+  const rejectAllPendingSeatRequests = useCallback(async (rideId: string) => {
+    try {
+      const response = await api.get(API.endpoints.rides.bookingRequests(rideId));
+      const payload = response?.data ?? response;
+      const root = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {};
+      const listRaw =
+        (Array.isArray(root.requests) ? root.requests : null) ??
+        (Array.isArray(root.bookings) ? root.bookings : null) ??
+        (Array.isArray(root.data) ? root.data : null) ??
+        [];
+      const pendingList = listRaw
+        .map((item) => normalizeRequestBookingItem(item))
+        .filter((item): item is BookingItem => Boolean(item))
+        .filter((item) => String(item.status ?? '').trim().toLowerCase() === 'pending');
+      if (pendingList.length > 0) {
+        await Promise.allSettled(
+          pendingList.map((row) => api.patch(API.endpoints.bookings.reject(row.id)))
+        );
+      }
+    } catch {
+      // Best-effort cleanup; view refresh handles final truth from backend.
+    }
+  }, [normalizeRequestBookingItem]);
+
+  const handleSeatRequestAction = useCallback(
+    async (bookingId: string, action: 'approve' | 'reject') => {
+      if (!bookingId) return;
+      setSeatRequestActionBookingId(bookingId);
+      try {
+        if (action === 'approve') {
+          await api.patch(API.endpoints.bookings.approve(bookingId));
+        } else {
+          await api.patch(API.endpoints.bookings.reject(bookingId));
+        }
+        const updatedRide = await fetchRideDetail({ force: true });
+        if (action === 'approve' && updatedRide && getRideAvailableSeats(updatedRide) <= 0) {
+          await rejectAllPendingSeatRequests(updatedRide.id);
+        }
+        await fetchRideDetail({ force: true });
+        await fetchSeatRequests();
+      } catch (e: unknown) {
+        const message =
+          e && typeof e === 'object' && 'message' in e
+            ? String((e as { message: unknown }).message)
+            : action === 'approve'
+              ? 'Could not approve request.'
+              : 'Could not reject request.';
+        Alert.alert('Error', message);
+      } finally {
+        setSeatRequestActionBookingId(null);
+      }
+    },
+    [fetchRideDetail, fetchSeatRequests, rejectAllPendingSeatRequests]
+  );
+
+  const openSeatRequestDetail = useCallback(
+    (bookingItem: BookingItem) => {
+      const bid = String(bookingItem.id ?? '').trim();
+      if (!bid) return;
+      setOpeningSeatRequestDetailId(bid);
+      InteractionManager.runAfterInteractions(() => {
+        setTimeout(() => {
+          try {
+            (navigation as { navigate: (n: string, p: Record<string, unknown>) => void }).navigate(
+              'BookPassengerDetail',
+              { ride, booking: bookingItem, requestMode: true }
+            );
+          } finally {
+            setOpeningSeatRequestDetailId(null);
+          }
+        }, 120);
+      });
+    },
+    [navigation, ride]
+  );
 
   useEffect(() => {
     void fetchRideDetail({ force: true });
   }, [fetchRideDetail]);
+
+  useEffect(() => {
+    if (!isOwner || !isRequestBookingMode) {
+      setSeatRequests([]);
+      return;
+    }
+    setSeatRequestsHydrated(false);
+    void fetchSeatRequests();
+  }, [isOwner, isRequestBookingMode, fetchSeatRequests]);
+
+  useEffect(() => {
+    if (!isOwner || !isRequestBookingMode) return;
+    if (availableSeatsCount > 0) return;
+    if (autoRejectPendingInFlightRef.current) return;
+    autoRejectPendingInFlightRef.current = true;
+    void (async () => {
+      await rejectAllPendingSeatRequests(ride.id);
+      await fetchSeatRequests();
+      autoRejectPendingInFlightRef.current = false;
+    })();
+  }, [isOwner, isRequestBookingMode, availableSeatsCount, ride.id, rejectAllPendingSeatRequests, fetchSeatRequests]);
 
   // Ensure edited values are shown immediately after returning from EditRide.
   useFocusEffect(
@@ -426,6 +715,9 @@ export default function RideDetailScreen(): React.JSX.Element {
       parentNav?.setOptions?.({ tabBarStyle: { display: 'none' } });
 
       void fetchRideDetail({ force: true });
+      if (isOwner && isRequestBookingMode) {
+        void fetchSeatRequests();
+      }
       return () => {
         // Avoid "tab bar flash" during fast transitions (e.g. RideDetail -> OwnerProfileModal).
         // Only restore tab bar after a short delay and only when the next focused nested screen
@@ -458,10 +750,8 @@ export default function RideDetailScreen(): React.JSX.Element {
           }
         }, 180);
       };
-    }, [fetchRideDetail, navigation])
+    }, [fetchRideDetail, fetchSeatRequests, isOwner, isRequestBookingMode, navigation])
   );
-
-  // Ratings are intentionally not fetched here.
 
   useEffect(() => {
     setBookSeatsCount(1);
@@ -582,7 +872,7 @@ export default function RideDetailScreen(): React.JSX.Element {
     });
   }, [route.params, navigation]);
 
-  const handleBook = async () => {
+  const handleBook = async (opts?: { sessionUserId?: string }) => {
     if (rideCancelledByOwner) {
       Alert.alert('Ride cancelled', 'This ride was cancelled by the driver.');
       return;
@@ -597,6 +887,13 @@ export default function RideDetailScreen(): React.JSX.Element {
       return;
     }
     const seatsToBook = Math.min(Math.max(1, bookSeatsCount), cap);
+    /** Guest sheet logs in in same tick as `login()`; context `user` may not exist yet — use id from sheet. */
+    const uid = (opts?.sessionUserId?.trim() || (user?.id ?? '').trim()).trim();
+    if (!uid) {
+      setGuestLoginSheetVisible(true);
+      return;
+    }
+    const afterGuestSheetLogin = Boolean(opts?.sessionUserId?.trim());
     setBooking(true);
     try {
       const body: CreateBookingRequest = {
@@ -624,12 +921,22 @@ export default function RideDetailScreen(): React.JSX.Element {
       };
       await api.post(API.endpoints.bookings.create, body);
       invalidateRideDetailCache(initialRide.id);
-      // Let the Book button finish its press animation, then transition without jank.
-      await new Promise<void>((resolve) => {
-        InteractionManager.runAfterInteractions(() => resolve());
-      });
-      await new Promise<void>((r) => setTimeout(r, Platform.OS === 'android' ? 90 : 120));
-      resetTabsToYourRidesAfterBook(navigation);
+      if (isRequestBookingMode) {
+        setRide((prev) => ({ ...prev, myBookingStatus: 'pending' }));
+        await fetchRideDetail({ force: true });
+        Alert.alert('Request sent', 'Your booking request is pending driver approval.');
+      } else if (afterGuestSheetLogin) {
+        // RootNavigator unmounts NavigationContainer during post-login "Thinking" gate — in-tree
+        // `navigation` reset is lost; use root ref after the gate remounts.
+        resetToYourRidesAfterGuestLoginGate();
+      } else {
+        // Let the Book button finish its press animation, then transition without jank.
+        await new Promise<void>((resolve) => {
+          InteractionManager.runAfterInteractions(() => resolve());
+        });
+        await new Promise<void>((r) => setTimeout(r, Platform.OS === 'android' ? 90 : 120));
+        resetTabsToYourRidesAfterBook(navigation);
+      }
     } catch (e: unknown) {
       const message = e && typeof e === 'object' && 'message' in e
         ? String((e as { message: unknown }).message)
@@ -652,8 +959,27 @@ export default function RideDetailScreen(): React.JSX.Element {
     setCancelBookingBid(bid);
     setCancelBookingMaxSeats(myBookingSeats);
     setCancelBookingSeatsToCancel(1);
+    setCancelBookingSheetMode('booking');
     setCancelBookingSheetVisible(true);
   };
+
+  const openPendingRequestActions = useCallback(() => {
+    const bid = myPassengerBooking?.id?.trim();
+    if (!bid) {
+      Alert.alert('Request', 'Could not find your pending request. Please refresh and try again.');
+      return;
+    }
+    const requestedSeatsRaw =
+      typeof myPassengerBooking?.seats === 'number' && Number.isFinite(myPassengerBooking.seats)
+        ? myPassengerBooking.seats
+        : 1;
+    const requestedSeats = Math.max(1, Math.floor(requestedSeatsRaw));
+    setCancelBookingBid(bid);
+    setCancelBookingMaxSeats(requestedSeats);
+    setCancelBookingSeatsToCancel(1);
+    setCancelBookingSheetMode('request');
+    setCancelBookingSheetVisible(true);
+  }, [myPassengerBooking]);
 
   const closeCancelBookingSheet = useCallback(() => {
     if (cancellingBooking) return;
@@ -661,6 +987,7 @@ export default function RideDetailScreen(): React.JSX.Element {
     setCancelBookingBid(null);
     setCancelBookingMaxSeats(1);
     setCancelBookingSeatsToCancel(1);
+    setCancelBookingSheetMode('booking');
   }, [cancellingBooking]);
 
   const confirmCancelSeats = useCallback(
@@ -825,12 +1152,15 @@ export default function RideDetailScreen(): React.JSX.Element {
         </TouchableOpacity>
       </View>
 
-      {detailLoading ? (
+      {detailLoading || (isOwner && isRequestBookingMode && !seatRequestsHydrated) ? (
         <View style={styles.detailLoader}>
           <ActivityIndicator size="large" color={COLORS.primary} />
-          <Text style={styles.detailLoaderText}>Loading ride…</Text>
+          <Text style={styles.detailLoaderText}>
+            {isOwner && isRequestBookingMode && !seatRequestsHydrated ? 'Loading requests…' : 'Loading ride…'}
+          </Text>
         </View>
       ) : (
+      <>
       <ScrollView
         ref={scrollRef}
         style={styles.scroll}
@@ -984,9 +1314,13 @@ export default function RideDetailScreen(): React.JSX.Element {
 
           <View style={styles.cardDriverRow}>
             <View style={styles.avatarWrap}>
-              <View style={styles.driverAvatar}>
-                <Text style={styles.driverAvatarText}>{cardAvatarLetter}</Text>
-              </View>
+              <UserAvatar
+                uri={cardAvatarUri}
+                name={cardAvatarName}
+                size={48}
+                backgroundColor={COLORS.primary}
+                fallbackTextColor={COLORS.white}
+              />
               <View style={styles.avatarStatusDot} />
             </View>
             <View style={styles.cardDriverText}>
@@ -1016,6 +1350,18 @@ export default function RideDetailScreen(): React.JSX.Element {
                   (navigation as any).navigate('OwnerProfileModal', {
                     userId: ownerId,
                     displayName: driverName || ride.name || ride.username || 'User',
+                    ...(ride.publisherAvatarUrl?.trim()
+                      ? { avatarUrl: ride.publisherAvatarUrl.trim() }
+                      : {}),
+                    ...(typeof ride.publisherAvgRating === 'number' &&
+                    Number.isFinite(ride.publisherAvgRating)
+                      ? { publisherAvgRating: ride.publisherAvgRating }
+                      : {}),
+                    ...(typeof ride.publisherRatingCount === 'number' &&
+                    Number.isFinite(ride.publisherRatingCount) &&
+                    ride.publisherRatingCount >= 0
+                      ? { publisherRatingCount: ride.publisherRatingCount }
+                      : {}),
                   });
                 }}
                 activeOpacity={0.75}
@@ -1038,6 +1384,11 @@ export default function RideDetailScreen(): React.JSX.Element {
                     ride,
                     otherUserName: chatOtherUserName,
                     otherUserId: chatOtherUserId,
+                    ...(!isOwner && ride.publisherAvatarUrl?.trim()
+                      ? { otherUserAvatarUrl: ride.publisherAvatarUrl.trim() }
+                      : isOwner && firstPassenger && (firstPassenger as { avatarUrl?: string }).avatarUrl?.trim()
+                        ? { otherUserAvatarUrl: String((firstPassenger as { avatarUrl?: string }).avatarUrl).trim() }
+                        : {}),
                   })
                 }
                 activeOpacity={0.7}
@@ -1072,142 +1423,268 @@ export default function RideDetailScreen(): React.JSX.Element {
           </View>
         </View>
 
-        {/* Passengers — include cancelled rows (status from API / cascade). */}
-        <View style={styles.block}>
-          <Text style={styles.passengersHeading}>Passengers</Text>
-          {passengersForDisplay.length > 0 ? (
-            <View style={styles.passengersList}>
-              {passengersForDisplay.map((b) => {
-                const isMe = (b.userId ?? '').trim() === currentUserId;
-                const displayName = isMe ? (currentUserName || 'You') : bookingPassengerDisplayName(b);
-                const bookingCancelled = bookingIsCancelled(b.status);
-                const isRebooked =
-                  !bookingCancelled &&
-                  !isPastRide &&
-                  cancelledPassengerUserIds.has((b.userId ?? '').trim()) &&
-                  activePassengerUserIds.has((b.userId ?? '').trim());
-                const shouldFadeCancelled = bookingCancelled && !isRebooked;
-
-                if (isOwner) {
-                  const mergedForRoute: BookingItem =
-                    isMe && passengerSearch?.from?.trim() && passengerSearch?.to?.trim()
-                      ? {
-                          ...b,
-                          pickupLocationName:
-                            b.pickupLocationName?.trim() || passengerSearch.from.trim(),
-                          destinationLocationName:
-                            b.destinationLocationName?.trim() || passengerSearch.to.trim(),
-                        }
-                      : b;
-                  const { lineShort } = bookingPickupDrop(ride, mergedForRoute);
+        {/* Seat requests (owner + request-book mode) */}
+        {isOwner && isRequestBookingMode && availableSeatsCount > 0 ? (
+          <View style={[styles.block, styles.seatRequestsBlock]}>
+            <View style={styles.seatRequestsHeader}>
+              <Text style={styles.seatRequestsHeading}>
+                Seat requests <Text style={styles.seatRequestsCount}>{pendingSeatRequests.length}</Text>
+              </Text>
+              <TouchableOpacity
+                style={styles.seatRequestsManageAllBtn}
+                onPress={() => void fetchSeatRequests()}
+                disabled={seatRequestsLoading}
+                activeOpacity={0.75}
+              >
+                {seatRequestsLoading ? (
+                  <ActivityIndicator size="small" color={COLORS.primary} />
+                ) : (
+                  <Text style={styles.seatRequestsManageAll}>Manage all</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+            {seatRequestsLoading ? (
+              <View style={styles.seatRequestsLoadingWrap}>
+                <ActivityIndicator size="small" color={COLORS.primary} />
+                <Text style={styles.seatRequestsLoadingText}>Loading requests...</Text>
+              </View>
+            ) : pendingSeatRequests.length > 0 ? (
+              <View style={styles.seatRequestsList}>
+                {pendingSeatRequests.map((b) => {
+                  const displayName = bookingPassengerDisplayName(b);
+                  const { lineShort } = bookingPickupDrop(ride, b);
+                  const actionBusy = seatRequestActionBookingId === b.id;
+                  const createdAt = new Date(b.bookedAt);
+                  const requestAgo = (() => {
+                    if (Number.isNaN(createdAt.getTime())) return '';
+                    const mins = Math.max(1, Math.floor((Date.now() - createdAt.getTime()) / 60000));
+                    if (mins < 60) return `${mins}m ago`;
+                    const hours = Math.floor(mins / 60);
+                    if (hours < 24) return `${hours}h ago`;
+                    const days = Math.floor(hours / 24);
+                    return `${days}d ago`;
+                  })();
+                  const [fromLine = lineShort, toLine = ''] = String(lineShort).split('→').map((s) => s.trim());
                   return (
                     <TouchableOpacity
-                      key={b.id}
-                      style={[styles.passengerRowOwner, shouldFadeCancelled && styles.passengerRowCancelled]}
-                      onPress={() =>
-                        (navigation as { navigate: (n: string, p: Record<string, unknown>) => void }).navigate(
-                          'BookPassengerDetail',
-                          { ride, booking: b }
-                        )
-                      }
-                      activeOpacity={shouldFadeCancelled ? 0.55 : 0.72}
+                      key={`req_${b.id}`}
+                      style={styles.seatRequestCard}
+                      activeOpacity={0.82}
+                      onPress={() => openSeatRequestDetail(b)}
                     >
-                      <View style={styles.passengerRowOwnerIcon}>
-                        <Ionicons
-                          name="person-outline"
-                          size={20}
-                          color={shouldFadeCancelled ? COLORS.textMuted : COLORS.textSecondary}
-                        />
-                      </View>
-                      <View style={styles.passengerRowOwnerText}>
-                        <Text
-                          style={[styles.passengerNameOwner, shouldFadeCancelled && styles.passengerNameCancelled]}
-                        >
-                          {displayName}
-                        </Text>
-                        {bookingCancelled || isRebooked ? (
-                          <Text
-                            style={[
-                              styles.passengerBookingCancelledLabel,
-                              isRebooked && styles.passengerBookingRebookedLabel,
-                            ]}
-                          >
-                            {isRebooked ? 'Rebooked' : 'Cancelled'}
+                      <View style={styles.seatRequestTop}>
+                        <View style={styles.seatRequestTopLeft}>
+                          <View style={styles.seatRequestIdentityRow}>
+                            <UserAvatar
+                              uri={b.avatarUrl}
+                              name={displayName}
+                              size={38}
+                              backgroundColor="#e2e8f0"
+                            />
+                            <View style={styles.seatRequestIdentityText}>
+                              <Text style={styles.seatRequestName} numberOfLines={1}>
+                                {displayName}
+                              </Text>
+                              <View style={styles.seatRequestMetaRow}>
+                                <Ionicons name="star-outline" size={12} color="#f59e0b" />
+                                <Text style={styles.seatRequestMetaText}>4.9</Text>
+                                {requestAgo ? <Text style={styles.seatRequestMetaDot}>•</Text> : null}
+                                {requestAgo ? (
+                                  <Text style={styles.seatRequestMetaTextMuted}>{requestAgo}</Text>
+                                ) : null}
+                              </View>
+                            </View>
+                          </View>
+                          <View style={styles.seatRequestRouteWrap}>
+                            <Text style={styles.seatRequestRouteLine} numberOfLines={1}>
+                              • {fromLine}
+                            </Text>
+                            {toLine ? (
+                              <Text style={styles.seatRequestRouteLine} numberOfLines={1}>
+                                • {toLine}
+                              </Text>
+                            ) : null}
+                          </View>
+                        </View>
+                        <View style={styles.seatRequestSeatsBadge}>
+                          <Text style={styles.seatRequestSeats}>
+                            {b.seats} seat{b.seats !== 1 ? 's' : ''}
                           </Text>
-                        ) : null}
-                        <Text
-                          style={[
-                            styles.passengerBookedRouteCaption,
-                            shouldFadeCancelled && styles.passengerCaptionCancelled,
-                          ]}
-                        >
-                          Passenger pickup → drop-off
-                        </Text>
-                        <Text
-                          style={[styles.passengerRouteHint, shouldFadeCancelled && styles.passengerHintCancelled]}
-                          numberOfLines={2}
-                        >
-                          {lineShort}
-                        </Text>
+                        </View>
                       </View>
-                      <View style={styles.passengerRowOwnerRight}>
-                        <Text style={styles.passengerSeatsCompact}>
-                          {b.seats} seat{b.seats !== 1 ? 's' : ''}
-                        </Text>
+                      <View style={styles.seatRequestDivider} />
+                      <View style={styles.seatRequestActions}>
+                        <TouchableOpacity
+                          style={styles.seatRequestApproveBtn}
+                          activeOpacity={0.75}
+                          onPress={() => void handleSeatRequestAction(b.id, 'approve')}
+                          disabled={actionBusy}
+                        >
+                          {actionBusy ? (
+                            <ActivityIndicator size="small" color={COLORS.white} />
+                          ) : (
+                            <Text style={styles.seatRequestApproveText}>Approve</Text>
+                          )}
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.seatRequestRejectBtn}
+                          activeOpacity={0.75}
+                          onPress={() => void handleSeatRequestAction(b.id, 'reject')}
+                          disabled={actionBusy}
+                        >
+                          {actionBusy ? (
+                            <ActivityIndicator size="small" color={COLORS.error} />
+                          ) : (
+                            <Text style={styles.seatRequestRejectText}>Reject</Text>
+                          )}
+                        </TouchableOpacity>
                         <Ionicons name="chevron-forward" size={20} color={COLORS.textMuted} />
                       </View>
                     </TouchableOpacity>
                   );
-                }
+                })}
+              </View>
+            ) : (
+              <Text style={styles.noPassengers}>No pending requests</Text>
+            )}
+          </View>
+        ) : null}
 
-                // Co-passengers: names & seats only; chat/call per passenger is owner-only (BookPassengerDetail).
-                return (
-                  <View
-                    key={b.id}
-                    style={[styles.passengerRow, shouldFadeCancelled && styles.passengerRowCancelled]}
-                  >
-                    <Ionicons
-                      name="person-outline"
-                      size={18}
-                      color={shouldFadeCancelled ? COLORS.textMuted : COLORS.textSecondary}
-                    />
-                    <Text
-                      style={[styles.passengerName, shouldFadeCancelled && styles.passengerNameCancelled]}
-                    >
-                      {displayName}
-                    </Text>
-                    <Text
-                      style={[styles.passengerSeats, shouldFadeCancelled && styles.passengerNameCancelled]}
-                    >
-                      {b.seats} seat{b.seats !== 1 ? 's' : ''}
-                    </Text>
-                    {bookingCancelled || isRebooked ? (
-                      <Text
-                        style={[
-                          styles.passengerBookingCancelledLabel,
-                          isRebooked && styles.passengerBookingRebookedLabel,
-                        ]}
+        {/* Passengers — hidden for guests (privacy). Signed-in riders/owner still see list. */}
+        {isAuthenticated ? (
+          <View style={styles.block}>
+            <Text style={styles.passengersHeading}>Passengers</Text>
+            {passengersForDisplayFiltered.length > 0 ? (
+              <View style={styles.passengersList}>
+                {passengersForDisplayFiltered.map((b) => {
+                  const isMe = (b.userId ?? '').trim() === currentUserId;
+                  const displayName = isMe ? (currentUserName || 'You') : bookingPassengerDisplayName(b);
+                  const bookingCancelled = bookingIsCancelled(b.status);
+                  const isRebooked =
+                    !bookingCancelled &&
+                    !isPastRide &&
+                    cancelledPassengerUserIds.has((b.userId ?? '').trim()) &&
+                    activePassengerUserIds.has((b.userId ?? '').trim());
+                  const shouldFadeCancelled = bookingCancelled && !isRebooked;
+
+                  if (isOwner) {
+                    const mergedForRoute: BookingItem =
+                      isMe && passengerSearch?.from?.trim() && passengerSearch?.to?.trim()
+                        ? {
+                            ...b,
+                            pickupLocationName:
+                              b.pickupLocationName?.trim() || passengerSearch.from.trim(),
+                            destinationLocationName:
+                              b.destinationLocationName?.trim() || passengerSearch.to.trim(),
+                          }
+                        : b;
+                    const { lineShort } = bookingPickupDrop(ride, mergedForRoute);
+                    return (
+                      <TouchableOpacity
+                        key={b.id}
+                        style={[styles.passengerRowOwner, shouldFadeCancelled && styles.passengerRowCancelled]}
+                        onPress={() =>
+                          (navigation as { navigate: (n: string, p: Record<string, unknown>) => void }).navigate(
+                            'BookPassengerDetail',
+                            { ride, booking: b }
+                          )
+                        }
+                        activeOpacity={shouldFadeCancelled ? 0.55 : 0.72}
                       >
-                        {isRebooked ? 'Rebooked' : 'Cancelled'}
+                        <View style={styles.passengerRowOwnerIcon}>
+                          <Ionicons
+                            name="person-outline"
+                            size={20}
+                            color={shouldFadeCancelled ? COLORS.textMuted : COLORS.textSecondary}
+                          />
+                        </View>
+                        <View style={styles.passengerRowOwnerText}>
+                          <Text
+                            style={[styles.passengerNameOwner, shouldFadeCancelled && styles.passengerNameCancelled]}
+                          >
+                            {displayName}
+                          </Text>
+                          {bookingCancelled || isRebooked ? (
+                            <Text
+                              style={[
+                                styles.passengerBookingCancelledLabel,
+                                isRebooked && styles.passengerBookingRebookedLabel,
+                              ]}
+                            >
+                              {isRebooked ? 'Rebooked' : 'Cancelled'}
+                            </Text>
+                          ) : null}
+                          <Text
+                            style={[
+                              styles.passengerBookedRouteCaption,
+                              shouldFadeCancelled && styles.passengerCaptionCancelled,
+                            ]}
+                          >
+                            Passenger pickup → drop-off
+                          </Text>
+                          <Text
+                            style={[styles.passengerRouteHint, shouldFadeCancelled && styles.passengerHintCancelled]}
+                            numberOfLines={2}
+                          >
+                            {lineShort}
+                          </Text>
+                        </View>
+                        <View style={styles.passengerRowOwnerRight}>
+                          <Text style={styles.passengerSeatsCompact}>
+                            {b.seats} seat{b.seats !== 1 ? 's' : ''}
+                          </Text>
+                          <Ionicons name="chevron-forward" size={20} color={COLORS.textMuted} />
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  }
+
+                  // Co-passengers: names & seats only; chat/call per passenger is owner-only (BookPassengerDetail).
+                  return (
+                    <View
+                      key={b.id}
+                      style={[styles.passengerRow, shouldFadeCancelled && styles.passengerRowCancelled]}
+                    >
+                      <Ionicons
+                        name="person-outline"
+                        size={18}
+                        color={shouldFadeCancelled ? COLORS.textMuted : COLORS.textSecondary}
+                      />
+                      <Text
+                        style={[styles.passengerName, shouldFadeCancelled && styles.passengerNameCancelled]}
+                      >
+                        {displayName}
                       </Text>
-                    ) : null}
-                  </View>
-                );
-              })}
-            </View>
-          ) : (
-            <Text style={styles.noPassengers}>No other passengers yet</Text>
-          )}
-        </View>
+                      <Text
+                        style={[styles.passengerSeats, shouldFadeCancelled && styles.passengerNameCancelled]}
+                      >
+                        {b.seats} seat{b.seats !== 1 ? 's' : ''}
+                      </Text>
+                      {bookingCancelled || isRebooked ? (
+                        <Text
+                          style={[
+                            styles.passengerBookingCancelledLabel,
+                            isRebooked && styles.passengerBookingRebookedLabel,
+                          ]}
+                        >
+                          {isRebooked ? 'Rebooked' : 'Cancelled'}
+                        </Text>
+                      ) : null}
+                    </View>
+                  );
+                })}
+              </View>
+            ) : (
+              <Text style={styles.noPassengers}>No other passengers yet</Text>
+            )}
+          </View>
+        ) : null}
 
         {/* Actions — past rides: no calendar / offer links; owner: no edit or cancel */}
         {!isPastRide && (!isBookedByMe || isOwner) && !isOwnerRideCancelled ? (
           <>
             <TouchableOpacity style={styles.linkButton} onPress={() => {}}>
               <Text style={styles.linkText}>Add to calendar</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.linkButton} onPress={() => {}}>
-              <Text style={styles.linkText}>See ride offer</Text>
             </TouchableOpacity>
           </>
         ) : null}
@@ -1258,6 +1735,20 @@ export default function RideDetailScreen(): React.JSX.Element {
               </>
             )}
           </TouchableOpacity>
+        ) : !isOwner && isMyBookingPending && !isPastRide && !rideCancelledByOwner ? (
+          <TouchableOpacity
+            style={[styles.button, styles.buttonPendingRequest]}
+            onPress={openPendingRequestActions}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="time-outline" size={22} color={COLORS.primary} />
+            <Text style={styles.buttonPendingRequestText}>Request pending approval</Text>
+          </TouchableOpacity>
+        ) : !isOwner && isMyBookingRejected && !isPastRide && !rideCancelledByOwner ? (
+          <View style={[styles.button, styles.buttonRequestRejected]}>
+            <Ionicons name="close-circle-outline" size={22} color={COLORS.error} />
+            <Text style={styles.buttonRequestRejectedText}>{driverName} rejected</Text>
+          </View>
         ) : !isOwner && rideCancelledByOwner ? (
           <View style={[styles.button, styles.buttonOwnerRideCancelled]}>
             <Ionicons name="ban-outline" size={22} color={COLORS.textMuted} />
@@ -1317,7 +1808,7 @@ export default function RideDetailScreen(): React.JSX.Element {
             ) : null}
             <TouchableOpacity
               style={[styles.button, styles.buttonBook]}
-              onPress={handleBook}
+              onPress={() => void handleBook()}
               disabled={booking || availableSeatsCount <= 0}
               activeOpacity={0.8}
             >
@@ -1327,7 +1818,17 @@ export default function RideDetailScreen(): React.JSX.Element {
                 <>
                   <Ionicons name="book-outline" size={22} color="#fff" />
                   <Text style={styles.buttonBookText}>
-                    {passengerSelfCancelledBooking ? 'Book again' : bookSeatsCount > 1 ? 'Book seats' : 'Book'}
+                    {isRequestBookingMode
+                      ? passengerSelfCancelledBooking
+                        ? 'Request again'
+                        : bookSeatsCount > 1
+                          ? 'Request seats'
+                          : 'Request to book'
+                      : passengerSelfCancelledBooking
+                        ? 'Book again'
+                        : bookSeatsCount > 1
+                          ? 'Book seats'
+                          : 'Book'}
                   </Text>
                 </>
               )}
@@ -1335,7 +1836,29 @@ export default function RideDetailScreen(): React.JSX.Element {
           </View>
         )}
       </ScrollView>
+      <Modal
+        visible={openingSeatRequestDetailId != null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {}}
+      >
+        <View style={styles.requestDetailOpeningOverlay}>
+          <ActivityIndicator size="small" color={COLORS.primary} />
+          <Text style={styles.requestDetailOpeningText}>Opening request...</Text>
+        </View>
+      </Modal>
+      </>
       )}
+      <LoginBottomSheet
+        visible={guestLoginSheetVisible}
+        onClose={() => setGuestLoginSheetVisible(false)}
+        onLoggedIn={({ userId }) => {
+          InteractionManager.runAfterInteractions(() => {
+            void handleBook({ sessionUserId: userId });
+          });
+        }}
+        navigation={navigation as NavigationProp<ParamListBase>}
+      />
       <Modal visible={showRatingModal} transparent animationType="fade" onRequestClose={handleSkipRating}>
         <KeyboardAvoidingView
           style={styles.ratingOverlay}
@@ -1548,14 +2071,18 @@ export default function RideDetailScreen(): React.JSX.Element {
               <View style={styles.cancelBookingSheetHandle} />
             </View>
             <View style={styles.cancelBookingSheetHeader}>
-              <Text style={styles.cancelBookingSheetTitle}>Cancel booking</Text>
+              <Text style={styles.cancelBookingSheetTitle}>
+                {cancelBookingSheetMode === 'request' ? 'Pending request' : 'Cancel booking'}
+              </Text>
               <TouchableOpacity onPress={closeCancelBookingSheet} hitSlop={10} disabled={cancellingBooking}>
                 <Ionicons name="close" size={20} color={COLORS.textSecondary} />
               </TouchableOpacity>
             </View>
 
             <Text style={styles.cancelBookingSheetSubText}>
-              {`You booked ${cancelBookingMaxSeats} seat${cancelBookingMaxSeats !== 1 ? 's' : ''}. Select how many to cancel.`}
+              {cancelBookingSheetMode === 'request'
+                ? `You requested ${cancelBookingMaxSeats} seat${cancelBookingMaxSeats !== 1 ? 's' : ''}. Select how many request seat${cancelBookingMaxSeats !== 1 ? 's' : ''} to cancel.`
+                : `You booked ${cancelBookingMaxSeats} seat${cancelBookingMaxSeats !== 1 ? 's' : ''}. Select how many to cancel.`}
             </Text>
 
             <View style={styles.cancelBookingCounterRow}>
@@ -1603,7 +2130,7 @@ export default function RideDetailScreen(): React.JSX.Element {
                 <ActivityIndicator size="small" color={COLORS.white} />
               ) : (
                 <Text style={styles.cancelBookingConfirmText}>
-                  Cancel {cancelBookingSeatsToCancel} seat{cancelBookingSeatsToCancel !== 1 ? 's' : ''}
+                  {cancelBookingSheetMode === 'request' ? 'Cancel request' : 'Cancel'} {cancelBookingSeatsToCancel} seat{cancelBookingSeatsToCancel !== 1 ? 's' : ''}
                 </Text>
               )}
             </TouchableOpacity>
@@ -2017,19 +2544,6 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: COLORS.primary,
   },
-  driverAvatar: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: COLORS.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  driverAvatarText: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: COLORS.white,
-  },
   driverActionBtn: {
     width: 44,
     height: 44,
@@ -2050,6 +2564,182 @@ const styles = StyleSheet.create({
     color: COLORS.textMuted,
     marginTop: 14,
     marginBottom: 6,
+  },
+  seatRequestsHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 14,
+    marginBottom: 6,
+  },
+  seatRequestsCount: {
+    color: COLORS.primary,
+    fontWeight: '800',
+  },
+  seatRequestsHeading: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: COLORS.text,
+  },
+  seatRequestsBlock: {
+    backgroundColor: COLORS.white,
+    borderWidth: 0,
+    borderColor: 'transparent',
+  },
+  seatRequestsList: {
+    paddingTop: 6,
+  },
+  seatRequestsManageAll: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: COLORS.primary,
+  },
+  seatRequestsManageAllBtn: {
+    minHeight: 24,
+    justifyContent: 'center',
+    alignItems: 'flex-end',
+    minWidth: 70,
+  },
+  seatRequestsLoadingWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingTop: 10,
+  },
+  seatRequestsLoadingText: {
+    fontSize: 13,
+    color: COLORS.textSecondary,
+    fontWeight: '600',
+  },
+  seatRequestCard: {
+    borderWidth: 1,
+    borderColor: COLORS.borderLight,
+    borderRadius: 16,
+    padding: 14,
+    marginBottom: 12,
+    backgroundColor: COLORS.white,
+    shadowColor: '#000',
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 1,
+  },
+  seatRequestTop: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  seatRequestTopLeft: {
+    flex: 1,
+    minWidth: 0,
+  },
+  seatRequestIdentityRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  seatRequestIdentityText: {
+    flex: 1,
+    minWidth: 0,
+  },
+  seatRequestName: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: COLORS.text,
+  },
+  seatRequestMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 3,
+  },
+  seatRequestMetaText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#f59e0b',
+  },
+  seatRequestMetaDot: {
+    fontSize: 12,
+    color: COLORS.textMuted,
+    marginHorizontal: 1,
+  },
+  seatRequestMetaTextMuted: {
+    fontSize: 11,
+    color: COLORS.textMuted,
+    fontWeight: '600',
+  },
+  seatRequestRouteWrap: {
+    marginTop: 8,
+    paddingLeft: 48,
+    gap: 2,
+  },
+  seatRequestRouteLine: {
+    fontSize: 12,
+    color: COLORS.textSecondary,
+    lineHeight: 17,
+    fontWeight: '500',
+  },
+  seatRequestSeatsBadge: {
+    backgroundColor: '#eef2ff',
+    borderRadius: 999,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    marginLeft: 8,
+  },
+  seatRequestSeats: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#6366f1',
+  },
+  seatRequestDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: COLORS.borderLight,
+    marginTop: 12,
+    marginBottom: 10,
+  },
+  seatRequestActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  seatRequestApproveBtn: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#6366f1',
+    borderRadius: 10,
+    paddingVertical: 10,
+  },
+  seatRequestApproveText: {
+    color: COLORS.white,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  seatRequestRejectBtn: {
+    width: 82,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 10,
+    paddingVertical: 10,
+    backgroundColor: COLORS.white,
+  },
+  seatRequestRejectText: {
+    color: COLORS.error,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  requestDetailOpeningOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(255,255,255,0.92)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+  },
+  requestDetailOpeningText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: COLORS.textSecondary,
   },
   passengersList: {
     borderTopWidth: 1,
@@ -2300,6 +2990,26 @@ const styles = StyleSheet.create({
   buttonBookingCancelledText: {
     fontSize: 16,
     fontWeight: '600',
+    color: COLORS.error,
+  },
+  buttonPendingRequest: {
+    backgroundColor: 'rgba(34, 197, 94, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(34, 197, 94, 0.32)',
+  },
+  buttonPendingRequestText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: COLORS.primary,
+  },
+  buttonRequestRejected: {
+    backgroundColor: 'rgba(239, 68, 68, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.3)',
+  },
+  buttonRequestRejectedText: {
+    fontSize: 15,
+    fontWeight: '700',
     color: COLORS.error,
   },
   buttonPastEnded: {

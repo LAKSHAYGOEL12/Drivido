@@ -1,0 +1,430 @@
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import {
+  StyleSheet,
+  Text,
+  View,
+  Modal,
+  Pressable,
+  Platform,
+  ScrollView,
+  Animated,
+  ActivityIndicator,
+  TouchableOpacity,
+  Alert,
+  Keyboard,
+  InteractionManager,
+} from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
+import type { NavigationProp, ParamListBase } from '@react-navigation/native';
+import { useAuth } from '../../contexts/AuthContext';
+import api from '../../services/api';
+import { API } from '../../constants/API';
+import { validation } from '../../constants/validation';
+import Button from '../common/Button';
+import Input from '../common/Input';
+import { COLORS } from '../../constants/colors';
+import type { LoginResponse } from '../../types/api';
+import type { RootStackParamList } from '../../navigation/types';
+import { requestForegroundLocationAfterAuth } from '../../services/location-permission-auth';
+import { pickAvatarUrlFromRecord } from '../../utils/avatarUrl';
+
+export type GuestLoginSuccessPayload = {
+  /** Present so parent can book before AuthContext re-render (same tick as login). */
+  userId: string;
+};
+
+export type LoginBottomSheetProps = {
+  visible: boolean;
+  onClose: () => void;
+  /** Fired after tokens + session are stored (includes userId for immediate API follow-ups). */
+  onLoggedIn?: (payload: GuestLoginSuccessPayload) => void;
+  navigation: NavigationProp<ParamListBase>;
+};
+
+export default function LoginBottomSheet({
+  visible,
+  onClose,
+  onLoggedIn,
+  navigation,
+}: LoginBottomSheetProps): React.JSX.Element {
+  const insets = useSafeAreaInsets();
+  const { login } = useAuth();
+  const [phoneOrEmail, setPhoneOrEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [errors, setErrors] = useState<{ phoneOrEmail?: string; password?: string }>({});
+  const [signingIn, setSigningIn] = useState(false);
+  const [overlaySuccess, setOverlaySuccess] = useState(false);
+  const [loginBlockedUntil, setLoginBlockedUntil] = useState(0);
+  const [, setCooldownTick] = useState(0);
+  const pendingLoginRef = useRef<{ user: Parameters<typeof login>[0]; accessToken: string; refreshToken: string } | null>(
+    null
+  );
+  const slideY = useRef(new Animated.Value(520)).current;
+  /** Modal stays mounted until slide-out finishes — avoids flicker when keyboard + close race. */
+  const [modalShown, setModalShown] = useState(visible);
+  const exitAnimRef = useRef<Animated.CompositeAnimation | null>(null);
+  const [keyboardPad, setKeyboardPad] = useState(0);
+
+  useEffect(() => {
+    if (loginBlockedUntil <= Date.now()) return;
+    const id = setInterval(() => setCooldownTick((n) => n + 1), 1000);
+    return () => clearInterval(id);
+  }, [loginBlockedUntil]);
+
+  useEffect(() => {
+    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const onShow = (e: { endCoordinates?: { height: number } }) => {
+      const h = e.endCoordinates?.height ?? 0;
+      setKeyboardPad(Number.isFinite(h) ? h : 0);
+    };
+    const onHide = () => setKeyboardPad(0);
+    const subShow = Keyboard.addListener(showEvt, onShow);
+    const subHide = Keyboard.addListener(hideEvt, onHide);
+    return () => {
+      subShow.remove();
+      subHide.remove();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (visible) {
+      exitAnimRef.current?.stop();
+      setModalShown(true);
+      slideY.setValue(520);
+      Animated.spring(slideY, {
+        toValue: 0,
+        useNativeDriver: true,
+        friction: 9,
+        tension: 68,
+      }).start();
+    }
+  }, [visible, slideY]);
+
+  useEffect(() => {
+    if (!visible && modalShown) {
+      Keyboard.dismiss();
+      exitAnimRef.current?.stop();
+      exitAnimRef.current = Animated.timing(slideY, {
+        toValue: 520,
+        duration: Platform.OS === 'ios' ? 220 : 260,
+        useNativeDriver: true,
+      });
+      exitAnimRef.current.start(({ finished }) => {
+        exitAnimRef.current = null;
+        if (finished) setModalShown(false);
+      });
+    }
+  }, [visible, modalShown, slideY]);
+
+  const requestClose = useCallback(() => {
+    if (signingIn) return;
+    Keyboard.dismiss();
+    InteractionManager.runAfterInteractions(() => {
+      onClose();
+    });
+  }, [onClose, signingIn]);
+
+  const loginOnCooldown = Date.now() < loginBlockedUntil;
+  const cooldownSecs = loginOnCooldown ? Math.ceil((loginBlockedUntil - Date.now()) / 1000) : 0;
+
+  const isEmail = validation.email(phoneOrEmail);
+  const isPhone = validation.phone(phoneOrEmail);
+
+  const validate = (): boolean => {
+    const next: typeof errors = {};
+    if (!phoneOrEmail.trim()) next.phoneOrEmail = 'Enter phone number or email';
+    else if (!isPhone && !isEmail) next.phoneOrEmail = 'Enter a valid phone number or email';
+    if (!password.trim()) next.password = 'Enter your password';
+    setErrors(next);
+    return Object.keys(next).length === 0;
+  };
+
+  const handleLogin = async () => {
+    if (loginOnCooldown || !validate() || signingIn) return;
+    setSigningIn(true);
+    setErrors({});
+    try {
+      const body = isEmail
+        ? { email: phoneOrEmail.trim().toLowerCase(), password }
+        : {
+            phone: phoneOrEmail.replace(/\D/g, '').replace(/^91(?=\d{10})/, '').slice(-10),
+            password,
+          };
+      const res = await api.post<LoginResponse>(API.endpoints.auth.login, body, { timeout: 25000 });
+      const user = res?.user;
+      const accessToken = res?.token;
+      const refreshToken = res?.refreshToken;
+      if (!user || !accessToken) {
+        throw new Error('Invalid response from server');
+      }
+      const userId = typeof user.id === 'string' ? user.id : String((user as { _id?: unknown })._id ?? '');
+      const avatarUrl = pickAvatarUrlFromRecord(user as unknown as Record<string, unknown>);
+      const userObj = {
+        id: userId,
+        phone: user.phone ?? '',
+        email: (user as { email?: string }).email,
+        name: user.name,
+        createdAt:
+          typeof (user as { createdAt?: unknown }).createdAt === 'string'
+            ? String((user as { createdAt?: string }).createdAt)
+            : typeof (user as { created_at?: unknown }).created_at === 'string'
+              ? String((user as { created_at?: string }).created_at)
+              : undefined,
+        ...(avatarUrl ? { avatarUrl } : {}),
+      };
+      pendingLoginRef.current = { user: userObj, accessToken, refreshToken: refreshToken ?? accessToken };
+      setOverlaySuccess(true);
+      setTimeout(() => {
+        const pending = pendingLoginRef.current;
+        if (pending) {
+          pendingLoginRef.current = null;
+          setLoginBlockedUntil(0);
+          login(pending.user, pending.accessToken, pending.refreshToken);
+          void requestForegroundLocationAfterAuth();
+          setSigningIn(false);
+          setOverlaySuccess(false);
+          setPhoneOrEmail('');
+          setPassword('');
+          setErrors({});
+          onClose();
+          const id = String(userObj.id ?? '').trim();
+          if (id) onLoggedIn?.({ userId: id });
+        }
+      }, 450);
+    } catch (e: unknown) {
+      const status =
+        e && typeof e === 'object' && 'status' in e ? (e as { status: unknown }).status : undefined;
+      const is429 = status === 429;
+      const message =
+        e && typeof e === 'object' && 'message' in e
+          ? String((e as { message: unknown }).message)
+          : 'Sign in failed. Check your credentials and backend.';
+      setErrors({ password: message });
+      if (is429) {
+        setLoginBlockedUntil(Date.now() + 60_000);
+        Alert.alert(
+          'Too many requests (429)',
+          'Your API server is rate-limiting login. Wait about 1 minute before trying again.'
+        );
+      } else {
+        Alert.alert('Sign in failed', message);
+      }
+      setSigningIn(false);
+    }
+  };
+
+  const openRegister = () => {
+    if (signingIn) return;
+    Keyboard.dismiss();
+    InteractionManager.runAfterInteractions(() => {
+      onClose();
+      (navigation as NavigationProp<RootStackParamList>).navigate('Register');
+    });
+  };
+
+  return (
+    <Modal
+      visible={visible || modalShown}
+      transparent
+      animationType="fade"
+      onRequestClose={signingIn ? () => {} : requestClose}
+      statusBarTranslucent
+    >
+      <View style={styles.modalRoot}>
+        {signingIn ? (
+          <View style={styles.loaderOverlay} pointerEvents="auto">
+            <View style={styles.loaderBox}>
+              {overlaySuccess ? (
+                <>
+                  <Ionicons name="checkmark-circle" size={48} color={COLORS.primary} />
+                  <Text style={styles.loaderText}>Welcome back!</Text>
+                </>
+              ) : (
+                <>
+                  <ActivityIndicator size="large" color={COLORS.primary} />
+                  <Text style={styles.loaderText}>Signing in…</Text>
+                </>
+              )}
+            </View>
+          </View>
+        ) : null}
+        <View style={styles.keyboardWrap}>
+          <Pressable style={styles.backdrop} onPress={signingIn ? undefined : requestClose} />
+          <Animated.View
+            style={[
+              styles.sheet,
+              {
+                paddingBottom: Math.max(insets.bottom, 16) + keyboardPad,
+                transform: [{ translateY: slideY }],
+              },
+            ]}
+          >
+          <View style={styles.handleBarWrap}>
+            <View style={styles.handleBar} />
+          </View>
+          <View style={styles.sheetHeader}>
+            <Text style={styles.sheetTitle}>Sign in to book</Text>
+            <TouchableOpacity
+              onPress={requestClose}
+              disabled={signingIn}
+              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+              style={styles.closeBtn}
+            >
+              <Ionicons name="close" size={24} color={COLORS.textSecondary} />
+            </TouchableOpacity>
+          </View>
+          <Text style={styles.sheetSubtitle}>Use your phone or email and password</Text>
+
+          <ScrollView
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={styles.scrollContent}
+          >
+            <Input
+              label="Phone or email"
+              value={phoneOrEmail}
+              onChangeText={setPhoneOrEmail}
+              placeholder="9876543210 or you@example.com"
+              error={errors.phoneOrEmail}
+              keyboardType="email-address"
+              autoCapitalize="none"
+              autoComplete="email"
+              editable={!signingIn}
+            />
+            <Input
+              label="Password"
+              value={password}
+              onChangeText={setPassword}
+              placeholder="Your password"
+              error={errors.password}
+              secureTextEntry
+              editable={!signingIn}
+            />
+            <Button
+              title={
+                signingIn
+                  ? 'Signing in…'
+                  : loginOnCooldown
+                    ? `Wait ${cooldownSecs}s`
+                    : 'Sign in'
+              }
+              onPress={handleLogin}
+              disabled={signingIn || loginOnCooldown}
+              variant="primary"
+              style={styles.signInBtn}
+            />
+            <View style={styles.footerRow}>
+              <Text style={styles.footerMuted}>New here? </Text>
+              <TouchableOpacity onPress={openRegister} disabled={signingIn}>
+                <Text style={styles.footerLink}>Create account</Text>
+              </TouchableOpacity>
+            </View>
+          </ScrollView>
+          </Animated.View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+const styles = StyleSheet.create({
+  modalRoot: {
+    flex: 1,
+  },
+  keyboardWrap: {
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  backdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+  },
+  sheet: {
+    backgroundColor: COLORS.background,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    maxHeight: '88%',
+    paddingHorizontal: 20,
+    paddingTop: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.12,
+    shadowRadius: 12,
+    elevation: 16,
+  },
+  handleBarWrap: {
+    alignItems: 'center',
+    paddingVertical: 8,
+  },
+  handleBar: {
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#cbd5e1',
+  },
+  sheetHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 4,
+  },
+  sheetTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: COLORS.text,
+    flex: 1,
+  },
+  closeBtn: {
+    marginLeft: 8,
+  },
+  sheetSubtitle: {
+    fontSize: 14,
+    color: COLORS.textSecondary,
+    marginBottom: 16,
+  },
+  scrollContent: {
+    paddingBottom: 8,
+  },
+  signInBtn: {
+    marginTop: 6,
+  },
+  footerRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 16,
+    flexWrap: 'wrap',
+  },
+  footerMuted: {
+    fontSize: 14,
+    color: COLORS.textSecondary,
+  },
+  footerLink: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLORS.primary,
+  },
+  loaderOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 20,
+  },
+  loaderBox: {
+    backgroundColor: COLORS.background,
+    borderRadius: 12,
+    paddingVertical: 22,
+    paddingHorizontal: 28,
+    alignItems: 'center',
+    minWidth: 150,
+  },
+  loaderText: {
+    marginTop: 10,
+    fontSize: 14,
+    color: COLORS.textSecondary,
+  },
+});

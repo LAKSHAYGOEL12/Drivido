@@ -15,6 +15,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useInbox, type InboxConversation } from '../../contexts/InboxContext';
 import { COLORS } from '../../constants/colors';
 import { applyInboxVisibilityLimit, INBOX_VISIBLE_CHAT_MAX } from '../../utils/inboxList';
+import UserAvatar from '../../components/common/UserAvatar';
 
 function formatConversationTime(ts: number): string {
   const date = new Date(ts);
@@ -64,6 +65,7 @@ export default function Inbox(): React.JSX.Element {
       ride: conv.ride,
       otherUserName: conv.otherUserName,
       otherUserId: conv.otherUserId,
+      ...(conv.otherUserAvatarUrl ? { otherUserAvatarUrl: conv.otherUserAvatarUrl } : {}),
     });
   };
 
@@ -75,9 +77,13 @@ export default function Inbox(): React.JSX.Element {
         activeOpacity={0.7}
       >
         <View style={styles.avatarWrap}>
-          <View style={styles.avatar}>
-            <Text style={styles.avatarText}>{item.otherUserName.charAt(0).toUpperCase()}</Text>
-          </View>
+          <UserAvatar
+            uri={item.otherUserAvatarUrl}
+            name={item.otherUserName}
+            size={52}
+            backgroundColor={COLORS.primary}
+            fallbackTextColor={COLORS.white}
+          />
           <View style={[styles.statusDot, { backgroundColor: COLORS.textMuted }]} />
         </View>
         <View style={styles.rowCenter}>
@@ -234,19 +240,6 @@ const styles = StyleSheet.create({
   avatarWrap: {
     position: 'relative',
     marginRight: 14,
-  },
-  avatar: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
-    backgroundColor: COLORS.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  avatarText: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: COLORS.white,
   },
   statusDot: {
     position: 'absolute',

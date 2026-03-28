@@ -183,7 +183,7 @@ export default function PublishRide(): React.JSX.Element {
   });
   const [seats, setSeats] = useState(1);
   const [rate, setRate] = useState('');
-  const [instantBooking, setInstantBooking] = useState(true);
+  const [instantBooking, setInstantBooking] = useState(false);
   const [showDateModal, setShowDateModal] = useState(false);
   const [showTimeModal, setShowTimeModal] = useState(false);
   const [showPassengersModal, setShowPassengersModal] = useState(false);
@@ -572,7 +572,7 @@ export default function PublishRide(): React.JSX.Element {
     setTimeLabel(formatTimeLabel(defaultTime.hour, defaultTime.minute));
     setSeats(1);
     setRate('');
-    setInstantBooking(true);
+    setInstantBooking(false);
     setCalendarMonth(today);
     setClockHour24(defaultTime.hour);
     setClockMinute(Math.round(defaultTime.minute / 5) * 5 % 60);
@@ -626,6 +626,8 @@ export default function PublishRide(): React.JSX.Element {
         seats,
         username,
         price: rate.trim(),
+        bookingMode: instantBooking ? 'instant' : 'request',
+        instantBooking,
         ...(routeDurationSeconds > 0 ? { estimatedDurationSeconds: routeDurationSeconds } : {}),
       };
       if (__DEV__) {
@@ -657,6 +659,7 @@ export default function PublishRide(): React.JSX.Element {
     selectedTime,
     seats,
     rate,
+    instantBooking,
     user?.name,
     user?.phone,
     navigation,

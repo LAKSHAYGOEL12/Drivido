@@ -25,6 +25,7 @@ export const API = {
       search: '/rides/search',
       create: '/rides',
       detail: (id: string) => `/rides/${id}`,
+      bookingRequests: (id: string) => `/rides/${id}/booking-requests`,
       cancel: (id: string) => `/rides/${id}/cancel`,
       // Legacy alias; prefer myPublished when the backend supports it.
       mine: '/rides/mine',
@@ -32,12 +33,15 @@ export const API = {
     bookings: {
       create: '/bookings',
       list: '/bookings',
+      approve: (bookingId: string) => `/bookings/${bookingId}/approve`,
+      reject: (bookingId: string) => `/bookings/${bookingId}/reject`,
       /** DELETE — cancel passenger's own booking (body optional per backend). */
       cancel: (bookingId: string) => `/bookings/${bookingId}`,
     },
     user: {
       profile: '/user/profile',
       update: '/user/update',
+      avatar: '/user/avatar',
       /**
        * POST — register Expo push token `{ expoPushToken, platform }`.
        * DELETE — remove tokens for current user (logout); optional if backend only upserts.

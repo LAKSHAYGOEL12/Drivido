@@ -87,14 +87,19 @@ export function clearAuth(): void {
   refreshToken = null;
 }
 
+/** True when a session access token is set (guest / logged-out flows should skip auth-only API routes). */
+export function hasAuthAccessToken(): boolean {
+  return Boolean(authToken?.trim());
+}
+
 /** Register callback when refresh fails (e.g. redirect to login). Call from AuthProvider. */
 export function setOnSessionExpired(callback: () => void): void {
   onSessionExpired = callback;
 }
 
-function getHeaders(): HeadersInit {
+function getHeaders(includeJsonContentType = true): HeadersInit {
   const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
+    ...(includeJsonContentType ? { 'Content-Type': 'application/json' } : {}),
   };
   if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
   return headers;
@@ -102,7 +107,7 @@ function getHeaders(): HeadersInit {
 
 const DEFAULT_TIMEOUT_MS = 15000;
 
-type RequestConfig = RequestInit & { timeout?: number };
+type RequestConfig = RequestInit & { timeout?: number; /** When true, GET 404 returns null instead of throwing (no console.warn). */ silentNotFound?: boolean };
 
 /** Refresh token response from backend. */
 interface RefreshResponse {
@@ -145,7 +150,8 @@ async function request<T>(
       'EXPO_PUBLIC_API_URL is not set in .env. See src/config/apiBaseUrl.ts — then npx expo start --clear.'
     );
   }
-  const { timeout = DEFAULT_TIMEOUT_MS, headers: optHeaders, ...init } = options;
+  const { timeout = DEFAULT_TIMEOUT_MS, headers: optHeaders, silentNotFound, ...init } = options;
+  const isFormDataBody = typeof FormData !== 'undefined' && init.body instanceof FormData;
   const pathWithPrefix = path.startsWith('http')
     ? path
     : `${getApiBaseUrl()}${API_PREFIX}${path.startsWith('/') ? path : '/' + path}`;
@@ -157,7 +163,7 @@ async function request<T>(
     const res = await fetch(url, {
       ...init,
       signal: controller.signal,
-      headers: { ...getHeaders(), ...optHeaders } as HeadersInit,
+      headers: { ...getHeaders(!isFormDataBody), ...optHeaders } as HeadersInit,
     });
     clearTimeout(timeoutId);
 
@@ -182,6 +188,9 @@ async function request<T>(
     }
 
     if (!res.ok) {
+      if (silentNotFound === true && res.status === 404) {
+        return null as T;
+      }
       const msg = getErrorMessage(data, res.status, res.statusText);
       const isChat404 = res.status === 404 && url.includes('/chat/');
       const isAuth404 = res.status === 404 && url.includes('/auth/');
@@ -362,6 +371,14 @@ export async function getJsonWithEtag<T>(
 export const api = {
   get: <T>(path: string, config?: RequestConfig) =>
     request<T>(path, { ...config, method: 'GET' }),
+
+  /** GET that returns null on 404 (for probing optional public-user routes). */
+  getOptional: <T>(path: string, config?: Omit<RequestConfig, 'method' | 'silentNotFound'>) =>
+    request<T | null>(path, { ...config, method: 'GET', silentNotFound: true }),
+
+  /** Multipart upload — do not JSON.stringify body. */
+  postForm: <T>(path: string, formData: FormData, config?: RequestConfig) =>
+    request<T>(path, { ...config, method: 'POST', body: formData }),
 
   post: <T>(path: string, body?: unknown, config?: RequestConfig) =>
     request<T>(path, { ...config, method: 'POST', body: body ? JSON.stringify(body) : undefined }),

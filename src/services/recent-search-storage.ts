@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import api from './api';
+import api, { hasAuthAccessToken } from './api';
 import { API } from '../constants/API';
 
 const KEY = 'drivido_recent_searches_v1';
@@ -68,6 +68,9 @@ async function saveLocal(list: RecentSearchEntry[], userKey?: string): Promise<v
 
 export async function loadRecentSearches(userKey?: string): Promise<RecentSearchEntry[]> {
   const local = await loadLocal(userKey);
+  if (!hasAuthAccessToken()) {
+    return local;
+  }
   try {
     const res = await api.get<unknown>(API.endpoints.recentSearches.list);
     const arr = Array.isArray(res)
@@ -91,6 +94,38 @@ export async function addRecentSearch(
   entry: Omit<RecentSearchEntry, 'id'>,
   userKey?: string
 ): Promise<RecentSearchEntry[]> {
+  const mergeLocalOnly = async (): Promise<RecentSearchEntry[]> => {
+    const list = await loadLocal(userKey);
+    const dedupeKey = `${entry.from.trim().toLowerCase()}|${entry.to.trim().toLowerCase()}|${String(entry.passengers ?? '1').trim()}`;
+    const filtered = list.filter(
+      (x) =>
+        `${x.from.trim().toLowerCase()}|${x.to.trim().toLowerCase()}|${String(x.passengers ?? '1').trim()}` !== dedupeKey
+    );
+    const next: RecentSearchEntry[] = [
+      {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+        ...entry,
+      },
+      ...filtered,
+    ].slice(0, 3);
+    await saveLocal(next, userKey);
+    return next;
+  };
+
+  if (!hasAuthAccessToken()) {
+    const local = await loadLocal(userKey);
+    const fromN = entry.from.trim().toLowerCase();
+    const toN = entry.to.trim().toLowerCase();
+    const paxN = String(entry.passengers ?? '1').trim();
+    const alreadyExists = local.some((x) => {
+      const xf = x.from.trim().toLowerCase();
+      const xt = x.to.trim().toLowerCase();
+      return xf === fromN && xt === toN && String(x.passengers ?? '1').trim() === paxN;
+    });
+    if (alreadyExists) return local;
+    return mergeLocalOnly();
+  }
+
   try {
     // Frontend de-dupe: don't call backend if the same recent already exists locally.
     // This prevents the "same from/to again" action from creating additional rows.
@@ -108,26 +143,19 @@ export async function addRecentSearch(
     await api.post(API.endpoints.recentSearches.upsert, entry);
     return loadRecentSearches(userKey);
   } catch {
-    const list = await loadLocal(userKey);
-    // Local fallback de-dupe should not depend on date; user wants "same route" to stay one row.
-    const dedupeKey = `${entry.from.trim().toLowerCase()}|${entry.to.trim().toLowerCase()}|${String(entry.passengers ?? '1').trim()}`;
-    const filtered = list.filter(
-      (x) =>
-        `${x.from.trim().toLowerCase()}|${x.to.trim().toLowerCase()}|${String(x.passengers ?? '1').trim()}` !== dedupeKey
-    );
-    const next: RecentSearchEntry[] = [
-      {
-        id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
-        ...entry,
-      },
-      ...filtered,
-    ].slice(0, 3);
-    await saveLocal(next, userKey);
-    return next;
+    return mergeLocalOnly();
   }
 }
 
 export async function removeRecentSearch(id: string, userKey?: string): Promise<void> {
+  if (!hasAuthAccessToken()) {
+    const list = await loadLocal(userKey);
+    await saveLocal(
+      list.filter((x) => x.id !== id),
+      userKey
+    );
+    return;
+  }
   try {
     await api.delete(API.endpoints.recentSearches.remove(id));
   } catch {
@@ -140,6 +168,10 @@ export async function removeRecentSearch(id: string, userKey?: string): Promise<
 }
 
 export async function clearRecentSearches(userKey?: string): Promise<void> {
+  if (!hasAuthAccessToken()) {
+    await AsyncStorage.removeItem(scopedKey(userKey));
+    return;
+  }
   try {
     await api.delete(API.endpoints.recentSearches.clear);
   } catch {

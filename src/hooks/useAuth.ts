@@ -9,10 +9,9 @@ export function useAuth() {
   const ctx = useAuthContext();
 
   const loginWithPhone = useCallback(
-    (user: Pick<User, 'id' | 'phone' | 'name'>) => {
+    (user: Pick<User, 'id' | 'phone' | 'name'>, accessToken: string, refreshToken?: string | null) => {
       ctx.setLoading(true);
-      // TODO: call your auth API, then:
-      ctx.login(user);
+      ctx.login(user, accessToken, refreshToken ?? accessToken);
       ctx.setLoading(false);
     },
     [ctx]

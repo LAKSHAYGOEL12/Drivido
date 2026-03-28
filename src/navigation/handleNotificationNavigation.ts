@@ -1,5 +1,5 @@
 import type { NavigationContainerRef } from '@react-navigation/native';
-import type { MainTabParamList } from './types';
+import type { RootStackParamList } from './types';
 import { fetchRideDetailRaw } from '../services/rideDetailCache';
 import { unwrapRideFromDetailResponse } from '../utils/unwrapRideDetail';
 
@@ -42,7 +42,7 @@ async function loadRide(
  * Navigate from notification `data` (Expo `content.data`). Requires auth + Navigation ready.
  */
 export async function navigateFromNotificationPayload(
-  navigationRef: NavigationContainerRef<MainTabParamList> | null,
+  navigationRef: NavigationContainerRef<RootStackParamList> | null,
   data: Record<string, unknown> | undefined | null,
   viewerUserId: string
 ): Promise<void> {
@@ -66,40 +66,55 @@ export async function navigateFromNotificationPayload(
 
   if (!rideId) {
     if (isChat || isRideEvent) {
-      navigationRef.navigate('YourRides', { screen: 'YourRidesList' });
+      navigationRef.navigate('Main', {
+        screen: 'YourRides',
+        params: { screen: 'YourRidesList' },
+      });
     }
     return;
   }
 
   const ride = await loadRide(rideId, viewerUserId);
   if (!ride) {
-    navigationRef.navigate('YourRides', { screen: 'YourRidesList' });
+    navigationRef.navigate('Main', {
+      screen: 'YourRides',
+      params: { screen: 'YourRidesList' },
+    });
     return;
   }
 
   if (isChat) {
-    navigationRef.navigate('Inbox', {
-      screen: 'Chat',
+    navigationRef.navigate('Main', {
+      screen: 'Inbox',
       params: {
-        ride,
-        otherUserName: pickOtherUserName(data),
-        otherUserId: pickOtherUserId(data),
+        screen: 'Chat',
+        params: {
+          ride,
+          otherUserName: pickOtherUserName(data),
+          otherUserId: pickOtherUserId(data),
+        },
       },
     });
     return;
   }
 
   if (isRideEvent || type === '') {
-    navigationRef.navigate('YourRides', {
-      screen: 'RideDetail',
-      params: { ride },
+    navigationRef.navigate('Main', {
+      screen: 'YourRides',
+      params: {
+        screen: 'RideDetail',
+        params: { ride },
+      },
     });
     return;
   }
 
   // Unknown type but we have a ride — open detail
-  navigationRef.navigate('YourRides', {
-    screen: 'RideDetail',
-    params: { ride },
+  navigationRef.navigate('Main', {
+    screen: 'YourRides',
+    params: {
+      screen: 'RideDetail',
+      params: { ride },
+    },
   });
 }

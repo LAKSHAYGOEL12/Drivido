@@ -1,5 +1,6 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import UserAvatar from '../../components/common/UserAvatar';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
@@ -34,8 +35,13 @@ export default function OwnerRatingsModal(): React.JSX.Element {
 
   const targetUserId = route.params?.userId?.trim() ?? '';
   const targetDisplayName = route.params?.displayName?.trim() ?? 'User';
-
-  const avatarLetter = (targetDisplayName || 'User').charAt(0).toUpperCase();
+  const paramRatedUserAvatar = route.params?.avatarUrl?.trim();
+  const [fetchedSubjectAvatar, setFetchedSubjectAvatar] = useState<string | undefined>();
+  const headerPhotoUri =
+    paramRatedUserAvatar ||
+    (targetUserId && targetUserId === (user?.id ?? '').trim() ? (user?.avatarUrl ?? '').trim() : '') ||
+    (fetchedSubjectAvatar ?? '').trim() ||
+    undefined;
 
   const [avgRating, setAvgRating] = useState(0);
   const [totalRatings, setTotalRatings] = useState(0);
@@ -82,6 +88,7 @@ export default function OwnerRatingsModal(): React.JSX.Element {
     useCallback(() => {
       if (!targetUserId) {
         setLoading(true);
+        setFetchedSubjectAvatar(undefined);
         return () => {};
       }
 
@@ -95,11 +102,13 @@ export default function OwnerRatingsModal(): React.JSX.Element {
           setAvgRating(summary.avgRating ?? 0);
           setTotalRatings(summary.totalRatings ?? 0);
           setRecentReviews(summary.reviews ?? []);
+          setFetchedSubjectAvatar(summary.subjectAvatarUrl);
         } catch {
           if (cancelled) return;
           setAvgRating(0);
           setTotalRatings(0);
           setRecentReviews([]);
+          setFetchedSubjectAvatar(undefined);
         } finally {
           if (cancelled) return;
           setLoading(false);
@@ -192,7 +201,13 @@ export default function OwnerRatingsModal(): React.JSX.Element {
             <Ionicons name="arrow-back" size={20} color={COLORS.text} />
           </Pressable>
           <View style={styles.topAvatar}>
-            <Text style={styles.topAvatarText}>{avatarLetter}</Text>
+            <UserAvatar
+              uri={headerPhotoUri}
+              name={targetDisplayName}
+              size={34}
+              backgroundColor="#dbeafe"
+              fallbackTextColor="#1e40af"
+            />
           </View>
           <View style={styles.topTitleWrap}>
             <Text style={styles.topTitle}>Ratings</Text>
@@ -268,15 +283,21 @@ export default function OwnerRatingsModal(): React.JSX.Element {
                     navigation.navigate('OwnerProfileModal' as never, {
                       userId: review.fromUserId,
                       displayName: review.fromUserName,
+                      ...(review.fromUserAvatarUrl?.trim()
+                        ? { avatarUrl: review.fromUserAvatarUrl.trim() }
+                        : {}),
                     } as never);
                   }}
                   disabled={!review.fromUserId}
                 >
                   <View style={styles.reviewHead}>
                     <View style={styles.avatar}>
-                      <Text style={styles.avatarText}>
-                        {(review.fromUserName?.charAt(0) || review.fromUserId?.charAt(0) || 'U')?.toUpperCase()}
-                      </Text>
+                      <UserAvatar
+                        uri={review.fromUserAvatarUrl}
+                        name={review.fromUserName || review.fromUserId || 'User'}
+                        size={36}
+                        backgroundColor="#e2e8f0"
+                      />
                     </View>
                     <View style={styles.reviewNameWrap}>
                       <Text style={styles.reviewName}>
@@ -315,8 +336,7 @@ const styles = StyleSheet.create({
   content: { padding: 16, paddingBottom: 30, gap: 14 },
   topBar: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   iconButton: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
-  topAvatar: { width: 42, height: 42, borderRadius: 21, backgroundColor: COLORS.backgroundSecondary, alignItems: 'center', justifyContent: 'center' },
-  topAvatarText: { fontSize: 18, fontWeight: '900', color: COLORS.text },
+  topAvatar: { width: 34, height: 34, borderRadius: 17, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
   topTitleWrap: { flex: 1 },
   topTitle: { fontSize: 18, fontWeight: '900', color: COLORS.text },
   topSubtitle: { fontSize: 13, fontWeight: '700', color: COLORS.textSecondary },
@@ -350,8 +370,7 @@ const styles = StyleSheet.create({
   reviewItem: { gap: 8, paddingVertical: 6 },
   reviewDivider: { borderTopWidth: 1, borderTopColor: COLORS.borderLight, marginTop: 10, paddingTop: 10 },
   reviewHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
-  avatar: { width: 30, height: 30, borderRadius: 15, backgroundColor: COLORS.backgroundSecondary, alignItems: 'center', justifyContent: 'center' },
-  avatarText: { fontSize: 13, fontWeight: '900', color: COLORS.text },
+  avatar: { width: 36, height: 36, borderRadius: 18, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
   reviewNameWrap: { flex: 1 },
   reviewName: { fontSize: 13, fontWeight: '900', color: COLORS.text },
   reviewTime: { fontSize: 11, fontWeight: '800', color: COLORS.textSecondary },

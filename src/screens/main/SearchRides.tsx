@@ -63,11 +63,11 @@ function formatRecentSubline(dateStr: string, passengersStr: string): string {
 export default function SearchRides(): React.JSX.Element {
   const navigation = useNavigation<any>();
   const route = useRoute<any>();
-  const { user } = useAuth();
+  const { user, isAuthenticated } = useAuth();
   const recentUserKey = (user?.id ?? user?.phone ?? '').trim();
   const { error: locationError } = useLocation();
   const welcomeName =
-    user?.name?.trim() || user?.phone?.trim() || 'there';
+    user?.name?.trim() || user?.phone?.trim() || user?.email?.trim() || '';
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const [fromLat, setFromLat] = useState<number | undefined>(undefined);
@@ -102,8 +102,12 @@ export default function SearchRides(): React.JSX.Element {
 
   useFocusEffect(
     useCallback(() => {
-      loadRecentSearches(recentUserKey).then(setRecents);
-    }, [recentUserKey])
+      if (!isAuthenticated) {
+        setRecents([]);
+        return;
+      }
+      void loadRecentSearches(recentUserKey).then(setRecents);
+    }, [recentUserKey, isAuthenticated])
   );
 
   useFocusEffect(
@@ -273,10 +277,18 @@ export default function SearchRides(): React.JSX.Element {
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        <Text style={styles.welcomeLine}>
-          Welcome,{' '}
-          <Text style={styles.welcomeName}>{welcomeName}</Text>
-        </Text>
+        {isAuthenticated ? (
+          <Text style={styles.welcomeLine}>
+            {welcomeName ? (
+              <>
+                Welcome,{' '}
+                <Text style={styles.welcomeName}>{welcomeName}</Text>
+              </>
+            ) : (
+              'Welcome back'
+            )}
+          </Text>
+        ) : null}
         <Text style={styles.heroTitle}>Find a ride</Text>
         <Text style={styles.heroSubtitle}>Set pickup, destination & date</Text>
 
@@ -367,7 +379,7 @@ export default function SearchRides(): React.JSX.Element {
           </TouchableOpacity>
         </View>
 
-        {recents.length > 0 ? (
+        {isAuthenticated && recents.length > 0 ? (
           <View style={styles.recentsSection}>
             <View style={styles.recentsHeader}>
               <Text style={styles.recentsTitle}>RECENT SEARCHES</Text>
@@ -445,7 +457,7 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     paddingHorizontal: 16,
-    paddingTop: 8,
+    paddingTop: 24,
     paddingBottom: 32,
   },
   welcomeLine: {

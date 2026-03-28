@@ -35,6 +35,8 @@ export interface LoginResponse {
     createdAt?: string;
     created_at?: string;
     avatarUri?: string | null;
+    avatarUrl?: string | null;
+    avatar_url?: string | null;
     verified?: boolean;
   };
   token: string;
@@ -57,6 +59,9 @@ export interface RegisterResponse {
     name?: string;
     createdAt?: string;
     created_at?: string;
+    avatarUrl?: string | null;
+    avatar_url?: string | null;
+    avatarUri?: string | null;
   };
   token: string;
 }
@@ -124,6 +129,10 @@ export interface CreateRidePayload {
   seats: number;
   username: string;
   price?: string;
+  /** Booking mode for seat confirmation flow. */
+  bookingMode?: 'instant' | 'request';
+  /** Backward-compatible alias accepted by backend validation. */
+  instantBooking?: boolean;
   /** Google Directions (or fallback) travel time in seconds — used for arrival time on cards. */
   estimatedDurationSeconds?: number;
 }
@@ -177,6 +186,14 @@ export interface RideListItem {
   totalBookings?: number;
   /** Fare; include in GET /rides for list/detail cards. */
   price?: string;
+  /** Publisher/driver profile image when API provides it (list or detail). */
+  publisherAvatarUrl?: string;
+  /**
+   * Optional aggregates for the publisher (driver), from GET /rides list/detail when backend embeds them.
+   * Passed into Owner profile when a signed-in user opens Details (no ratings fetch on ride detail).
+   */
+  publisherAvgRating?: number;
+  publisherRatingCount?: number;
   /** Optional; show under driver name on ride detail when API returns them. */
   vehicleModel?: string;
   licensePlate?: string;
@@ -188,6 +205,10 @@ export interface RideListItem {
   completedAt?: string;
   /** Ride lifecycle, e.g. open | full | cancelled | completed (when provided by API). */
   status?: string;
+  /** Booking mode for passenger flow: 'instant' or 'request'. */
+  bookingMode?: 'instant' | 'request' | string;
+  /** Backward-compatible toggle used by older payloads. false means request flow. */
+  instantBooking?: boolean;
   /**
    * Client: from GET /bookings merge — current user's booking status on this ride
    * (e.g. cancelled) for list filters and badges.
@@ -204,6 +225,7 @@ export interface RideListItem {
     bookedAt: string;
     pickupLocationName?: string;
     destinationLocationName?: string;
+    avatarUrl?: string;
   }>;
 }
 
@@ -252,6 +274,7 @@ export interface RideDetailResponse {
     bookedAt: string;
     pickupLocationName?: string;
     destinationLocationName?: string;
+    avatarUrl?: string;
   }>;
 }
 
@@ -286,6 +309,8 @@ export interface ChatConversationResponse {
   ride: RideListItem;
   otherUserId: string;
   otherUserName: string;
+  /** When backend includes peer profile image for inbox / chat headers. */
+  otherUserAvatarUrl?: string;
   lastMessage: string;
   lastMessageAt: number;
   lastMessageSenderId: string;

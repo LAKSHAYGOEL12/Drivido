@@ -48,6 +48,7 @@ import {
   type PlaceRecentEntry,
   type PlaceRecentFieldType,
 } from '../../services/place-recent-storage';
+import { pickPublisherAvatarUrl } from '../../utils/avatarUrl';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -161,6 +162,7 @@ function normalizeRideItem(raw: Record<string, unknown>): RideListItem {
       r.publisher_name ??
       nestedUser?.name
   );
+  const pubAvatar = pickPublisherAvatarUrl(r);
   return {
     id: String(r.id ?? ''),
     userId: toStr(r.userId ?? r.user_id ?? r.driverId ?? r.driver_id),
@@ -215,6 +217,7 @@ function normalizeRideItem(raw: Record<string, unknown>): RideListItem {
       if (rawVi === 'false') return { viewerIsOwner: false };
       return {};
     })(),
+    ...(pubAvatar ? { publisherAvatarUrl: pubAvatar } : {}),
   };
 }
 
@@ -561,7 +564,7 @@ type RidesResponse = { rides?: unknown[] } | unknown[];
 export default function SearchResultsScreen(): React.JSX.Element {
   const navigation = useNavigation();
   const route = useRoute<SearchResultsRouteProp>();
-  const { user } = useAuth();
+  const { user, isAuthenticated } = useAuth();
   const recentUserKey = (user?.id ?? user?.phone ?? '').trim();
   const {
     from,
@@ -764,11 +767,12 @@ export default function SearchResultsScreen(): React.JSX.Element {
 
   const currentUserId = (user?.id ?? '').trim();
   const currentUserName = (user?.name ?? '').trim();
+  const viewerAvatarUrl = user?.avatarUrl?.trim();
 
   /** Only persist after results load successfully — not when tapping Search on the previous screen. */
   const recentSavedSigRef = useRef<string | null>(null);
   useEffect(() => {
-    if (loading || error) return;
+    if (!isAuthenticated || loading || error) return;
     const sig = `${searchFrom}|${searchTo}|${searchDate}|${passengersForRecent}|${searchFromLat ?? ''}|${searchFromLon ?? ''}|${searchToLat ?? ''}|${searchToLon ?? ''}`;
     if (recentSavedSigRef.current === sig) return;
     recentSavedSigRef.current = sig;
@@ -788,6 +792,7 @@ export default function SearchResultsScreen(): React.JSX.Element {
       recentUserKey
     );
   }, [
+    isAuthenticated,
     loading,
     error,
     searchFrom,
@@ -1054,6 +1059,7 @@ export default function SearchResultsScreen(): React.JSX.Element {
                 ride={item}
                 currentUserId={currentUserId}
                 currentUserName={currentUserName}
+                viewerAvatarUrl={viewerAvatarUrl}
                 seatFullUnavailable={seatFullBlocked}
                 onPress={() => {
                   if (seatFullBlocked) {

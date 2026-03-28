@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import api from './api';
+import api, { hasAuthAccessToken } from './api';
 import { API } from '../constants/API';
 
 export type PlaceRecentFieldType = 'pickup' | 'destination';
@@ -86,6 +86,9 @@ export async function loadPlaceRecents(
   userKey?: string
 ): Promise<PlaceRecentEntry[]> {
   const local = await loadLocal(fieldType, userKey);
+  if (!hasAuthAccessToken()) {
+    return local;
+  }
   try {
     const res = await api.get<unknown>(API.endpoints.recentPlaces.list);
     const arr = Array.isArray(res)
@@ -114,6 +117,14 @@ export async function upsertPlaceRecent(
     ...entry,
     lastUsedAt: nextLastUsedAt,
   };
+
+  if (!hasAuthAccessToken()) {
+    const list = await loadLocal(base.fieldType, userKey);
+    const filtered = list.filter((x) => x.placeId !== base.placeId);
+    const updated = [base, ...filtered].slice(0, 8);
+    await saveLocal(base.fieldType, updated, userKey);
+    return updated;
+  }
 
   try {
     await api.post(API.endpoints.recentPlaces.upsert, base);

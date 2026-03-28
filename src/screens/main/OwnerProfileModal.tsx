@@ -1,5 +1,6 @@
 import React, { useCallback, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import UserAvatar from '../../components/common/UserAvatar';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
@@ -23,11 +24,20 @@ export default function OwnerProfileModal(): React.JSX.Element {
 
   const targetUserId = route.params?.userId?.trim() ?? '';
   const targetDisplayName = route.params?.displayName?.trim() ?? 'User';
+  const paramAvatarUrl = route.params?.avatarUrl?.trim();
+  const paramPublisherAvg = route.params?.publisherAvgRating;
+  const paramPublisherCount = route.params?.publisherRatingCount;
   const isSelf = Boolean(user?.id?.trim() && targetUserId === user.id.trim());
+  /** No session: ratings are loaded via GET /ratings/:userId when this screen opens (see backend notes below). */
+  const isGuest = !(user?.id ?? '').trim();
+  const headerPhotoUri =
+    (isSelf ? (user?.avatarUrl ?? '').trim() || paramAvatarUrl : paramAvatarUrl) || undefined;
 
   const [loading, setLoading] = useState(true);
   const [avgRating, setAvgRating] = useState(0);
   const [totalRatings, setTotalRatings] = useState(0);
+  /** Signed-in users without ride-embedded stats: show "—" instead of a misleading 0. */
+  const [ratingKnown, setRatingKnown] = useState(false);
 
   useFocusEffect(
     useCallback(() => {
@@ -86,29 +96,66 @@ export default function OwnerProfileModal(): React.JSX.Element {
       let cancelled = false;
       setLoading(true);
 
-      void (async () => {
+      const applyPublisherParams = (): boolean => {
+        const hasAvg =
+          typeof paramPublisherAvg === 'number' && Number.isFinite(paramPublisherAvg) && paramPublisherAvg >= 0;
+        const hasCount =
+          typeof paramPublisherCount === 'number' &&
+          Number.isFinite(paramPublisherCount) &&
+          paramPublisherCount >= 0;
+        if (!hasAvg && !hasCount) return false;
+        setAvgRating(hasAvg ? Number(paramPublisherAvg.toFixed(1)) : 0);
+        setTotalRatings(hasCount ? Math.floor(paramPublisherCount) : 0);
+        setRatingKnown(true);
+        return true;
+      };
+
+      const fetchSummary = async () => {
         try {
           const summary = await getUserRatingsSummary(targetUserId);
           if (cancelled) return;
           setAvgRating(summary.avgRating ?? 0);
           setTotalRatings(summary.totalRatings ?? 0);
+          setRatingKnown(true);
         } catch {
           if (cancelled) return;
           setAvgRating(0);
           setTotalRatings(0);
+          setRatingKnown(true);
         } finally {
-          if (cancelled) return;
-          setLoading(false);
+          if (!cancelled) setLoading(false);
         }
-      })();
+      };
+
+      if (!isGuest) {
+        if (applyPublisherParams()) {
+          setLoading(false);
+          return () => {
+            cancelled = true;
+          };
+        }
+        if (isSelf) {
+          void fetchSummary();
+          return () => {
+            cancelled = true;
+          };
+        }
+        setAvgRating(0);
+        setTotalRatings(0);
+        setRatingKnown(false);
+        setLoading(false);
+        return () => {
+          cancelled = true;
+        };
+      }
+
+      void fetchSummary();
 
       return () => {
         cancelled = true;
       };
-    }, [targetUserId, isSelf])
+    }, [targetUserId, isGuest, isSelf, paramPublisherAvg, paramPublisherCount])
   );
-
-  const avatarLetter = (targetDisplayName || 'User').charAt(0).toUpperCase();
 
   if (loading) {
     return (
@@ -140,7 +187,7 @@ export default function OwnerProfileModal(): React.JSX.Element {
           </View>
 
           <View style={styles.avatarWrap}>
-            <Text style={styles.avatarText}>{avatarLetter}</Text>
+            <UserAvatar uri={headerPhotoUri} name={targetDisplayName} size={72} />
             <View style={styles.onlineDot} />
           </View>
 
@@ -150,7 +197,11 @@ export default function OwnerProfileModal(): React.JSX.Element {
 
         <View style={styles.statsCard}>
           <StatItem label="Trips" value="0" icon="car-outline" />
-          <StatItem label="Rating" value={avgRating > 0 ? avgRating.toFixed(1) : '0'} icon="star-outline" />
+          <StatItem
+            label="Rating"
+            value={!ratingKnown && !isGuest ? '—' : avgRating.toFixed(1)}
+            icon="star-outline"
+          />
           <StatItem label="Since" value={isSelf ? memberSince : '—'} icon="calendar-outline" />
         </View>
 
@@ -160,10 +211,16 @@ export default function OwnerProfileModal(): React.JSX.Element {
             <View style={styles.performanceLeft}>
               <View style={styles.ratingRow}>
               <Ionicons name="star-outline" size={16} color={COLORS.warning} />
-                <Text style={styles.ratingValue}>{avgRating > 0 ? avgRating.toFixed(1) : '0.0'}</Text>
+                <Text style={styles.ratingValue}>
+                  {!ratingKnown && !isGuest ? '—' : avgRating.toFixed(1)}
+                </Text>
                 <Text style={styles.ratingText}>Excellent</Text>
               </View>
-              <Text style={styles.reviewText}>Based on {totalRatings} reviews</Text>
+              <Text style={styles.reviewText}>
+                {!ratingKnown && !isGuest
+                  ? '—'
+                  : `Based on ${totalRatings} review${totalRatings !== 1 ? 's' : ''}`}
+              </Text>
             </View>
             <Pressable
               style={styles.performanceArrow}
@@ -172,6 +229,7 @@ export default function OwnerProfileModal(): React.JSX.Element {
                 navigation.navigate('OwnerRatingsModal', {
                   userId: targetUserId,
                   displayName: targetDisplayName,
+                  ...(headerPhotoUri ? { avatarUrl: headerPhotoUri } : {}),
                 })
               }
             >
@@ -245,17 +303,12 @@ const styles = StyleSheet.create({
   },
 
   avatarWrap: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    backgroundColor: '#dbeafe',
-    alignItems: 'center',
-    justifyContent: 'center',
     marginTop: 4,
     marginBottom: 10,
     position: 'relative',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  avatarText: { fontSize: 30, fontWeight: '800', color: COLORS.text },
   onlineDot: {
     position: 'absolute',
     right: 3,

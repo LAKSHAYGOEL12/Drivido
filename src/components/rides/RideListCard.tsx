@@ -16,6 +16,7 @@ import {
 import { bookingIsCancelled } from '../../utils/bookingStatus';
 import { getRideAvailabilityShort } from '../../utils/rideSeats';
 import { bookingPassengerDisplayName, ridePublisherDisplayName } from '../../utils/displayNames';
+import UserAvatar from '../common/UserAvatar';
 
 export type RideListCardProps = {
   ride: RideListItem;
@@ -25,8 +26,12 @@ export type RideListCardProps = {
   currentUserId?: string;
   /** Used for owner avatar initial when there are no passenger names on the card. */
   currentUserName?: string;
+  /** Current user profile image (owner card when no passenger row to show). */
+  viewerAvatarUrl?: string;
   /** Past rides: show “Cancelled” when the viewer’s booking was cancelled. */
   showCancelledBadge?: boolean;
+  /** Past rides: show “Rejected” when owner rejected passenger request. */
+  showRejectedBadge?: boolean;
   /** Past rides: show “Completed” after destination + 1h window (not cancelled). */
   showCompletedBadge?: boolean;
   /** Past rides completed: show inline rating CTA row. */
@@ -57,7 +62,9 @@ export default function RideListCard({
   onRatePress,
   currentUserId,
   currentUserName,
+  viewerAvatarUrl,
   showCancelledBadge,
+  showRejectedBadge,
   showCompletedBadge,
   showRatePrompt,
   showRatedState,
@@ -77,13 +84,38 @@ export default function RideListCard({
     .join(' • ');
   const isOwner = isViewerRideOwner(ride, currentUserId);
   const bookings = ride.bookings ?? [];
-  const activeBookings = bookings.filter((b) => !bookingIsCancelled(b.status));
-  const activePassengerCount = activeBookings.length;
-  const bookedSeats = activeBookings.reduce((sum, b) => sum + (b.seats ?? 0), 0);
+  const bookingModeSource = ride as RideListItem & {
+    bookingMode?: string;
+    booking_mode?: string;
+    instantBooking?: boolean;
+    instant_booking?: boolean;
+  };
+  const bookingModeRaw = String(
+    bookingModeSource.bookingMode ??
+      bookingModeSource.booking_mode ??
+      (
+        bookingModeSource.instantBooking === false || bookingModeSource.instant_booking === false
+          ? 'request'
+          : 'instant'
+      )
+  ).trim().toLowerCase();
+  const isRequestBookingMode = bookingModeRaw === 'request';
+  const pendingBookings = bookings.filter((b) => String(b.status ?? '').trim().toLowerCase() === 'pending');
+  const pendingRequestCount = pendingBookings.length;
+  const confirmedBookings = bookings.filter((b) => {
+    const s = String(b.status ?? '').trim().toLowerCase();
+    return !bookingIsCancelled(s) && s !== 'pending' && s !== 'rejected';
+  });
+  const activePassengerCount = confirmedBookings.length;
+  const bookedSeats = confirmedBookings.reduce((sum, b) => sum + (b.seats ?? 0), 0);
   const totalBookingsCount = getRideTotalBookingCount(ride);
   const ownerMyRidesSeatOnly = Boolean(isOwner && myRidesOwnerSummary);
   const displayName = ownerMyRidesSeatOnly
-    ? bookedSeats > 0
+    ? isRequestBookingMode
+      ? pendingRequestCount > 0
+        ? `${pendingRequestCount} request${pendingRequestCount !== 1 ? 's' : ''} pending`
+        : 'No request pending'
+      : bookedSeats > 0
       ? `${bookedSeats} seat${bookedSeats !== 1 ? 's' : ''} booked`
       : 'No seats booked yet'
     : isOwner
@@ -93,27 +125,37 @@ export default function RideListCard({
     ? vehicleSubtitle
     : isOwner
       ? hideSeatAvailability
-        ? activePassengerCount > 0
+        ? isRequestBookingMode
+          ? pendingRequestCount > 0
+            ? `${pendingRequestCount} request${pendingRequestCount !== 1 ? 's' : ''} pending`
+            : vehicleSubtitle
+          : activePassengerCount > 0
           ? `${activePassengerCount} passenger${activePassengerCount !== 1 ? 's' : ''}`
           : vehicleSubtitle
-        : activeBookings.length > 0
+        : isRequestBookingMode
+          ? pendingRequestCount > 0
+            ? `${pendingRequestCount} request${pendingRequestCount !== 1 ? 's' : ''} pending`
+            : ''
+          : confirmedBookings.length > 0
           ? `${bookedSeats} seat${bookedSeats !== 1 ? 's' : ''} booked`
           : totalBookingsCount > 0
             ? `${isRideCancelledByOwner(ride) ? 'Cancelled · ' : ''}Had ${totalBookingsCount} passenger${totalBookingsCount !== 1 ? 's' : ''}`
             : ''
       : vehicleSubtitle;
-  const nameSourceForAvatar = activeBookings.length > 0 ? activeBookings : bookings;
+  const nameSourceForAvatar = confirmedBookings.length > 0 ? confirmedBookings : bookings;
   const firstBookingForAvatar = nameSourceForAvatar[0];
-  const viewerNameInitial = (currentUserName ?? '').trim().charAt(0) || 'Y';
-  const avatarLetter = (
-    isOwner
-      ? (
-          firstBookingForAvatar
-            ? bookingPassengerDisplayName(firstBookingForAvatar).charAt(0)
-            : viewerNameInitial
-        ) || viewerNameInitial
-      : driverName.charAt(0)
-  ).toUpperCase();
+  const passengerAvatarUrl = firstBookingForAvatar?.avatarUrl?.trim();
+  const driverAvatarUrl = ride.publisherAvatarUrl?.trim();
+  const avatarImageUri = isOwner
+    ? firstBookingForAvatar
+      ? passengerAvatarUrl
+      : viewerAvatarUrl?.trim()
+    : driverAvatarUrl;
+  const avatarDisplayName = isOwner
+    ? firstBookingForAvatar
+      ? bookingPassengerDisplayName(firstBookingForAvatar)
+      : currentUserName || 'You'
+    : driverName;
   const showAvatarRow = !ownerMyRidesSeatOnly;
   const priceDisplay = formatRidePrice(ride);
   const dateShort = getRideCardDateShort(ride);
@@ -148,6 +190,11 @@ export default function RideListCard({
           {showCancelledBadge ? (
             <View style={styles.cancelledBadge}>
               <Text style={styles.cancelledBadgeText}>Cancelled</Text>
+            </View>
+          ) : null}
+          {showRejectedBadge ? (
+            <View style={styles.rejectedBadge}>
+              <Text style={styles.rejectedBadgeText}>Rejected</Text>
             </View>
           ) : null}
         </View>
@@ -201,9 +248,13 @@ export default function RideListCard({
       <View style={[styles.driverRow, !showAvatarRow && styles.driverRowNoAvatar]}>
         {showAvatarRow ? (
           <View style={styles.avatarWrap}>
-            <View style={styles.avatar}>
-              <Text style={styles.avatarText}>{avatarLetter}</Text>
-            </View>
+            <UserAvatar
+              uri={avatarImageUri}
+              name={avatarDisplayName}
+              size={36}
+              backgroundColor={COLORS.primary}
+              fallbackTextColor={COLORS.white}
+            />
             <View style={styles.statusDot} />
           </View>
         ) : null}
@@ -330,6 +381,21 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 0.3,
   },
+  rejectedBadge: {
+    backgroundColor: 'rgba(239,68,68,0.12)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(239,68,68,0.35)',
+  },
+  rejectedBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.error,
+    textTransform: 'uppercase',
+    letterSpacing: 0.3,
+  },
   completedBadge: {
     backgroundColor: 'rgba(34,197,94,0.14)',
     paddingHorizontal: 8,
@@ -447,19 +513,6 @@ const styles = StyleSheet.create({
   avatarWrap: {
     position: 'relative',
     marginRight: 8,
-  },
-  avatar: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: COLORS.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  avatarText: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: COLORS.white,
   },
   statusDot: {
     position: 'absolute',

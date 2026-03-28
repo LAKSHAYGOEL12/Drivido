@@ -1,5 +1,11 @@
 import api from './api';
 import { API } from '../constants/API';
+import {
+  pickAvatarUrlFromRecord,
+  pickSubjectAvatarFromApiEnvelope,
+  findAvatarUrlForUserInTree,
+  stringifyApiUserId,
+} from '../utils/avatarUrl';
 
 export type SubmitRideRatingPayload = {
   rideId: string;
@@ -15,6 +21,7 @@ export type UserRatingReview = {
   role: string;
   fromUserName: string;
   fromUserId?: string;
+  fromUserAvatarUrl?: string;
   createdAt: string;
 };
 
@@ -22,6 +29,8 @@ export type UserRatingsSummary = {
   avgRating: number;
   totalRatings: number;
   reviews: UserRatingReview[];
+  /** Profile photo URL for the user whose ratings were fetched (when API includes nested `user`). */
+  subjectAvatarUrl?: string;
 };
 
 function extractRatingsArray(raw: unknown): unknown[] {
@@ -90,6 +99,56 @@ function asString(value: unknown): string {
   } catch {
     return '';
   }
+}
+
+function avatarWhenRecordMatchesUser(record: Record<string, unknown> | null, expectedUserId: string): string | undefined {
+  if (!record) return undefined;
+  const rid = stringifyApiUserId(record._id ?? record.id);
+  if (!rid || rid !== expectedUserId.trim()) return undefined;
+  return pickAvatarUrlFromRecord(record);
+}
+
+/** Only trust avatar if JSON says it belongs to `expectedUserId` (avoids /user/profile returning *current* user). */
+function extractVerifiedSubjectAvatar(body: unknown, expectedUserId: string): string | undefined {
+  const top = asObject(body);
+  if (!top) return undefined;
+  const layers = [top, asObject(top.data), asObject(top.user), asObject(asObject(top.data)?.user)];
+  for (const layer of layers) {
+    const hit = avatarWhenRecordMatchesUser(layer, expectedUserId);
+    if (hit) return hit;
+  }
+  return undefined;
+}
+
+/** Try common public-profile URL shapes when ratings payload omits the subject's avatar. */
+async function probePublicUserAvatar(userId: string): Promise<string | undefined> {
+  const id = userId.trim();
+  if (!id) return undefined;
+
+  const pathProbes: { path: string; userIdFromPath: boolean }[] = [
+    { path: `/users/${encodeURIComponent(id)}`, userIdFromPath: true },
+    { path: `/users/${encodeURIComponent(id)}/profile`, userIdFromPath: true },
+    { path: `/user/${encodeURIComponent(id)}`, userIdFromPath: true },
+    { path: `${API.endpoints.user.profile}?userId=${encodeURIComponent(id)}`, userIdFromPath: false },
+    { path: `${API.endpoints.user.profile}?id=${encodeURIComponent(id)}`, userIdFromPath: false },
+  ];
+
+  for (const { path, userIdFromPath } of pathProbes) {
+    const body = await api.getOptional<unknown>(path);
+    if (body == null) continue;
+    const verified = extractVerifiedSubjectAvatar(body, id);
+    if (verified) return verified;
+    if (!userIdFromPath) continue;
+    const top = asObject(body) ?? {};
+    const nested = asObject(top.data) ?? {};
+    const user = asObject(nested.user) ?? asObject(top.user) ?? {};
+    const loose =
+      pickAvatarUrlFromRecord(top) ??
+      pickAvatarUrlFromRecord(nested) ??
+      pickAvatarUrlFromRecord(user);
+    if (loose) return loose;
+  }
+  return undefined;
 }
 
 export async function getUserRatingsSummary(userId: string): Promise<UserRatingsSummary> {
@@ -225,6 +284,8 @@ export async function getUserRatingsSummary(userId: string): Promise<UserRatings
       };
 
       const fromUserNameCandidate = asString(fromUserNameRaw).trim() || findName(fromUserObj, 3) || findName(obj, 3);
+      const fromUserAvatarUrl =
+        pickAvatarUrlFromRecord(fromUserObj) ?? pickAvatarUrlFromRecord(obj) ?? undefined;
       return {
         id: asString(obj._id || obj.id) || `${idx}`,
         rating: Math.min(5, Math.max(0, Math.round(asNumber(ratingRaw)))),
@@ -232,6 +293,7 @@ export async function getUserRatingsSummary(userId: string): Promise<UserRatings
         role: asString(obj.role),
         fromUserName: fromUserNameCandidate,
         fromUserId: fromUserId || undefined,
+        ...(fromUserAvatarUrl ? { fromUserAvatarUrl } : {}),
         createdAt: asString(obj.createdAt ?? obj.updatedAt ?? obj.date),
       };
     });
@@ -252,5 +314,16 @@ export async function getUserRatingsSummary(userId: string): Promise<UserRatings
 
   // (dev logs removed)
 
-  return { avgRating: finalAvgRating, totalRatings: finalTotalRatings, reviews };
+  let subjectAvatarUrl =
+    pickSubjectAvatarFromApiEnvelope(raw, data, userObj) ?? findAvatarUrlForUserInTree(raw, userId);
+  if (!subjectAvatarUrl) {
+    subjectAvatarUrl = await probePublicUserAvatar(userId);
+  }
+
+  return {
+    avgRating: finalAvgRating,
+    totalRatings: finalTotalRatings,
+    reviews,
+    ...(subjectAvatarUrl ? { subjectAvatarUrl } : {}),
+  };
 }

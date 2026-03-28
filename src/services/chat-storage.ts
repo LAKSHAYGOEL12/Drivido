@@ -24,6 +24,8 @@ export interface StoredThread {
   ride: RideListItem;
   participantIds: [string, string];
   participantNames: Record<string, string>;
+  /** Best-effort URL for the other participant’s profile photo (inbox / chat). */
+  otherUserAvatarUrl?: string;
   lastMessage: string;
   lastMessageAt: number;
   lastMessageSenderId: string;

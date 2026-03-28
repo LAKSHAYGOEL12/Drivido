@@ -11,6 +11,7 @@ import { clearRideDetailCache } from '../services/rideDetailCache';
 import { unregisterPushTokenWithBackend } from '../services/pushTokenRegistration';
 import api from '../services/api';
 import { API } from '../constants/API';
+import { pickAvatarUrlFromRecord } from '../utils/avatarUrl';
 
 export type User = {
   id: string;
@@ -18,6 +19,8 @@ export type User = {
   email?: string;
   name?: string;
   createdAt?: string;
+  /** Profile photo URL from backend (HTTPS or app file URI after pick). */
+  avatarUrl?: string;
 };
 
 type AuthState = {
@@ -31,6 +34,10 @@ type AuthContextValue = AuthState & {
   login: (user: User, accessToken: string, refreshToken?: string | null) => void;
   logout: () => void;
   setLoading: (loading: boolean) => void;
+  /** Re-fetch `/auth/me` and merge into `user` (e.g. after avatar upload). */
+  refreshUser: () => Promise<void>;
+  /** Shallow merge into current user (instant UI after upload). */
+  patchUser: (patch: Partial<User>) => void;
 };
 
 const initialState: AuthState = {
@@ -52,11 +59,18 @@ interface MeResponse {
     name?: string;
     createdAt?: string;
     created_at?: string;
+    avatarUrl?: string | null;
+    avatar_url?: string | null;
+    avatarUri?: string | null;
+    photoUrl?: string | null;
+    photo_url?: string | null;
   };
 }
 
 function userFromMe(me: MeResponse['user']): User {
   const id = typeof me.id === 'string' ? me.id : String(me._id ?? '');
+  const meRec = me as unknown as Record<string, unknown>;
+  const avatarUrl = pickAvatarUrlFromRecord(meRec);
   return {
     id,
     phone: me.phone ?? '',
@@ -66,6 +80,7 @@ function userFromMe(me: MeResponse['user']): User {
       (typeof me.createdAt === 'string' && me.createdAt.trim()) ||
       (typeof me.created_at === 'string' && me.created_at.trim()) ||
       undefined,
+    ...(avatarUrl ? { avatarUrl } : {}),
   };
 }
 
@@ -108,6 +123,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
 
   const setLoading = useCallback((isLoading: boolean) => {
     setState((prev) => ({ ...prev, isLoading }));
+  }, []);
+
+  const patchUser = useCallback((patch: Partial<User>) => {
+    setState((prev) =>
+      prev.user ? { ...prev, user: { ...prev.user, ...patch } } : prev
+    );
+  }, []);
+
+  const refreshUser = useCallback(async () => {
+    try {
+      const res = await api.get<MeResponse>(API.endpoints.auth.me);
+      const u = res?.user ? userFromMe(res.user) : null;
+      if (u) {
+        setState((prev) =>
+          prev.isAuthenticated && prev.token
+            ? { ...prev, user: u }
+            : prev
+        );
+      }
+    } catch {
+      // Session may be invalid — leave state to existing guards.
+    }
   }, []);
 
   useEffect(() => {
@@ -161,6 +198,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
     login,
     logout,
     setLoading,
+    refreshUser,
+    patchUser,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

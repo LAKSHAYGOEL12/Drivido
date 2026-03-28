@@ -11,7 +11,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
-import type { AuthStackScreenProps } from '../../navigation/types';
+import type { RootStackScreenProps } from '../../navigation/types';
 import { useAuth } from '../../contexts/AuthContext';
 import api from '../../services/api';
 import { API } from '../../constants/API';
@@ -21,8 +21,9 @@ import Input from '../../components/common/Input';
 import { COLORS } from '../../constants/colors';
 import type { RegisterResponse } from '../../types/api';
 import { requestForegroundLocationAfterAuth } from '../../services/location-permission-auth';
+import { pickAvatarUrlFromRecord } from '../../utils/avatarUrl';
 
-type Props = AuthStackScreenProps<'Register'>;
+type Props = RootStackScreenProps<'Register'>;
 
 export default function Register(): React.JSX.Element {
   const navigation = useNavigation<Props['navigation']>();
@@ -85,6 +86,7 @@ export default function Register(): React.JSX.Element {
         throw new Error('Invalid response from server');
       }
       const userId = typeof user.id === 'string' ? user.id : String((user as { _id?: unknown })._id ?? '');
+      const avatarUrl = pickAvatarUrlFromRecord(user as unknown as Record<string, unknown>);
       login(
         {
           id: userId,
@@ -97,12 +99,18 @@ export default function Register(): React.JSX.Element {
               : typeof (user as { created_at?: unknown }).created_at === 'string'
                 ? String((user as { created_at?: string }).created_at)
                 : undefined,
+          ...(avatarUrl ? { avatarUrl } : {}),
         },
         accessToken,
         refreshToken ?? accessToken
       );
       await requestForegroundLocationAfterAuth();
-      Alert.alert('Sign up done', 'Welcome! You are now signed in.', [{ text: 'OK' }]);
+      Alert.alert('Sign up done', 'Welcome! You are now signed in.', [
+        {
+          text: 'OK',
+          onPress: () => navigation.navigate('Main'),
+        },
+      ]);
     } catch (e: unknown) {
       const message =
         e && typeof e === 'object' && 'message' in e

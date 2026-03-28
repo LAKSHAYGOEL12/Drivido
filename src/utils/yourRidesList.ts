@@ -14,6 +14,11 @@ export type YourRidesListContext = {
   bookedRideIds: ReadonlySet<string>;
 };
 
+function isBookingCancelledOrRejected(status: string | undefined | null): boolean {
+  const s = String(status ?? '').trim().toLowerCase();
+  return bookingIsCancelled(s) || s === 'rejected';
+}
+
 function isCompletedByBackend(r: RideListItem): boolean {
   return String(r.status ?? '').trim().toLowerCase() === 'completed';
 }
@@ -49,7 +54,7 @@ export function matchesMyRidesTab(r: RideListItem, ctx: YourRidesListContext): b
     isMineOrBooked(r, ctx) &&
     !isCompletedByBackend(r) &&
     !isRidePastArrivalWindow(r) &&
-    !bookingIsCancelled(r.myBookingStatus) &&
+    !isBookingCancelledOrRejected(r.myBookingStatus) &&
     !isRideCancelledByOwner(r)
   );
 }
@@ -63,7 +68,7 @@ export function matchesPastRidesTab(r: RideListItem, ctx: YourRidesListContext):
     isMineOrBooked(r, ctx) &&
     (isCompletedByBackend(r) ||
       isRidePastArrivalWindow(r) ||
-      bookingIsCancelled(r.myBookingStatus) ||
+      isBookingCancelledOrRejected(r.myBookingStatus) ||
       isRideCancelledByOwner(r))
   );
 }

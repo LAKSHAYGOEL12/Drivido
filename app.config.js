@@ -46,6 +46,7 @@ const config = {
         return plugin;
       }),
       'expo-secure-store',
+      'expo-font',
     ],
     // Android Maps key and package (required for prebuild)
     android: {

@@ -1,5 +1,15 @@
 import React, { useCallback, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Alert,
+  Modal,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect, useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -7,15 +17,21 @@ import { useAuth } from '../../contexts/AuthContext';
 import { COLORS } from '../../constants/colors';
 import type { ProfileStackParamList } from '../../navigation/types';
 import { getUserRatingsSummary } from '../../services/ratings';
+import UserAvatar from '../../components/common/UserAvatar';
+import { useImagePicker } from '../../hooks/useImagePicker';
+import { uploadUserAvatar, deleteUserAvatar } from '../../services/userAvatar';
 
 export default function Profile(): React.JSX.Element {
-  const { user, logout } = useAuth();
+  const { user, logout, refreshUser, patchUser } = useAuth();
+  const { pickFromGallery, takePhoto } = useImagePicker();
   const navigation = useNavigation<NativeStackNavigationProp<ProfileStackParamList>>();
   const route = useRoute<RouteProp<ProfileStackParamList, 'ProfileHome' | 'ProfileEntry'>>();
   const [profileName, setProfileName] = useState(user?.name?.trim() || 'Drivido User');
   const [avgRating, setAvgRating] = useState(0);
   const [totalRatings, setTotalRatings] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [avatarUploading, setAvatarUploading] = useState(false);
+  const [photoMenuVisible, setPhotoMenuVisible] = useState(false);
 
   const routeUserId = route.params?.userId?.trim();
   const routeDisplayName = route.params?.displayName?.trim();
@@ -40,7 +56,56 @@ export default function Profile(): React.JSX.Element {
   })();
 
   const displayName = profileName || targetDisplayName;
-  const firstLetter = displayName.charAt(0).toUpperCase();
+  const routeAvatarUrl = route.params?.avatarUrl?.trim();
+  const profileHeaderPhotoUri =
+    (isSelf ? (user?.avatarUrl ?? routeAvatarUrl) : routeAvatarUrl) || undefined;
+
+  const pickAndUpload = useCallback(
+    async (source: 'library' | 'camera') => {
+      const picked =
+        source === 'library'
+          ? await pickFromGallery({ aspect: [1, 1], quality: 0.85 })
+          : await takePhoto({ aspect: [1, 1], quality: 0.85 });
+      if (!picked?.uri) return;
+      setAvatarUploading(true);
+      try {
+        const url = await uploadUserAvatar(picked.uri);
+        patchUser({ avatarUrl: url });
+        await refreshUser();
+      } catch (e) {
+        Alert.alert(
+          'Upload failed',
+          e instanceof Error ? e.message : 'Could not update your photo. Check the server and try again.'
+        );
+      } finally {
+        setAvatarUploading(false);
+      }
+    },
+    [patchUser, pickFromGallery, refreshUser, takePhoto]
+  );
+
+  const handleRemoveAvatar = useCallback(async () => {
+    setAvatarUploading(true);
+    try {
+      await deleteUserAvatar();
+      patchUser({ avatarUrl: undefined });
+      await refreshUser();
+    } catch (e) {
+      Alert.alert(
+        'Could not remove photo',
+        e instanceof Error ? e.message : 'The server may not support removing photos yet.'
+      );
+    } finally {
+      setAvatarUploading(false);
+    }
+  }, [patchUser, refreshUser]);
+
+  const closePhotoMenu = useCallback(() => setPhotoMenuVisible(false), []);
+
+  const openPhotoOptions = useCallback(() => {
+    if (!isSelf) return;
+    setPhotoMenuVisible(true);
+  }, [isSelf]);
 
   useFocusEffect(
     useCallback(() => {
@@ -58,6 +123,7 @@ export default function Profile(): React.JSX.Element {
       void (async () => {
         try {
           const summary = await getUserRatingsSummary(targetUserId);
+          if (isSelf) await refreshUser();
           if (cancelled) return;
           setProfileName(targetDisplayName);
           setAvgRating(summary.avgRating);
@@ -75,7 +141,7 @@ export default function Profile(): React.JSX.Element {
       return () => {
         cancelled = true;
       };
-    }, [targetUserId, targetDisplayName, isProfileEntryScreen])
+    }, [targetUserId, targetDisplayName, isProfileEntryScreen, isSelf, refreshUser])
   );
 
   if (loading) {
@@ -86,7 +152,10 @@ export default function Profile(): React.JSX.Element {
     );
   }
 
+  const hasAvatar = Boolean((user?.avatarUrl ?? '').trim());
+
   return (
+    <>
     <ScrollView style={styles.screen} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
       <View style={styles.headerCard}>
         <View style={styles.headerTopRow}>
@@ -119,9 +188,34 @@ export default function Profile(): React.JSX.Element {
           <View style={styles.headerRightSpacer} />
         </View>
 
-        <View style={styles.avatarWrap}>
-          <Text style={styles.avatarText}>{firstLetter}</Text>
-          <View style={styles.onlineDot} />
+        <View style={styles.avatarBlock}>
+          <View style={styles.avatarWithFab}>
+            <View style={styles.avatarRing}>
+              <UserAvatar
+                uri={profileHeaderPhotoUri}
+                name={displayName}
+                size={72}
+              />
+              {avatarUploading ? (
+                <View style={styles.avatarUploadOverlay}>
+                  <ActivityIndicator color={COLORS.primary} />
+                </View>
+              ) : null}
+            </View>
+            {isSelf ? (
+              <Pressable
+                style={[styles.avatarFab, avatarUploading && styles.avatarFabDisabled]}
+                onPress={openPhotoOptions}
+                disabled={avatarUploading}
+                accessibilityRole="button"
+                accessibilityLabel="Change profile photo"
+                hitSlop={8}
+              >
+                <Ionicons name="camera" size={17} color={COLORS.primary} />
+              </Pressable>
+            ) : null}
+            <View style={[styles.onlineDot, isSelf && styles.onlineDotSelf]} />
+          </View>
         </View>
         <Text style={styles.name}>{displayName}</Text>
         <Text style={styles.bio}>Top-rated urban navigator and tech enthusiast.</Text>
@@ -132,12 +226,6 @@ export default function Profile(): React.JSX.Element {
         <StatItem label="Rating" value={avgRating > 0 ? avgRating.toFixed(1) : '0'} icon="star-outline" />
         <StatItem label="Since" value={memberSince} icon="calendar-outline" />
       </View>
-
-      {isSelf ? (
-        <Pressable style={styles.editButton} accessibilityRole="button">
-          <Text style={styles.editButtonText}>Edit Profile</Text>
-        </Pressable>
-      ) : null}
 
       <View style={styles.performanceCard}>
         <Text style={styles.performanceLabel}>PERFORMANCE</Text>
@@ -158,6 +246,7 @@ export default function Profile(): React.JSX.Element {
               navigation.navigate('Ratings', {
                 userId: targetUserId || undefined,
                 displayName: targetDisplayName,
+                ...(isSelf && user?.avatarUrl?.trim() ? { avatarUrl: user.avatarUrl.trim() } : {}),
               })
             }
           >
@@ -191,6 +280,72 @@ export default function Profile(): React.JSX.Element {
         </>
       ) : null}
     </ScrollView>
+
+    {isSelf ? (
+      <Modal
+        visible={photoMenuVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={closePhotoMenu}
+        statusBarTranslucent
+      >
+        <View style={styles.photoMenuRoot}>
+          <Pressable
+            style={styles.photoMenuBackdrop}
+            onPress={closePhotoMenu}
+            accessibilityRole="button"
+            accessibilityLabel="Dismiss"
+          />
+          <View style={styles.photoMenuSheet}>
+            <Text style={styles.photoMenuTitle}>Profile photo</Text>
+            <View style={styles.photoMenuTitleRule} />
+            <Pressable
+              style={({ pressed }) => [styles.photoMenuRow, pressed && styles.photoMenuRowPressed]}
+              onPress={() => {
+                closePhotoMenu();
+                void pickAndUpload('library');
+              }}
+              accessibilityRole="button"
+            >
+              <Ionicons name="images-outline" size={22} color={COLORS.text} />
+              <Text style={styles.photoMenuRowLabel}>Photo library</Text>
+            </Pressable>
+            <Pressable
+              style={({ pressed }) => [styles.photoMenuRow, pressed && styles.photoMenuRowPressed]}
+              onPress={() => {
+                closePhotoMenu();
+                void pickAndUpload('camera');
+              }}
+              accessibilityRole="button"
+            >
+              <Ionicons name="camera-outline" size={22} color={COLORS.text} />
+              <Text style={styles.photoMenuRowLabel}>Camera</Text>
+            </Pressable>
+            {hasAvatar ? (
+              <Pressable
+                style={({ pressed }) => [styles.photoMenuRow, pressed && styles.photoMenuRowPressed]}
+                onPress={() => {
+                  closePhotoMenu();
+                  void handleRemoveAvatar();
+                }}
+                accessibilityRole="button"
+              >
+                <Ionicons name="trash-outline" size={22} color={COLORS.error} />
+                <Text style={[styles.photoMenuRowLabel, styles.photoMenuRowLabelDestructive]}>Remove photo</Text>
+              </Pressable>
+            ) : null}
+            <Pressable
+              style={({ pressed }) => [styles.photoMenuCancel, pressed && styles.photoMenuRowPressed]}
+              onPress={closePhotoMenu}
+              accessibilityRole="button"
+            >
+              <Text style={styles.photoMenuCancelText}>Cancel</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+    ) : null}
+    </>
   );
 }
 
@@ -327,21 +482,67 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  avatarWrap: {
+  avatarBlock: {
+    marginTop: 4,
+    marginBottom: 10,
+    alignItems: 'center',
+  },
+  avatarWithFab: {
+    width: 72,
+    height: 72,
+    position: 'relative',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  avatarRing: {
     width: 72,
     height: 72,
     borderRadius: 36,
-    backgroundColor: '#dbeafe',
+    borderWidth: 2,
+    borderColor: COLORS.white,
+    backgroundColor: COLORS.white,
+    overflow: 'hidden',
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.08,
+        shadowRadius: 8,
+      },
+      android: { elevation: 3 },
+    }),
+  },
+  avatarUploadOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 36,
+    backgroundColor: 'rgba(255,255,255,0.72)',
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 4,
-    marginBottom: 10,
-    position: 'relative',
   },
-  avatarText: {
-    fontSize: 30,
-    fontWeight: '800',
-    color: COLORS.text,
+  avatarFab: {
+    position: 'absolute',
+    right: -4,
+    bottom: -4,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: COLORS.white,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: COLORS.backgroundSecondary,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.12,
+        shadowRadius: 3,
+      },
+      android: { elevation: 4 },
+    }),
+  },
+  avatarFabDisabled: {
+    opacity: 0.55,
   },
   onlineDot: {
     position: 'absolute',
@@ -353,6 +554,90 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.error,
     borderWidth: 2,
     borderColor: COLORS.white,
+  },
+  onlineDotSelf: {
+    right: undefined,
+    left: 0,
+    bottom: 4,
+  },
+  photoMenuRoot: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 28,
+  },
+  photoMenuBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(15, 23, 42, 0.45)',
+  },
+  photoMenuSheet: {
+    width: '100%',
+    maxWidth: 340,
+    backgroundColor: COLORS.white,
+    borderRadius: 16,
+    paddingHorizontal: 8,
+    paddingTop: 4,
+    paddingBottom: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: COLORS.borderLight,
+    zIndex: 1,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 8 },
+        shadowOpacity: 0.18,
+        shadowRadius: 24,
+      },
+      android: { elevation: 12 },
+    }),
+  },
+  photoMenuTitle: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: COLORS.text,
+    textAlign: 'center',
+    paddingTop: 4,
+    paddingBottom: 12,
+    paddingHorizontal: 8,
+    letterSpacing: 0.2,
+  },
+  photoMenuTitleRule: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: COLORS.border,
+    marginHorizontal: 12,
+    marginBottom: 4,
+  },
+  photoMenuRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+  },
+  photoMenuRowPressed: {
+    backgroundColor: COLORS.backgroundSecondary,
+  },
+  photoMenuRowLabel: {
+    fontSize: 17,
+    fontWeight: '500',
+    color: COLORS.text,
+  },
+  photoMenuRowLabelDestructive: {
+    color: COLORS.error,
+    fontWeight: '600',
+  },
+  photoMenuCancel: {
+    marginTop: 4,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 16,
+    borderRadius: 12,
+  },
+  photoMenuCancelText: {
+    fontSize: 17,
+    fontWeight: '600',
+    color: COLORS.textSecondary,
   },
   name: {
     fontSize: 26,
@@ -386,18 +671,6 @@ const styles = StyleSheet.create({
   statLabel: {
     fontSize: 12,
     color: COLORS.textSecondary,
-  },
-  editButton: {
-    backgroundColor: COLORS.primary,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 12,
-  },
-  editButtonText: {
-    color: COLORS.white,
-    fontSize: 15,
-    fontWeight: '700',
   },
   performanceCard: {
     backgroundColor: 'rgba(34,197,94,0.08)',

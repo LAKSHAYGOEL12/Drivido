@@ -14,7 +14,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
-import type { AuthStackScreenProps } from '../../navigation/types';
+import type { RootStackScreenProps } from '../../navigation/types';
 import { useAuth } from '../../contexts/AuthContext';
 import api, { getApiBaseUrl, testServerConnection } from '../../services/api';
 import { getApiBaseUrlDebug } from '../../config/apiBaseUrl';
@@ -25,8 +25,9 @@ import Input from '../../components/common/Input';
 import { COLORS } from '../../constants/colors';
 import type { LoginResponse } from '../../types/api';
 import { requestForegroundLocationAfterAuth } from '../../services/location-permission-auth';
+import { pickAvatarUrlFromRecord } from '../../utils/avatarUrl';
 
-type Props = AuthStackScreenProps<'Login'>;
+type Props = RootStackScreenProps<'Login'>;
 
 export default function Login(): React.JSX.Element {
   const navigation = useNavigation<Props['navigation']>();
@@ -95,6 +96,7 @@ export default function Login(): React.JSX.Element {
         throw new Error('Invalid response from server');
       }
       const userId = typeof user.id === 'string' ? user.id : String((user as { _id?: unknown })._id ?? '');
+      const avatarUrl = pickAvatarUrlFromRecord(user as unknown as Record<string, unknown>);
       const userObj = {
         id: userId,
         phone: user.phone ?? '',
@@ -106,6 +108,7 @@ export default function Login(): React.JSX.Element {
             : typeof (user as { created_at?: unknown }).created_at === 'string'
               ? String((user as { created_at?: string }).created_at)
               : undefined,
+        ...(avatarUrl ? { avatarUrl } : {}),
       };
       pendingLoginRef.current = { user: userObj, accessToken, refreshToken: refreshToken ?? accessToken };
       setOverlaySuccess(true);
@@ -116,6 +119,7 @@ export default function Login(): React.JSX.Element {
           setLoginBlockedUntil(0);
           login(pending.user, pending.accessToken, pending.refreshToken);
           void requestForegroundLocationAfterAuth();
+          navigation.goBack();
         }
       }, 450);
     } catch (e: unknown) {

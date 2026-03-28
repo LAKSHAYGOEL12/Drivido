@@ -1,5 +1,6 @@
 import React, { useCallback, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import UserAvatar from '../../components/common/UserAvatar';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect, useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -32,13 +33,19 @@ export default function UserProfileEntry(): React.JSX.Element {
     return dt.toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
   })();
 
-  const firstLetter = (targetDisplayName || 'User').charAt(0).toUpperCase();
+  const [fetchedSubjectAvatar, setFetchedSubjectAvatar] = useState<string | undefined>();
+  const headerPhotoUri =
+    (route.params?.avatarUrl ?? '').trim() ||
+    (isSelf ? (user?.avatarUrl ?? '').trim() : '') ||
+    (fetchedSubjectAvatar ?? '').trim() ||
+    undefined;
 
   useFocusEffect(
     useCallback(() => {
       // Never fall back to current user on this screen.
       if (!targetUserId) {
         setLoading(true);
+        setFetchedSubjectAvatar(undefined);
         return () => {};
       }
 
@@ -51,10 +58,12 @@ export default function UserProfileEntry(): React.JSX.Element {
           if (cancelled) return;
           setAvgRating(summary.avgRating ?? 0);
           setTotalRatings(summary.totalRatings ?? 0);
+          setFetchedSubjectAvatar(summary.subjectAvatarUrl);
         } catch {
           if (cancelled) return;
           setAvgRating(0);
           setTotalRatings(0);
+          setFetchedSubjectAvatar(undefined);
         } finally {
           if (!cancelled) setLoading(false);
         }
@@ -106,7 +115,7 @@ export default function UserProfileEntry(): React.JSX.Element {
         </View>
 
         <View style={styles.avatarWrap}>
-          <Text style={styles.avatarText}>{firstLetter}</Text>
+          <UserAvatar uri={headerPhotoUri} name={targetDisplayName} size={72} />
           <View style={styles.onlineDot} />
         </View>
 
@@ -138,6 +147,9 @@ export default function UserProfileEntry(): React.JSX.Element {
               navigation.navigate('Ratings', {
                 userId: targetUserId || undefined,
                 displayName: targetDisplayName,
+                ...(route.params?.avatarUrl?.trim()
+                  ? { avatarUrl: route.params.avatarUrl.trim() }
+                  : {}),
               })
             }
           >
@@ -228,20 +240,11 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   avatarWrap: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    backgroundColor: '#dbeafe',
-    alignItems: 'center',
-    justifyContent: 'center',
     marginTop: 4,
     marginBottom: 10,
     position: 'relative',
-  },
-  avatarText: {
-    fontSize: 30,
-    fontWeight: '800',
-    color: COLORS.text,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   onlineDot: {
     position: 'absolute',

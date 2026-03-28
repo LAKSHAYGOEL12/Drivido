@@ -35,6 +35,7 @@ export interface InboxConversation {
   ride: RideListItem;
   otherUserName: string;
   otherUserId?: string;
+  otherUserAvatarUrl?: string;
   lastMessage: string;
   lastMessageAt: number;
   messageStatus: InboxMessageStatus;
@@ -51,7 +52,8 @@ type InboxState = {
     ride: RideListItem,
     otherUserName: string,
     otherUserId?: string,
-    update?: { lastMessage: string; lastMessageAt: number; messageStatus?: InboxMessageStatus }
+    update?: { lastMessage: string; lastMessageAt: number; messageStatus?: InboxMessageStatus },
+    opts?: { otherUserAvatarUrl?: string }
   ) => void;
   getMessages: (ride: RideListItem, otherUserName: string, otherUserId?: string) => PersistedChatMessage[];
   addMessage: (ride: RideListItem, otherUserName: string, otherUserId: string | undefined, msg: PersistedChatMessage) => void;
@@ -179,6 +181,7 @@ function buildConversationsForUser(threads: StoredThreads, currentUserId: string
       ride: t.ride,
       otherUserName: otherName,
       otherUserId: otherId || undefined,
+      otherUserAvatarUrl: t.otherUserAvatarUrl,
       lastMessage: t.lastMessage ?? '',
       lastMessageAt: t.lastMessageAt ?? 0,
       messageStatus: lastStatusRaw === 'read' ? 'read' : 'sent',
@@ -215,10 +218,15 @@ function mergeServerConversationsIntoThreads(
         delete next[k];
       }
     }
+    const avatarFromServer = c.otherUserAvatarUrl;
     next[key] = {
       ride: c.ride,
       participantIds: existing?.participantIds ?? participantIds,
       participantNames: { ...existing?.participantNames, ...participantNames },
+      otherUserAvatarUrl:
+        (typeof avatarFromServer === 'string' && avatarFromServer.trim()
+          ? avatarFromServer.trim()
+          : undefined) ?? existing?.otherUserAvatarUrl,
       lastMessage: c.lastMessage ?? existing?.lastMessage ?? '',
       lastMessageAt: c.lastMessageAt ?? existing?.lastMessageAt ?? 0,
       lastMessageSenderId: c.lastMessageSenderId ?? existing?.lastMessageSenderId ?? '',
@@ -408,10 +416,12 @@ export function InboxProvider({ children }: { children: React.ReactNode }): Reac
       ride: RideListItem,
       otherUserName: string,
       otherUserId?: string,
-      update?: { lastMessage: string; lastMessageAt: number; messageStatus?: InboxMessageStatus }
+      update?: { lastMessage: string; lastMessageAt: number; messageStatus?: InboxMessageStatus },
+      opts?: { otherUserAvatarUrl?: string }
     ) => {
       const otherId = (otherUserId ?? '').trim() || `name-${otherUserName}`;
       const key = getThreadKey(ride.id, currentUserId, otherId);
+      const incomingAvatar = (opts?.otherUserAvatarUrl ?? '').trim();
       setThreadsByKey((prev) => {
         const existing = prev[key];
         const base: StoredThread = existing ?? {
@@ -427,6 +437,7 @@ export function InboxProvider({ children }: { children: React.ReactNode }): Reac
         const updated: StoredThread = {
           ...base,
           participantNames: { ...base.participantNames, [currentUserId]: currentUserName, [otherId]: otherUserName.trim() || 'User' },
+          otherUserAvatarUrl: incomingAvatar || base.otherUserAvatarUrl,
           lastMessage: update?.lastMessage ?? base.lastMessage,
           lastMessageAt: update?.lastMessageAt ?? base.lastMessageAt,
           lastMessageSenderId: update ? currentUserId : base.lastMessageSenderId,

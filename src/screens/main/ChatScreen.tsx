@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   StyleSheet,
   Text,
@@ -20,6 +20,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { sendChatMessage } from '../../services/chat-api';
 import { COLORS } from '../../constants/colors';
 import { bookingIsCancelled, pickPreferredBookingForUser } from '../../utils/bookingStatus';
+import UserAvatar from '../../components/common/UserAvatar';
 
 const ROUTE_LABEL_MAX = 15;
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -74,7 +75,12 @@ function formatRideDateTime(ride: RideListItem): string {
 export default function ChatScreen(): React.JSX.Element {
   const navigation = useNavigation();
   const route = useRoute<ChatRouteProp>();
-  const { ride, otherUserName, otherUserId } = route.params;
+  const { ride, otherUserName, otherUserId, otherUserAvatarUrl: routePeerAvatar } = route.params;
+  const peerAvatarUrl = (routePeerAvatar ?? '').trim();
+  const peerAvatarOpts = useMemo(
+    () => (peerAvatarUrl ? { otherUserAvatarUrl: peerAvatarUrl } : undefined),
+    [peerAvatarUrl]
+  );
   const { addOrUpdateConversation, getMessages, addMessage, updateMessageStatus, loadThreadMessages } = useInbox();
   const { user } = useAuth();
   const [message, setMessage] = useState('');
@@ -114,8 +120,8 @@ export default function ChatScreen(): React.JSX.Element {
   }, [navigation]);
 
   useEffect(() => {
-    addOrUpdateConversation(ride, otherUserName, otherUserId);
-  }, [ride.id, otherUserName, otherUserId, addOrUpdateConversation]);
+    addOrUpdateConversation(ride, otherUserName, otherUserId, undefined, peerAvatarOpts);
+  }, [ride.id, otherUserName, otherUserId, addOrUpdateConversation, peerAvatarOpts]);
 
   // Load messages from backend when opening chat (survives reinstall / device change).
   // Cleanup avoids applying merged state after navigating away; InboxContext also TTL/dedupes fetches.
@@ -185,11 +191,17 @@ export default function ChatScreen(): React.JSX.Element {
           isFromMe: true,
           status: res.status,
         });
-        addOrUpdateConversation(ride, otherUserName, otherUserId, {
-          lastMessage: res.text,
-          lastMessageAt: res.sentAt,
-          messageStatus: 'sent',
-        });
+        addOrUpdateConversation(
+          ride,
+          otherUserName,
+          otherUserId,
+          {
+            lastMessage: res.text,
+            lastMessageAt: res.sentAt,
+            messageStatus: 'sent',
+          },
+          peerAvatarOpts
+        );
         setMessage('');
         setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
         return;
@@ -208,20 +220,32 @@ export default function ChatScreen(): React.JSX.Element {
     };
     addMessage(ride, otherUserName, otherUserId, newMsg);
     setMessage('');
-    addOrUpdateConversation(ride, otherUserName, otherUserId, {
-      lastMessage: trimmed,
-      lastMessageAt: sentAt,
-      messageStatus: 'sent',
-    });
+    addOrUpdateConversation(
+      ride,
+      otherUserName,
+      otherUserId,
+      {
+        lastMessage: trimmed,
+        lastMessageAt: sentAt,
+        messageStatus: 'sent',
+      },
+      peerAvatarOpts
+    );
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
     setTimeout(() => updateMessageStatus(ride, otherUserName, otherUserId, id, 'sent'), 600);
     setTimeout(() => {
       updateMessageStatus(ride, otherUserName, otherUserId, id, 'delivered');
-      addOrUpdateConversation(ride, otherUserName, otherUserId, {
-        lastMessage: trimmed,
-        lastMessageAt: sentAt,
-        messageStatus: 'delivered',
-      });
+      addOrUpdateConversation(
+        ride,
+        otherUserName,
+        otherUserId,
+        {
+          lastMessage: trimmed,
+          lastMessageAt: sentAt,
+          messageStatus: 'sent',
+        },
+        peerAvatarOpts
+      );
     }, 1800);
   };
 
@@ -240,9 +264,14 @@ export default function ChatScreen(): React.JSX.Element {
             <Ionicons name="arrow-back" size={24} color={COLORS.primary} />
           </TouchableOpacity>
           <View style={styles.headerCenter}>
-            <View style={styles.headerAvatar}>
-              <Text style={styles.headerAvatarText}>{displayName.charAt(0).toUpperCase()}</Text>
-            </View>
+            <UserAvatar
+              uri={peerAvatarUrl || undefined}
+              name={displayName}
+              size={40}
+              backgroundColor={COLORS.primary}
+              fallbackTextColor={COLORS.white}
+              style={styles.headerAvatar}
+            />
             <View style={styles.headerNameCol}>
               <View style={styles.headerNameRow}>
                 <Text style={styles.headerName}>{displayName}</Text>
@@ -423,18 +452,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   headerAvatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: COLORS.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
     marginRight: 10,
-  },
-  headerAvatarText: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: COLORS.white,
   },
   headerNameCol: {
     flex: 1,

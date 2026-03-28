@@ -1,25 +1,22 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Animated, Easing, Text, View } from 'react-native';
-import { NavigationContainer, useNavigationContainerRef } from '@react-navigation/native';
+import { NavigationContainer } from '@react-navigation/native';
+import { rootNavigationRef } from './rootNavigationRef';
 import { useAuth } from '../contexts/AuthContext';
 import { useLocation } from '../contexts/LocationContext';
 import { usePushNotifications } from '../hooks/usePushNotifications';
-import type { MainTabParamList } from './types';
-import AuthNavigator from './AuthNavigator';
-import BottomTabs from './BottomTabs';
+import RootStack from './RootStack';
 import { COLORS } from '../constants/colors';
 
 /**
  * RootNavigator (inside AuthProvider)
- * While isLoading: show nothing (or a splash) so we don't flash login before restore.
- * ├── IF NOT LOGGED IN → AuthNavigator (Login | Register)
- * └── IF LOGGED IN    → BottomTabs (fade in for smooth transition)
+ * While isLoading: show nothing (or a splash) so we don't flash wrong state before restore.
+ * Guests land on Main tabs (Search); Login/Register are modals from book / locked tabs.
  */
 export default function RootNavigator(): React.JSX.Element | null {
   const { isAuthenticated, isLoading, user } = useAuth();
   const { prefetchLocation } = useLocation();
   const fadeAnim = useRef(new Animated.Value(0)).current;
-  const navigationRef = useNavigationContainerRef<MainTabParamList>();
   const [navReady, setNavReady] = useState(false);
   const [startupGateOpen, setStartupGateOpen] = useState(true);
   const startupMountedAtRef = useRef<number>(Date.now());
@@ -34,7 +31,7 @@ export default function RootNavigator(): React.JSX.Element | null {
   const showAuthGate = authHomeGateOpen || authTransitionFrameGate;
 
   usePushNotifications(
-    navigationRef,
+    rootNavigationRef,
     navReady,
     isAuthenticated && !isLoading,
     user?.id ?? null
@@ -105,31 +102,27 @@ export default function RootNavigator(): React.JSX.Element | null {
 
   return (
     <NavigationContainer
-      ref={navigationRef}
+      ref={rootNavigationRef}
       onReady={() => {
         setNavReady(true);
       }}
     >
-      {isAuthenticated ? (
-        <Animated.View
-          style={{
-            flex: 1,
-            opacity: fadeAnim,
-            transform: [
-              {
-                translateY: fadeAnim.interpolate({
-                  inputRange: [0, 1],
-                  outputRange: [14, 0],
-                }),
-              },
-            ],
-          }}
-        >
-          <BottomTabs />
-        </Animated.View>
-      ) : (
-        <AuthNavigator />
-      )}
+      <Animated.View
+        style={{
+          flex: 1,
+          opacity: fadeAnim,
+          transform: [
+            {
+              translateY: fadeAnim.interpolate({
+                inputRange: [0, 1],
+                outputRange: [14, 0],
+              }),
+            },
+          ],
+        }}
+      >
+        <RootStack />
+      </Animated.View>
     </NavigationContainer>
   );
 }

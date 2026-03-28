@@ -1,5 +1,6 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import UserAvatar from '../../components/common/UserAvatar';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect, useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -15,7 +16,13 @@ export default function RatingsScreen(): React.JSX.Element {
   const targetUserId = (route.params?.userId ?? user?.id ?? '').trim();
   const targetDisplayName = route.params?.displayName?.trim() || user?.name?.trim() || 'Drivido User';
   const displayName = targetDisplayName;
-  const avatarLetter = displayName.charAt(0).toUpperCase();
+  const isViewingSelf = Boolean(user?.id?.trim() && targetUserId === user.id.trim());
+  const [subjectAvatarUrl, setSubjectAvatarUrl] = useState<string | undefined>();
+  const headerAvatarUri =
+    (route.params?.avatarUrl ?? '').trim() ||
+    (isViewingSelf ? (user?.avatarUrl ?? '').trim() : '') ||
+    (subjectAvatarUrl ?? '').trim() ||
+    undefined;
   const [avgRating, setAvgRating] = useState(0);
   const [totalRatings, setTotalRatings] = useState(0);
   const [recentReviews, setRecentReviews] = useState<UserRatingReview[]>([]);
@@ -28,6 +35,7 @@ export default function RatingsScreen(): React.JSX.Element {
         setAvgRating(0);
         setTotalRatings(0);
         setRecentReviews([]);
+        setSubjectAvatarUrl(undefined);
         setLoading(false);
         return () => {};
       }
@@ -40,11 +48,13 @@ export default function RatingsScreen(): React.JSX.Element {
           setAvgRating(summary.avgRating);
           setTotalRatings(summary.totalRatings);
           setRecentReviews(summary.reviews);
+          setSubjectAvatarUrl(summary.subjectAvatarUrl);
         } catch {
           if (cancelled) return;
           setAvgRating(0);
           setTotalRatings(0);
           setRecentReviews([]);
+          setSubjectAvatarUrl(undefined);
         } finally {
           if (!cancelled) setLoading(false);
         }
@@ -155,7 +165,13 @@ export default function RatingsScreen(): React.JSX.Element {
             <Ionicons name="arrow-back" size={20} color={COLORS.text} />
           </Pressable>
           <View style={styles.topAvatar}>
-            <Text style={styles.topAvatarText}>{avatarLetter}</Text>
+            <UserAvatar
+              uri={headerAvatarUri}
+              name={displayName}
+              size={34}
+              backgroundColor="#dbeafe"
+              fallbackTextColor="#1e40af"
+            />
           </View>
           <View style={styles.topTitleWrap}>
             <Text style={styles.topTitle}>Ratings</Text>
@@ -238,14 +254,20 @@ export default function RatingsScreen(): React.JSX.Element {
                   navigation.navigate('ProfileEntry', {
                     userId: review.fromUserId,
                     displayName: review.fromUserName,
+                    ...(review.fromUserAvatarUrl?.trim()
+                      ? { avatarUrl: review.fromUserAvatarUrl.trim() }
+                      : {}),
                   } as any);
                 }}
               >
                 <View style={styles.reviewHead}>
                   <View style={styles.avatar}>
-                    <Text style={styles.avatarText}>
-                      {(review.fromUserName?.charAt(0) || review.fromUserId?.charAt(0) || 'U')?.toUpperCase()}
-                    </Text>
+                    <UserAvatar
+                      uri={review.fromUserAvatarUrl}
+                      name={review.fromUserName || review.fromUserId || 'User'}
+                      size={36}
+                      backgroundColor="#e2e8f0"
+                    />
                   </View>
                   <View style={styles.reviewNameWrap}>
                     <Text style={styles.reviewName}>
@@ -323,14 +345,9 @@ const styles = StyleSheet.create({
     width: 34,
     height: 34,
     borderRadius: 17,
-    backgroundColor: '#dbeafe',
+    overflow: 'hidden',
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  topAvatarText: {
-    fontSize: 15,
-    fontWeight: '800',
-    color: '#1e40af',
   },
   topTitle: {
     fontSize: 24,
@@ -471,14 +488,9 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 18,
+    overflow: 'hidden',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#dbeafe',
-  },
-  avatarText: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: '#1e40af',
   },
   reviewNameWrap: {
     flex: 1,

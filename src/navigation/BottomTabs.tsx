@@ -1,9 +1,11 @@
 import React from 'react';
+import { StyleSheet, View } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { CommonActions } from '@react-navigation/native';
 import { getFocusedRouteNameFromRoute } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import type { MainTabParamList } from './types';
+import UserAvatar from '../components/common/UserAvatar';
 import SearchStack from './SearchStack';
 import PublishStack from './PublishStack';
 import RidesStack from './RidesStack';
@@ -12,8 +14,43 @@ import ProfileStack from './ProfileStack';
 import { useInbox } from '../contexts/InboxContext';
 import { useAuth } from '../contexts/AuthContext';
 import { COLORS } from '../constants/colors';
+import { navigateToGuestLogin } from './navigateToGuestLogin';
 
 const Tab = createBottomTabNavigator<MainTabParamList>();
+
+function ProfileTabBarIcon({
+  focused,
+  color,
+  size,
+  avatarUrl,
+  displayName,
+}: {
+  focused: boolean;
+  color: string;
+  size: number;
+  avatarUrl?: string | null;
+  displayName: string;
+}): React.JSX.Element {
+  const uri = (avatarUrl ?? '').trim();
+  const name = displayName.trim() || 'You';
+  return (
+    <View
+      style={[
+        styles.profileTabIconRing,
+        focused && styles.profileTabIconRingFocused,
+        { width: size + 4, height: size + 4, borderRadius: (size + 4) / 2 },
+      ]}
+    >
+      <UserAvatar
+        uri={uri || undefined}
+        name={name}
+        size={size}
+        backgroundColor={focused ? 'rgba(41, 190, 139, 0.18)' : '#f1f5f9'}
+        fallbackTextColor={focused ? COLORS.primary : color}
+      />
+    </View>
+  );
+}
 
 function findMainTabNavigator(navigation: any) {
   let current = navigation?.getParent?.() as any | undefined;
@@ -27,7 +64,7 @@ function findMainTabNavigator(navigation: any) {
 
 export default function BottomTabs(): React.JSX.Element {
   const { hasUnread } = useInbox();
-  const { user } = useAuth();
+  const { user, isAuthenticated } = useAuth();
 
   return (
     <Tab.Navigator
@@ -88,6 +125,14 @@ export default function BottomTabs(): React.JSX.Element {
       <Tab.Screen
         name="PublishStack"
         component={PublishStack}
+        listeners={({ navigation }) => ({
+          tabPress: (e) => {
+            if (!isAuthenticated) {
+              e.preventDefault();
+              navigateToGuestLogin(navigation, { reason: 'tab' });
+            }
+          },
+        })}
         options={({ route }) => {
           const name = getFocusedRouteNameFromRoute(route) ?? 'PublishRide';
           const hideTabs =
@@ -112,6 +157,11 @@ export default function BottomTabs(): React.JSX.Element {
         component={RidesStack}
         listeners={({ navigation, route }) => ({
           tabPress: (e) => {
+            if (!isAuthenticated) {
+              e.preventDefault();
+              navigateToGuestLogin(navigation, { reason: 'tab' });
+              return;
+            }
             const currentRoute = getFocusedRouteNameFromRoute(route) ?? 'YourRidesList';
             if (currentRoute !== 'YourRidesList') {
               e.preventDefault();
@@ -146,6 +196,14 @@ export default function BottomTabs(): React.JSX.Element {
       <Tab.Screen
         name="Inbox"
         component={InboxStack}
+        listeners={({ navigation }) => ({
+          tabPress: (e) => {
+            if (!isAuthenticated) {
+              e.preventDefault();
+              navigateToGuestLogin(navigation, { reason: 'tab' });
+            }
+          },
+        })}
         options={({ route }) => {
           const name = getFocusedRouteNameFromRoute(route) ?? 'InboxList';
           const hideTabs = name === 'RideDetail' || name === 'Chat';
@@ -177,7 +235,11 @@ export default function BottomTabs(): React.JSX.Element {
             const routes = (tabState?.routes ?? []) as any[];
             const profileIndex = routes.findIndex((r) => r?.name === 'Profile');
 
-            const nextProfileParams = { userId: uid, displayName: user?.name };
+            const nextProfileParams = {
+              userId: uid,
+              displayName: user?.name,
+              ...(user?.avatarUrl?.trim() ? { avatarUrl: user.avatarUrl.trim() } : {}),
+            };
             // Always overwrite the Profile tab nested stack to ProfileHome.
             const nextRoutes = routes.map((r) => {
               if (r?.name !== 'Profile') return r;
@@ -198,6 +260,11 @@ export default function BottomTabs(): React.JSX.Element {
             );
           },
           tabPress: (e) => {
+            if (!isAuthenticated) {
+              e.preventDefault();
+              navigateToGuestLogin(navigation, { reason: 'tab' });
+              return;
+            }
             // Always return to *my* profile when the user taps Profile tab.
             e.preventDefault();
             const uid = user?.id?.trim();
@@ -208,7 +275,11 @@ export default function BottomTabs(): React.JSX.Element {
               const routes = (tabState?.routes ?? []) as any[];
               const profileIndex = routes.findIndex((r) => r?.name === 'Profile');
               const nextProfileParams = uid
-                ? { userId: uid, displayName: user?.name }
+                ? {
+                    userId: uid,
+                    displayName: user?.name,
+                    ...(user?.avatarUrl?.trim() ? { avatarUrl: user.avatarUrl.trim() } : {}),
+                  }
                 : undefined;
 
               const nextRoutes = routes.map((r) => {
@@ -239,7 +310,13 @@ export default function BottomTabs(): React.JSX.Element {
             // Fallback: if we can’t find parent state, just navigate.
             navigation.navigate('Profile', {
               screen: 'ProfileHome',
-              params: uid ? { userId: uid, displayName: user?.name } : undefined,
+              params: uid
+                ? {
+                    userId: uid,
+                    displayName: user?.name,
+                    ...(user?.avatarUrl?.trim() ? { avatarUrl: user.avatarUrl.trim() } : {}),
+                  }
+                : undefined,
             } as any);
           },
         })}
@@ -256,7 +333,13 @@ export default function BottomTabs(): React.JSX.Element {
             tabBarLabel: 'Profile',
             tabBarStyle: hideTabs ? { display: 'none' } : undefined,
             tabBarIcon: ({ focused, color, size }) => (
-              <Ionicons name={focused ? 'person' : 'person-outline'} size={size} color={color} />
+              <ProfileTabBarIcon
+                focused={focused}
+                color={color}
+                size={size}
+                avatarUrl={user?.avatarUrl}
+                displayName={user?.name ?? 'You'}
+              />
             ),
           };
         }}
@@ -264,3 +347,15 @@ export default function BottomTabs(): React.JSX.Element {
     </Tab.Navigator>
   );
 }
+
+const styles = StyleSheet.create({
+  profileTabIconRing: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 0,
+    borderColor: COLORS.primary,
+  },
+  profileTabIconRingFocused: {
+    borderWidth: 2,
+  },
+});

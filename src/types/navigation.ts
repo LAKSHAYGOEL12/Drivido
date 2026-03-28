@@ -15,10 +15,11 @@ export type AuthScreenParams = NavigatorScreenParams<AuthStackParamList>;
 export type MainTabParams = NavigatorScreenParams<MainTabParamList>;
 export type RootScreenParams = NavigatorScreenParams<RootStackParamList>;
 
-/** Params for Root stack screens that host a navigator */
+/** Params for root stack screens */
 export type RootStackScreenParams = {
-  Auth: AuthScreenParams;
   Main: MainTabParams;
+  Login: { reason?: 'book' | 'tab' } | undefined;
+  Register: undefined;
 };
 
 // Re-export param lists for convenience

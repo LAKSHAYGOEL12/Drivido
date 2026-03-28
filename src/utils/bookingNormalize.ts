@@ -1,4 +1,5 @@
 import type { RideListItem } from '../types/api';
+import { pickAvatarUrlFromRecord } from './avatarUrl';
 
 export type RideBookingRow = NonNullable<RideListItem['bookings']>[number];
 
@@ -28,6 +29,12 @@ export function mapRawToBookingRow(o: Record<string, unknown>): RideBookingRow |
   const bookedBy =
     o.bookedBy && typeof o.bookedBy === 'object'
       ? (o.bookedBy as Record<string, unknown>)
+      : undefined;
+  const pickupObj =
+    o.pickup != null && typeof o.pickup === 'object' ? (o.pickup as Record<string, unknown>) : undefined;
+  const destinationObj =
+    o.destination != null && typeof o.destination === 'object'
+      ? (o.destination as Record<string, unknown>)
       : undefined;
 
   /** Real-world / profile name — prefer this over login username everywhere in UI. */
@@ -61,6 +68,12 @@ export function mapRawToBookingRow(o: Record<string, unknown>): RideBookingRow |
   const bookingId = String(o.id ?? o._id ?? '');
   if (!userLabel && !userId && !bookingId) return null;
 
+  const avatarUrl =
+    pickAvatarUrlFromRecord(o) ??
+    (nestedUser ? pickAvatarUrlFromRecord(nestedUser) : undefined) ??
+    (passenger ? pickAvatarUrlFromRecord(passenger) : undefined) ??
+    (bookedBy ? pickAvatarUrlFromRecord(bookedBy) : undefined);
+
   const pickupLocationName = toStr(
     o.pickupLocationName ??
       o.pickup_location_name ??
@@ -68,7 +81,7 @@ export function mapRawToBookingRow(o: Record<string, unknown>): RideBookingRow |
       o.passenger_pickup ??
       o.bookedPickup ??
       o.booked_pickup ??
-      o.pickup?.name
+      pickupObj?.name
   );
   const destinationLocationName = toStr(
     o.destinationLocationName ??
@@ -84,7 +97,7 @@ export function mapRawToBookingRow(o: Record<string, unknown>): RideBookingRow |
       o.booked_destination ??
       o.destinationAddress ??
       o.destination_address ??
-      o.destination?.name
+      destinationObj?.name
   );
 
   return {
@@ -97,6 +110,7 @@ export function mapRawToBookingRow(o: Record<string, unknown>): RideBookingRow |
     bookedAt: toStr(o.bookedAt ?? o.booked_at ?? o.createdAt ?? o.created_at) ?? '',
     ...(pickupLocationName ? { pickupLocationName } : {}),
     ...(destinationLocationName ? { destinationLocationName } : {}),
+    ...(avatarUrl ? { avatarUrl } : {}),
   };
 }
 

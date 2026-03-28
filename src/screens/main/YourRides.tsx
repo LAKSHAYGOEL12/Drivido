@@ -60,6 +60,7 @@ import {
 import { showToast } from '../../utils/toast';
 import { hasCurrentUserRatedRide, submitRideRating } from '../../services/ratings';
 import { hasHandledRatingPrompt, markRatingPromptHandled } from '../../services/ratingPromptStorage';
+import { pickPublisherAvatarUrl } from '../../utils/avatarUrl';
 
 type FilterTab = YourRidesFilterTab;
 
@@ -180,6 +181,8 @@ function normalizeRideItem(raw: Record<string, unknown>): RideListItem {
   if (typeof rawVi === 'boolean') out.viewerIsOwner = rawVi;
   else if (rawVi === 'true') out.viewerIsOwner = true;
   else if (rawVi === 'false') out.viewerIsOwner = false;
+  const pubAvatar = pickPublisherAvatarUrl(r);
+  if (pubAvatar) out.publisherAvatarUrl = pubAvatar;
   return out;
 }
 
@@ -342,6 +345,7 @@ function YourRidesRideCard({
   filter,
   currentUserId,
   currentUserName,
+  viewerAvatarUrl,
   bookedRideIds,
   ratedRideIds,
   ratedTargetsByRide,
@@ -352,6 +356,7 @@ function YourRidesRideCard({
   filter: FilterTab;
   currentUserId: string;
   currentUserName: string;
+  viewerAvatarUrl?: string;
   bookedRideIds: Set<string>;
   ratedRideIds: Set<string>;
   ratedTargetsByRide: Record<string, string[]>;
@@ -373,6 +378,10 @@ function YourRidesRideCard({
   const seatFullBlocked = !isOwnerView && isRideSeatsFull(item) && !hasMyActiveBooking;
   const cancelledByYouInPast =
     filter === 'pastRides' && isPassengerContext && bookingIsCancelled(item.myBookingStatus);
+  const rejectedByYouInPast =
+    filter === 'pastRides' &&
+    isPassengerContext &&
+    String(item.myBookingStatus ?? '').trim().toLowerCase() === 'rejected';
   const showCancelledBadgePast =
     filter === 'pastRides' &&
     (bookingIsCancelled(item.myBookingStatus) ||
@@ -414,7 +423,9 @@ function YourRidesRideCard({
       ride={item}
       currentUserId={currentUserId}
       currentUserName={currentUserName}
+      viewerAvatarUrl={viewerAvatarUrl}
       showCancelledBadge={showCancelledBadgePast}
+      showRejectedBadge={rejectedByYouInPast}
       showCompletedBadge={filter === 'pastRides' && isCompletedByBackendStatus}
       seatFullUnavailable={seatFullBlocked || pastCancelledAndRideFull}
       hideSeatAvailability={filter === 'pastRides'}
@@ -443,6 +454,7 @@ export default function YourRides(): React.JSX.Element {
   const { user } = useAuth();
   const currentUserId = (user?.id ?? '').trim();
   const currentUserName = (user?.name ?? '').trim();
+  const viewerAvatarUrl = user?.avatarUrl?.trim();
   const [rides, setRides] = useState<RideListItem[]>([]);
   const [bookedRideIds, setBookedRideIds] = useState<Set<string>>(new Set());
   const [filter, setFilter] = useState<FilterTab>('myRides');
@@ -560,10 +572,11 @@ export default function YourRides(): React.JSX.Element {
     };
   }, [ratingKeyboardOffset]);
 
-  const fetchRides = useCallback(async () => {
+  const fetchRides = useCallback(async (targetFilter?: FilterTab) => {
     setError(null);
     setLoading(true);
     const ownerId = currentUserId.trim();
+    const effectiveFilter = targetFilter ?? filter;
     try {
       let saw429 = false;
 
@@ -596,30 +609,32 @@ export default function YourRides(): React.JSX.Element {
         }
       }
 
-      await rideListStagger();
-      const browseListResult = await apiGetOrNull(API.endpoints.rides.list);
-      if (browseListResult.status === 429) saw429 = true;
       let browseRaw: Record<string, unknown>[] = [];
-      if (browseListResult.data != null) {
-        browseRaw = extractRawList(browseListResult.data);
-        if (__DEV__) {
-          console.log('========== GET /rides (browse catalog) – API response ==========');
-          console.log(JSON.stringify(browseListResult.data, null, 2));
-          console.log('================================================');
-        }
-      } else if (browseListResult.status !== 429) {
-        /** Don’t retry immediately after 429 — same bucket, makes things worse. */
-        try {
-          await rideListStagger();
-          const ridesRes = await api.get<RidesResponse>(API.endpoints.rides.list);
-          browseRaw = extractRawList(ridesRes);
+      if (effectiveFilter === 'allRides') {
+        await rideListStagger();
+        const browseListResult = await apiGetOrNull(API.endpoints.rides.list);
+        if (browseListResult.status === 429) saw429 = true;
+        if (browseListResult.data != null) {
+          browseRaw = extractRawList(browseListResult.data);
           if (__DEV__) {
-            console.log('========== GET /rides (browse retry) – API response ==========');
-            console.log(JSON.stringify(ridesRes, null, 2));
+            console.log('========== GET /rides (browse catalog) – API response ==========');
+            console.log(JSON.stringify(browseListResult.data, null, 2));
             console.log('================================================');
           }
-        } catch {
-          /* ignore */
+        } else if (browseListResult.status !== 429) {
+          /** Don’t retry immediately after 429 — same bucket, makes things worse. */
+          try {
+            await rideListStagger();
+            const ridesRes = await api.get<RidesResponse>(API.endpoints.rides.list);
+            browseRaw = extractRawList(ridesRes);
+            if (__DEV__) {
+              console.log('========== GET /rides (browse retry) – API response ==========');
+              console.log(JSON.stringify(ridesRes, null, 2));
+              console.log('================================================');
+            }
+          } catch {
+            /* ignore */
+          }
         }
       }
 
@@ -809,7 +824,7 @@ export default function YourRides(): React.JSX.Element {
       setLoading(false);
       setJustBookedWelcome(false);
     }
-  }, [currentUserId]);
+  }, [currentUserId, filter]);
 
   useFocusEffect(
     useCallback(() => {
@@ -822,8 +837,10 @@ export default function YourRides(): React.JSX.Element {
         setBookedRideIds(new Set());
         setError(null);
         setLoading(true);
+        void fetchRides('myRides');
+        return;
       }
-      fetchRides();
+      void fetchRides();
     }, [fetchRides, navigation, route.params])
   );
 
@@ -1272,6 +1289,7 @@ export default function YourRides(): React.JSX.Element {
               filter={filter}
               currentUserId={currentUserId}
               currentUserName={currentUserName}
+              viewerAvatarUrl={viewerAvatarUrl}
               bookedRideIds={bookedRideIds}
               ratedRideIds={ratedRideIds}
               ratedTargetsByRide={ratedTargetsByRide}
@@ -1322,6 +1340,7 @@ export default function YourRides(): React.JSX.Element {
               filter={filter}
               currentUserId={currentUserId}
               currentUserName={currentUserName}
+              viewerAvatarUrl={viewerAvatarUrl}
               bookedRideIds={bookedRideIds}
               ratedRideIds={ratedRideIds}
               ratedTargetsByRide={ratedTargetsByRide}
