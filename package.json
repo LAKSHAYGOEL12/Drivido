@@ -17,6 +17,7 @@
   "dependencies": {
     "@expo-google-fonts/roboto": "^0.4.3",
     "@expo/vector-icons": "^15.1.1",
+    "@firebase/auth": "^1.10.8",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@react-navigation/bottom-tabs": "^7.15.5",
     "@react-navigation/native": "^7.1.33",
@@ -24,6 +25,7 @@
     "axios": "^1.13.6",
     "dotenv": "^17.3.1",
     "expo": "~55.0.6",
+    "expo-crypto": "~55.0.10",
     "expo-device": "^55.0.9",
     "expo-font": "~55.0.4",
     "expo-image-picker": "^55.0.12",
@@ -32,6 +34,7 @@
     "expo-secure-store": "~55.0.8",
     "expo-splash-screen": "~55.0.12",
     "expo-status-bar": "~55.0.4",
+    "firebase": "^11.10.0",
     "react": "19.2.0",
     "react-native": "0.83.2",
     "react-native-maps": "^1.27.2",

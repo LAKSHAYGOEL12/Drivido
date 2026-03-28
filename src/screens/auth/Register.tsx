@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   StyleSheet,
   Text,
@@ -12,31 +12,42 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import type { RootStackScreenProps } from '../../navigation/types';
-import { useAuth } from '../../contexts/AuthContext';
-import api from '../../services/api';
-import { API } from '../../constants/API';
-import { validation, validationErrors } from '../../constants/validation';
+import { isFirebaseAuthConfigured } from '../../config/firebase';
+import {
+  firebaseAuthErrorToMessage,
+  signUpWithEmailAndProfile,
+} from '../../services/firebaseAuthBridge';
+import {
+  setPendingFirebaseProfilePatch,
+  clearPendingFirebaseProfilePatch,
+} from '../../services/pendingFirebaseProfile';
+import {
+  validation,
+  validationErrors,
+  GENDER_OPTIONS,
+  type GenderValue,
+} from '../../constants/validation';
 import Button from '../../components/common/Button';
 import Input from '../../components/common/Input';
 import { COLORS } from '../../constants/colors';
-import type { RegisterResponse } from '../../types/api';
-import { requestForegroundLocationAfterAuth } from '../../services/location-permission-auth';
-import { pickAvatarUrlFromRecord } from '../../utils/avatarUrl';
+import { resetNavigationToVerifyEmail } from '../../navigation/navigateToVerifyEmail';
 
 type Props = RootStackScreenProps<'Register'>;
 
 export default function Register(): React.JSX.Element {
   const navigation = useNavigation<Props['navigation']>();
-  const { login, setLoading, isLoading } = useAuth();
-  const [phone, setPhone] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
   const [email, setEmail] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [dateOfBirth, setDateOfBirth] = useState('');
+  const [gender, setGender] = useState<GenderValue | ''>('');
   const [errors, setErrors] = useState<{
-    phone?: string;
     email?: string;
     username?: string;
     password?: string;
+    dateOfBirth?: string;
+    gender?: string;
   }>({});
   const scrollRef = useRef<ScrollView | null>(null);
   const passwordFieldYRef = useRef(0);
@@ -60,67 +71,47 @@ export default function Register(): React.JSX.Element {
 
   const validate = (): boolean => {
     const next: typeof errors = {};
-    if (!validation.phone(phone)) next.phone = validationErrors.phone;
     if (!validation.email(email)) next.email = validationErrors.email;
     if (!validation.name(username)) next.username = validationErrors.name;
     if (!validation.password(password)) next.password = validationErrors.password;
+    if (!validation.dateOfBirth(dateOfBirth)) next.dateOfBirth = validationErrors.dateOfBirth;
+    if (!gender || !validation.gender(gender)) next.gender = validationErrors.gender;
     setErrors(next);
     return Object.keys(next).length === 0;
   };
 
   const handleRegister = async () => {
     if (!validate() || isLoading) return;
-    setLoading(true);
+    if (!isFirebaseAuthConfigured()) {
+      Alert.alert(
+        'Firebase not configured',
+        'Add EXPO_PUBLIC_FIREBASE_* keys to .env (see .env.example), then run npx expo start --clear.'
+      );
+      return;
+    }
+    setIsLoading(true);
     setErrors({});
     try {
-      const res = await api.post<RegisterResponse>(API.endpoints.auth.register, {
-        phone: phone.replace(/\D/g, '').replace(/^91(?=\d{10})/, '').slice(-10),
+      setPendingFirebaseProfilePatch({
+        dateOfBirth: dateOfBirth.trim(),
+        gender: gender as string,
+      });
+      await signUpWithEmailAndProfile({
         email: email.trim().toLowerCase(),
         name: username.trim(),
         password,
       });
-      const user = res?.user;
-      const accessToken = res?.token;
-      const refreshToken = (res as { refreshToken?: string }).refreshToken;
-      if (!user || !accessToken) {
-        throw new Error('Invalid response from server');
-      }
-      const userId = typeof user.id === 'string' ? user.id : String((user as { _id?: unknown })._id ?? '');
-      const avatarUrl = pickAvatarUrlFromRecord(user as unknown as Record<string, unknown>);
-      login(
-        {
-          id: userId,
-          phone: user.phone ?? '',
-          email: user.email ?? '',
-          name: user.name ?? (username.trim() || undefined),
-          createdAt:
-            typeof (user as { createdAt?: unknown }).createdAt === 'string'
-              ? String((user as { createdAt?: string }).createdAt)
-              : typeof (user as { created_at?: unknown }).created_at === 'string'
-                ? String((user as { created_at?: string }).created_at)
-                : undefined,
-          ...(avatarUrl ? { avatarUrl } : {}),
-        },
-        accessToken,
-        refreshToken ?? accessToken
-      );
-      await requestForegroundLocationAfterAuth();
-      Alert.alert('Sign up done', 'Welcome! You are now signed in.', [
-        {
-          text: 'OK',
-          onPress: () => navigation.navigate('Main'),
-        },
-      ]);
     } catch (e: unknown) {
-      const message =
-        e && typeof e === 'object' && 'message' in e
-          ? String((e as { message: unknown }).message)
-          : 'Sign up failed. Check your backend is running on port 3000.';
+      clearPendingFirebaseProfilePatch();
+      const message = firebaseAuthErrorToMessage(e);
       setErrors({ password: message });
       Alert.alert('Sign up failed', message);
+      return;
     } finally {
-      setLoading(false);
+      setIsLoading(false);
     }
+
+    resetNavigationToVerifyEmail(email.trim().toLowerCase());
   };
 
   return (
@@ -144,21 +135,11 @@ export default function Register(): React.JSX.Element {
             </View>
             <Text style={styles.title}>Create account</Text>
             <Text style={styles.subtitle}>
-              Sign up with phone, email, name and password
+              Enter your name, date of birth, gender, email, and password
             </Text>
           </View>
 
           <View style={styles.form}>
-            <Input
-              label="Phone number"
-              value={phone}
-              onChangeText={setPhone}
-              placeholder="e.g. 9876543210"
-              error={errors.phone}
-              keyboardType="phone-pad"
-              autoCapitalize="none"
-              editable={!isLoading}
-            />
             <Input
               label="Email"
               value={email}
@@ -181,6 +162,43 @@ export default function Register(): React.JSX.Element {
               editable={!isLoading}
               onFocus={scrollFieldIntoView}
             />
+            <Input
+              label="Date of birth"
+              value={dateOfBirth}
+              onChangeText={setDateOfBirth}
+              placeholder="YYYY-MM-DD (e.g. 1995-03-15)"
+              error={errors.dateOfBirth}
+              keyboardType="numbers-and-punctuation"
+              autoCapitalize="none"
+              editable={!isLoading}
+              onFocus={scrollFieldIntoView}
+            />
+            <View style={styles.genderBlock}>
+              <Text style={styles.genderLabel}>Gender</Text>
+              <View style={styles.genderGrid}>
+                {GENDER_OPTIONS.map((opt) => {
+                  const selected = gender === opt.value;
+                  return (
+                    <TouchableOpacity
+                      key={opt.value}
+                      style={[styles.genderChip, selected && styles.genderChipSelected]}
+                      onPress={() => {
+                        setGender(opt.value);
+                        setErrors((e) => ({ ...e, gender: undefined }));
+                      }}
+                      disabled={isLoading}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected }}
+                    >
+                      <Text style={[styles.genderChipText, selected && styles.genderChipTextSelected]}>
+                        {opt.label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+              {errors.gender ? <Text style={styles.genderError}>{errors.gender}</Text> : null}
+            </View>
             <View
               onLayout={(e) => {
                 passwordFieldYRef.current = e.nativeEvent.layout.y;
@@ -268,6 +286,46 @@ const styles = StyleSheet.create({
   },
   form: {
     marginBottom: 18,
+  },
+  genderBlock: {
+    marginBottom: 12,
+  },
+  genderLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLORS.text,
+    marginBottom: 8,
+  },
+  genderGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  genderChip: {
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.textSecondary + '55',
+    backgroundColor: COLORS.background,
+  },
+  genderChipSelected: {
+    borderColor: COLORS.primary,
+    backgroundColor: COLORS.primary + '22',
+  },
+  genderChipText: {
+    fontSize: 14,
+    color: COLORS.textSecondary,
+    fontWeight: '500',
+  },
+  genderChipTextSelected: {
+    color: COLORS.primary,
+    fontWeight: '600',
+  },
+  genderError: {
+    marginTop: 6,
+    fontSize: 13,
+    color: COLORS.error,
   },
   button: {
     marginTop: 8,

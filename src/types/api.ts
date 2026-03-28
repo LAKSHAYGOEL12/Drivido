@@ -5,10 +5,7 @@
 // ---- Auth ----
 
 export interface LoginRequest {
-  /** Use phone when logging in with phone number */
-  phone?: string;
-  /** Use email when logging in with email */
-  email?: string;
+  email: string;
   password: string;
 }
 
@@ -17,21 +14,23 @@ export interface LoginRequest {
  *
  * REQUEST: POST {baseUrl}/api/auth/login
  * Headers: Content-Type: application/json (no Authorization on login)
- * Body (JSON): either { email: string, password: string } or { phone: string, password: string }
+ * Body (JSON): { email: string, password: string }
  *
  * RESPONSE: 200 OK, JSON body. App reads the body directly (not response.data):
  *   - res.token (required) → access token
  *   - res.refreshToken (optional) → refresh token
- *   - res.user (required): { id or _id, phone, name?, email?, createdAt? }
+ *   - res.user (required): { id or _id, email, name?, phone?, dateOfBirth?, gender?, createdAt? }
  * If user or token is missing, app throws "Invalid response from server".
  */
 export interface LoginResponse {
   user: {
     id?: string;
     _id?: string;
-    phone: string;
+    phone?: string;
     name?: string;
     email?: string;
+    dateOfBirth?: string;
+    gender?: string;
     createdAt?: string;
     created_at?: string;
     avatarUri?: string | null;
@@ -45,18 +44,21 @@ export interface LoginResponse {
 }
 
 export interface RegisterRequest {
-  phone: string;
   email: string;
-  name?: string;
+  name: string;
   password: string;
+  dateOfBirth: string;
+  gender: string;
 }
 
 export interface RegisterResponse {
   user: {
     id: string;
-    phone: string;
+    phone?: string;
     email: string;
     name?: string;
+    dateOfBirth?: string;
+    gender?: string;
     createdAt?: string;
     created_at?: string;
     avatarUrl?: string | null;
@@ -64,16 +66,6 @@ export interface RegisterResponse {
     avatarUri?: string | null;
   };
   token: string;
-}
-
-export interface VerifyOtpRequest {
-  phone: string;
-  otp: string;
-}
-
-export interface VerifyOtpResponse {
-  verified: boolean;
-  token?: string;
 }
 
 // ---- Rides ----

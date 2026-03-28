@@ -7,6 +7,7 @@ import { useLocation } from '../contexts/LocationContext';
 import { usePushNotifications } from '../hooks/usePushNotifications';
 import RootStack from './RootStack';
 import { COLORS } from '../constants/colors';
+import { resetNavigationToVerifyEmail } from './navigateToVerifyEmail';
 
 /**
  * RootNavigator (inside AuthProvider)
@@ -14,10 +15,11 @@ import { COLORS } from '../constants/colors';
  * Guests land on Main tabs (Search); Login/Register are modals from book / locked tabs.
  */
 export default function RootNavigator(): React.JSX.Element | null {
-  const { isAuthenticated, isLoading, user } = useAuth();
+  const { isAuthenticated, isLoading, user, needsEmailVerification, pendingVerificationEmail } = useAuth();
   const { prefetchLocation } = useLocation();
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const [navReady, setNavReady] = useState(false);
+  const verifyRedirectedRef = useRef(false);
   const [startupGateOpen, setStartupGateOpen] = useState(true);
   const startupMountedAtRef = useRef<number>(Date.now());
   const STARTUP_MIN_MS = 500;
@@ -43,6 +45,17 @@ export default function RootNavigator(): React.JSX.Element | null {
       prefetchLocation();
     }
   }, [isAuthenticated, prefetchLocation]);
+
+  /** e.g. cold start with Firebase session but email still unverified — push Verify Email onto root stack. */
+  useEffect(() => {
+    if (!navReady || isLoading || !needsEmailVerification) {
+      if (!needsEmailVerification) verifyRedirectedRef.current = false;
+      return;
+    }
+    if (verifyRedirectedRef.current) return;
+    verifyRedirectedRef.current = true;
+    resetNavigationToVerifyEmail(pendingVerificationEmail ?? undefined);
+  }, [navReady, isLoading, needsEmailVerification, pendingVerificationEmail]);
 
   useEffect(() => {
     const wasAuthenticated = prevIsAuthenticatedRef.current;

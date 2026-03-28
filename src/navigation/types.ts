@@ -276,6 +276,9 @@ export type RootStackParamList = {
   Main: NavigatorScreenParams<MainTabParamList> | undefined;
   Login: { reason?: 'book' | 'tab' } | undefined;
   Register: undefined;
+  /** After email/password signup — user must open Firebase verification link, then Continue. */
+  VerifyEmail: { email?: string } | undefined;
+  ForgotPassword: undefined;
 };
 
 // Screen prop types for use in components
@@ -291,7 +294,8 @@ export type RootStackScreenProps<T extends keyof RootStackParamList> = NativeSta
 >;
 
 /** Auth screens mounted on root stack (modal) — same props shape as old Auth stack. */
-export type RootAuthScreenProps<T extends 'Login' | 'Register'> = RootStackScreenProps<T>;
+export type RootAuthScreenProps<T extends 'Login' | 'Register' | 'VerifyEmail' | 'ForgotPassword'> =
+  RootStackScreenProps<T>;
 
 export type MainTabScreenPropsFromRoot<T extends keyof MainTabParamList> = CompositeScreenProps<
   MainTabScreenProps<T>,

@@ -133,8 +133,19 @@ async function probePublicUserAvatar(userId: string): Promise<string | undefined
     { path: `${API.endpoints.user.profile}?id=${encodeURIComponent(id)}`, userIdFromPath: false },
   ];
 
-  for (const { path, userIdFromPath } of pathProbes) {
-    const body = await api.getOptional<unknown>(path);
+  // Run probes in parallel — sequential 404s add up; each uses a short timeout so a dead route cannot stall 15s.
+  const probeMs = 4500;
+  const bodies = await Promise.all(
+    pathProbes.map((p) =>
+      api
+        .getOptional<unknown>(p.path, { timeout: probeMs })
+        .catch(() => null)
+    )
+  );
+
+  for (let i = 0; i < pathProbes.length; i++) {
+    const { userIdFromPath } = pathProbes[i];
+    const body = bodies[i];
     if (body == null) continue;
     const verified = extractVerifiedSubjectAvatar(body, id);
     if (verified) return verified;

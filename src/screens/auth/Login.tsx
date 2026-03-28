@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   StyleSheet,
   Text,
@@ -15,23 +15,39 @@ import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import type { RootStackScreenProps } from '../../navigation/types';
-import { useAuth } from '../../contexts/AuthContext';
-import api, { getApiBaseUrl, testServerConnection } from '../../services/api';
+import { getApiBaseUrl, testServerConnection } from '../../services/api';
 import { getApiBaseUrlDebug } from '../../config/apiBaseUrl';
-import { API } from '../../constants/API';
-import { validation, validationErrors } from '../../constants/validation';
+import { isFirebaseAuthConfigured } from '../../config/firebase';
+import { validation } from '../../constants/validation';
+import {
+  firebaseAuthErrorToMessage,
+  signInWithEmailPassword,
+} from '../../services/firebaseAuthBridge';
 import Button from '../../components/common/Button';
 import Input from '../../components/common/Input';
 import { COLORS } from '../../constants/colors';
-import type { LoginResponse } from '../../types/api';
 import { requestForegroundLocationAfterAuth } from '../../services/location-permission-auth';
-import { pickAvatarUrlFromRecord } from '../../utils/avatarUrl';
+import { useAuth } from '../../contexts/AuthContext';
+import { resetNavigationToVerifyEmail } from '../../navigation/navigateToVerifyEmail';
 
 type Props = RootStackScreenProps<'Login'>;
 
 export default function Login(): React.JSX.Element {
   const navigation = useNavigation<Props['navigation']>();
-  const { login } = useAuth();
+  const { isAwaitingBackendSession, needsEmailVerification, isAuthenticated } = useAuth();
+  const authGateRef = useRef({
+    isAwaitingBackendSession,
+    needsEmailVerification,
+    isAuthenticated,
+  });
+  useEffect(() => {
+    authGateRef.current = {
+      isAwaitingBackendSession,
+      needsEmailVerification,
+      isAuthenticated,
+    };
+  }, [isAwaitingBackendSession, needsEmailVerification, isAuthenticated]);
+
   const [phoneOrEmail, setPhoneOrEmail] = useState('');
   const [password, setPassword] = useState('');
   const [errors, setErrors] = useState<{ phoneOrEmail?: string; password?: string }>({});
@@ -39,20 +55,6 @@ export default function Login(): React.JSX.Element {
   const [overlaySuccess, setOverlaySuccess] = useState(false);
   const [connectionTest, setConnectionTest] = useState<{ ok: boolean; message: string } | null>(null);
   const [testingConnection, setTestingConnection] = useState(false);
-  /** After 429, block repeat login attempts so the client doesn’t make rate limits worse. */
-  const [loginBlockedUntil, setLoginBlockedUntil] = useState(0);
-  const [, setCooldownTick] = useState(0);
-  const pendingLoginRef = useRef<{ user: Parameters<typeof login>[0]; accessToken: string; refreshToken: string } | null>(null);
-
-  useEffect(() => {
-    if (loginBlockedUntil <= Date.now()) return;
-    const id = setInterval(() => setCooldownTick((n) => n + 1), 1000);
-    return () => clearInterval(id);
-  }, [loginBlockedUntil]);
-
-  const loginOnCooldown = Date.now() < loginBlockedUntil;
-  const cooldownSecs = loginOnCooldown ? Math.ceil((loginBlockedUntil - Date.now()) / 1000) : 0;
-
   const handleTestConnection = async () => {
     setTestingConnection(true);
     setConnectionTest(null);
@@ -66,91 +68,64 @@ export default function Login(): React.JSX.Element {
   };
 
   const isEmail = validation.email(phoneOrEmail);
-  const isPhone = validation.phone(phoneOrEmail);
 
   const validate = (): boolean => {
     const next: typeof errors = {};
-    if (!phoneOrEmail.trim()) next.phoneOrEmail = 'Enter phone number or email';
-    else if (!isPhone && !isEmail) next.phoneOrEmail = 'Enter a valid phone number or email';
+    if (!phoneOrEmail.trim()) next.phoneOrEmail = 'Enter your email';
+    else if (!isEmail) next.phoneOrEmail = 'Enter a valid email address';
     if (!password.trim()) next.password = 'Enter your password';
     setErrors(next);
     return Object.keys(next).length === 0;
   };
 
   const handleLogin = async () => {
-    if (loginOnCooldown || !validate() || signingIn) return;
+    if (!validate() || signingIn) return;
+    if (!isFirebaseAuthConfigured()) {
+      Alert.alert(
+        'Firebase not configured',
+        'Add EXPO_PUBLIC_FIREBASE_* keys to .env (see .env.example), then run npx expo start --clear.'
+      );
+      return;
+    }
     setSigningIn(true);
     setErrors({});
     try {
-      const body = isEmail
-        ? { email: phoneOrEmail.trim().toLowerCase(), password }
-        : {
-            phone: phoneOrEmail.replace(/\D/g, '').replace(/^91(?=\d{10})/, '').slice(-10),
-            password,
-          };
-      const res = await api.post<LoginResponse>(API.endpoints.auth.login, body, { timeout: 25000 });
-      const user = res?.user;
-      const accessToken = res?.token;
-      const refreshToken = res?.refreshToken;
-      if (!user || !accessToken) {
-        throw new Error('Invalid response from server');
+      await signInWithEmailPassword(phoneOrEmail.trim().toLowerCase(), password);
+      for (let i = 0; i < 200; i++) {
+        await new Promise((r) => setTimeout(r, 50));
+        if (!authGateRef.current.isAwaitingBackendSession) break;
       }
-      const userId = typeof user.id === 'string' ? user.id : String((user as { _id?: unknown })._id ?? '');
-      const avatarUrl = pickAvatarUrlFromRecord(user as unknown as Record<string, unknown>);
-      const userObj = {
-        id: userId,
-        phone: user.phone ?? '',
-        email: (user as { email?: string }).email,
-        name: user.name,
-        createdAt:
-          typeof (user as { createdAt?: unknown }).createdAt === 'string'
-            ? String((user as { createdAt?: string }).createdAt)
-            : typeof (user as { created_at?: unknown }).created_at === 'string'
-              ? String((user as { created_at?: string }).created_at)
-              : undefined,
-        ...(avatarUrl ? { avatarUrl } : {}),
-      };
-      pendingLoginRef.current = { user: userObj, accessToken, refreshToken: refreshToken ?? accessToken };
-      setOverlaySuccess(true);
-      setTimeout(() => {
-        const pending = pendingLoginRef.current;
-        if (pending) {
-          pendingLoginRef.current = null;
-          setLoginBlockedUntil(0);
-          login(pending.user, pending.accessToken, pending.refreshToken);
+      const { needsEmailVerification: nev, isAuthenticated: authed } = authGateRef.current;
+      if (nev) {
+        resetNavigationToVerifyEmail(phoneOrEmail.trim().toLowerCase());
+        setSigningIn(false);
+        return;
+      }
+      if (authed) {
+        setOverlaySuccess(true);
+        setTimeout(() => {
           void requestForegroundLocationAfterAuth();
           navigation.goBack();
-        }
-      }, 450);
-    } catch (e: unknown) {
-      const status =
-        e && typeof e === 'object' && 'status' in e
-          ? (e as { status: unknown }).status
-          : undefined;
-      const is429 = status === 429;
-      const message =
-        e && typeof e === 'object' && 'message' in e
-          ? String((e as { message: unknown }).message)
-          : 'Sign in failed. Check your credentials and backend.';
-      setErrors({ password: message });
-      if (is429) {
-        setLoginBlockedUntil(Date.now() + 60_000);
-        Alert.alert(
-          'Too many requests (429)',
-          'Your API server is rate-limiting login for this device/IP. Wait about 1 minute.\n\n' +
-            'This is not fixable in the app alone — relax or skip limits for POST /api/auth/login in development. ' +
-            'See docs/BACKEND_DEV_RATE_LIMITS.md in the Drivido project.'
-        );
-      } else {
-        Alert.alert('Sign in failed', message);
+          setSigningIn(false);
+          setOverlaySuccess(false);
+        }, 450);
+        return;
       }
+      setSigningIn(false);
+      const failMsg = 'Could not complete sign-in. Check your connection and try again.';
+      setErrors({ password: failMsg });
+      Alert.alert('Sign in failed', failMsg);
+    } catch (e: unknown) {
+      const message = firebaseAuthErrorToMessage(e);
+      setErrors({ password: message });
+      Alert.alert('Sign in failed', message);
       setSigningIn(false);
     }
   };
 
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
-      <Modal visible={signingIn} transparent animationType="fade">
+      <Modal visible={signingIn || overlaySuccess} transparent animationType="fade">
         <View style={styles.loaderOverlay}>
           <View style={styles.loaderBox}>
             {overlaySuccess ? (
@@ -184,17 +159,15 @@ export default function Login(): React.JSX.Element {
               <Text style={styles.logoText}>D</Text>
             </View>
             <Text style={styles.title}>Log in</Text>
-            <Text style={styles.subtitle}>
-              Sign in with your phone number or email and password
-            </Text>
+            <Text style={styles.subtitle}>Sign in with your email and password</Text>
           </View>
 
           <View style={styles.form}>
             <Input
-              label="Phone number or email"
+              label="Email"
               value={phoneOrEmail}
               onChangeText={setPhoneOrEmail}
-              placeholder="e.g. 9876543210 or you@example.com"
+              placeholder="you@example.com"
               error={errors.phoneOrEmail}
               keyboardType="email-address"
               autoCapitalize="none"
@@ -211,16 +184,19 @@ export default function Login(): React.JSX.Element {
               editable={!signingIn}
             />
 
+            <TouchableOpacity
+              onPress={() => navigation.navigate('ForgotPassword')}
+              disabled={signingIn}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              style={styles.forgotWrap}
+            >
+              <Text style={styles.forgotLink}>Forgot password?</Text>
+            </TouchableOpacity>
+
             <Button
-              title={
-                signingIn
-                  ? 'Signing in…'
-                  : loginOnCooldown
-                    ? `Wait ${cooldownSecs}s (rate limited)`
-                    : 'Sign in'
-              }
+              title={signingIn ? 'Signing in…' : 'Sign in'}
               onPress={handleLogin}
-              disabled={signingIn || loginOnCooldown}
+              disabled={signingIn}
               variant="primary"
               style={styles.button}
             />
@@ -337,6 +313,16 @@ const styles = StyleSheet.create({
   },
   form: {
     marginBottom: 18,
+  },
+  forgotWrap: {
+    alignSelf: 'flex-end',
+    marginTop: 4,
+    marginBottom: 4,
+  },
+  forgotLink: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLORS.primary,
   },
   button: {
     marginTop: 8,

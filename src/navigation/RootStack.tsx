@@ -5,6 +5,8 @@ import type { RootStackParamList } from './types';
 import BottomTabs from './BottomTabs';
 import Login from '../screens/auth/Login';
 import Register from '../screens/auth/Register';
+import VerifyEmail from '../screens/auth/VerifyEmail';
+import ForgotPassword from '../screens/auth/ForgotPassword';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
@@ -33,6 +35,23 @@ export default function RootStack(): React.JSX.Element {
       <Stack.Screen
         name="Register"
         component={Register}
+        options={{
+          presentation: 'modal',
+          animation: 'slide_from_bottom',
+        }}
+      />
+      <Stack.Screen
+        name="VerifyEmail"
+        component={VerifyEmail}
+        options={{
+          presentation: 'modal',
+          animation: 'slide_from_bottom',
+          gestureEnabled: false,
+        }}
+      />
+      <Stack.Screen
+        name="ForgotPassword"
+        component={ForgotPassword}
         options={{
           presentation: 'modal',
           animation: 'slide_from_bottom',

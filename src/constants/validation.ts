@@ -1,30 +1,41 @@
 /**
- * Validation rules and regexes (phone, password, etc.)
+ * Validation rules and regexes (password, email, profile fields, etc.)
  */
-
-/** Indian mobile: 10 digits, optional +91 / 0 prefix */
-export const PHONE_REGEX = /^(\+91|0)?[6-9]\d{9}$/;
-
-/** Strip non-digits for phone comparison */
-export const PHONE_DIGITS_ONLY = /\D/g;
 
 /** Simple email */
 export const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+/** ISO date YYYY-MM-DD */
+const ISO_DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
+
+export const GENDER_OPTIONS = [
+  { value: 'male', label: 'Male' },
+  { value: 'female', label: 'Female' },
+  { value: 'non_binary', label: 'Non-binary' },
+  { value: 'prefer_not_to_say', label: 'Prefer not to say' },
+] as const;
+
+export type GenderValue = (typeof GENDER_OPTIONS)[number]['value'];
+
 /**
  * Normalize phone to 10 digits (strip all non-digits, remove leading 91 or 0).
+ * Kept for legacy profiles / display.
  */
 export function normalizePhoneForValidation(value: string): string {
   return value.replace(/\D/g, '').replace(/^91(?=\d{10})/, '').replace(/^0+/, '').slice(-10);
 }
 
-export const validation = {
-  /** Accepts any format: 9876543210, +91 98765 43210, 09876543210, spaces/dashes, etc. */
-  phone: (value: string): boolean => {
-    const digits = normalizePhoneForValidation(value);
-    return digits.length === 10 && /^[6-9]/.test(digits);
-  },
+function ageYearsFromIsoDate(isoDate: string): number {
+  const d = new Date(`${isoDate}T12:00:00.000Z`);
+  if (Number.isNaN(d.getTime())) return NaN;
+  const now = new Date();
+  let years = now.getUTCFullYear() - d.getUTCFullYear();
+  const m = now.getUTCMonth() - d.getUTCMonth();
+  if (m < 0 || (m === 0 && now.getUTCDate() < d.getUTCDate())) years -= 1;
+  return years;
+}
 
+export const validation = {
   email: (value: string): boolean => EMAIL_REGEX.test(value.trim()),
 
   /** Min 8 chars, at least one letter and one number */
@@ -33,14 +44,37 @@ export const validation = {
 
   name: (value: string): boolean => value.trim().length >= 2 && value.length <= 100,
 
+  /** YYYY-MM-DD; must be valid, not future, age 13–120 */
+  dateOfBirth: (value: string): boolean => {
+    const t = value.trim();
+    if (!ISO_DATE_REGEX.test(t)) return false;
+    const [y, mo, da] = t.split('-').map((n) => Number(n));
+    const d = new Date(Date.UTC(y, mo - 1, da));
+    if (
+      d.getUTCFullYear() !== y ||
+      d.getUTCMonth() !== mo - 1 ||
+      d.getUTCDate() !== da
+    ) {
+      return false;
+    }
+    const now = new Date();
+    if (d.getTime() > now.getTime()) return false;
+    const age = ageYearsFromIsoDate(t);
+    return age >= 13 && age <= 120;
+  },
+
+  gender: (value: string): value is GenderValue =>
+    GENDER_OPTIONS.some((g) => g.value === value),
+
   otp: (value: string, length = 6): boolean =>
     new RegExp(`^\\d{${length}}$`).test(value),
 } as const;
 
 export const validationErrors = {
-  phone: 'Enter a valid 10-digit mobile number',
   email: 'Enter a valid email address',
   password: 'Password must be 8+ characters with at least one letter and one number',
   name: 'Name must be 2–100 characters',
+  dateOfBirth: 'Enter date of birth as YYYY-MM-DD (you must be at least 13)',
+  gender: 'Select a gender option',
   otp: (length: number) => `Enter ${length} digit OTP`,
 } as const;

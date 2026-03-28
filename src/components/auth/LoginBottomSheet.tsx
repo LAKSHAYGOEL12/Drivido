@@ -17,28 +17,25 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import type { NavigationProp, ParamListBase } from '@react-navigation/native';
-import { useAuth } from '../../contexts/AuthContext';
-import api from '../../services/api';
-import { API } from '../../constants/API';
+import { isFirebaseAuthConfigured } from '../../config/firebase';
 import { validation } from '../../constants/validation';
 import Button from '../common/Button';
 import Input from '../common/Input';
 import { COLORS } from '../../constants/colors';
-import type { LoginResponse } from '../../types/api';
 import type { RootStackParamList } from '../../navigation/types';
+import { useAuth } from '../../contexts/AuthContext';
+import { resetNavigationToVerifyEmail } from '../../navigation/navigateToVerifyEmail';
 import { requestForegroundLocationAfterAuth } from '../../services/location-permission-auth';
-import { pickAvatarUrlFromRecord } from '../../utils/avatarUrl';
-
-export type GuestLoginSuccessPayload = {
-  /** Present so parent can book before AuthContext re-render (same tick as login). */
-  userId: string;
-};
+import {
+  firebaseAuthErrorToMessage,
+  signInWithEmailPassword,
+} from '../../services/firebaseAuthBridge';
 
 export type LoginBottomSheetProps = {
   visible: boolean;
   onClose: () => void;
-  /** Fired after tokens + session are stored (includes userId for immediate API follow-ups). */
-  onLoggedIn?: (payload: GuestLoginSuccessPayload) => void;
+  /** Fired after Firebase sign-in + backend JWT exchange (see AuthContext). Parent should read latest `user.id` from a ref. */
+  onLoggedIn?: () => void;
   navigation: NavigationProp<ParamListBase>;
 };
 
@@ -49,28 +46,30 @@ export default function LoginBottomSheet({
   navigation,
 }: LoginBottomSheetProps): React.JSX.Element {
   const insets = useSafeAreaInsets();
-  const { login } = useAuth();
+  const { isAwaitingBackendSession, needsEmailVerification, isAuthenticated } = useAuth();
+  const authGateRef = useRef({
+    isAwaitingBackendSession,
+    needsEmailVerification,
+    isAuthenticated,
+  });
+  useEffect(() => {
+    authGateRef.current = {
+      isAwaitingBackendSession,
+      needsEmailVerification,
+      isAuthenticated,
+    };
+  }, [isAwaitingBackendSession, needsEmailVerification, isAuthenticated]);
+
   const [phoneOrEmail, setPhoneOrEmail] = useState('');
   const [password, setPassword] = useState('');
   const [errors, setErrors] = useState<{ phoneOrEmail?: string; password?: string }>({});
   const [signingIn, setSigningIn] = useState(false);
   const [overlaySuccess, setOverlaySuccess] = useState(false);
-  const [loginBlockedUntil, setLoginBlockedUntil] = useState(0);
-  const [, setCooldownTick] = useState(0);
-  const pendingLoginRef = useRef<{ user: Parameters<typeof login>[0]; accessToken: string; refreshToken: string } | null>(
-    null
-  );
   const slideY = useRef(new Animated.Value(520)).current;
   /** Modal stays mounted until slide-out finishes — avoids flicker when keyboard + close race. */
   const [modalShown, setModalShown] = useState(visible);
   const exitAnimRef = useRef<Animated.CompositeAnimation | null>(null);
   const [keyboardPad, setKeyboardPad] = useState(0);
-
-  useEffect(() => {
-    if (loginBlockedUntil <= Date.now()) return;
-    const id = setInterval(() => setCooldownTick((n) => n + 1), 1000);
-    return () => clearInterval(id);
-  }, [loginBlockedUntil]);
 
   useEffect(() => {
     const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
@@ -126,91 +125,68 @@ export default function LoginBottomSheet({
     });
   }, [onClose, signingIn]);
 
-  const loginOnCooldown = Date.now() < loginBlockedUntil;
-  const cooldownSecs = loginOnCooldown ? Math.ceil((loginBlockedUntil - Date.now()) / 1000) : 0;
+  const finishGuestSuccess = useCallback(() => {
+    setSigningIn(true);
+    setOverlaySuccess(true);
+    setTimeout(() => {
+      void requestForegroundLocationAfterAuth();
+      setSigningIn(false);
+      setOverlaySuccess(false);
+      setPhoneOrEmail('');
+      setPassword('');
+      setErrors({});
+      onClose();
+      onLoggedIn?.();
+    }, 700);
+  }, [onClose, onLoggedIn]);
 
   const isEmail = validation.email(phoneOrEmail);
-  const isPhone = validation.phone(phoneOrEmail);
 
   const validate = (): boolean => {
     const next: typeof errors = {};
-    if (!phoneOrEmail.trim()) next.phoneOrEmail = 'Enter phone number or email';
-    else if (!isPhone && !isEmail) next.phoneOrEmail = 'Enter a valid phone number or email';
+    if (!phoneOrEmail.trim()) next.phoneOrEmail = 'Enter your email';
+    else if (!isEmail) next.phoneOrEmail = 'Enter a valid email address';
     if (!password.trim()) next.password = 'Enter your password';
     setErrors(next);
     return Object.keys(next).length === 0;
   };
 
   const handleLogin = async () => {
-    if (loginOnCooldown || !validate() || signingIn) return;
+    if (!validate() || signingIn) return;
+    if (!isFirebaseAuthConfigured()) {
+      Alert.alert(
+        'Firebase not configured',
+        'Add EXPO_PUBLIC_FIREBASE_* keys to .env (see .env.example), then run npx expo start --clear.'
+      );
+      return;
+    }
     setSigningIn(true);
     setErrors({});
     try {
-      const body = isEmail
-        ? { email: phoneOrEmail.trim().toLowerCase(), password }
-        : {
-            phone: phoneOrEmail.replace(/\D/g, '').replace(/^91(?=\d{10})/, '').slice(-10),
-            password,
-          };
-      const res = await api.post<LoginResponse>(API.endpoints.auth.login, body, { timeout: 25000 });
-      const user = res?.user;
-      const accessToken = res?.token;
-      const refreshToken = res?.refreshToken;
-      if (!user || !accessToken) {
-        throw new Error('Invalid response from server');
+      await signInWithEmailPassword(phoneOrEmail.trim().toLowerCase(), password);
+      for (let i = 0; i < 200; i++) {
+        await new Promise((r) => setTimeout(r, 50));
+        if (!authGateRef.current.isAwaitingBackendSession) break;
       }
-      const userId = typeof user.id === 'string' ? user.id : String((user as { _id?: unknown })._id ?? '');
-      const avatarUrl = pickAvatarUrlFromRecord(user as unknown as Record<string, unknown>);
-      const userObj = {
-        id: userId,
-        phone: user.phone ?? '',
-        email: (user as { email?: string }).email,
-        name: user.name,
-        createdAt:
-          typeof (user as { createdAt?: unknown }).createdAt === 'string'
-            ? String((user as { createdAt?: string }).createdAt)
-            : typeof (user as { created_at?: unknown }).created_at === 'string'
-              ? String((user as { created_at?: string }).created_at)
-              : undefined,
-        ...(avatarUrl ? { avatarUrl } : {}),
-      };
-      pendingLoginRef.current = { user: userObj, accessToken, refreshToken: refreshToken ?? accessToken };
-      setOverlaySuccess(true);
-      setTimeout(() => {
-        const pending = pendingLoginRef.current;
-        if (pending) {
-          pendingLoginRef.current = null;
-          setLoginBlockedUntil(0);
-          login(pending.user, pending.accessToken, pending.refreshToken);
-          void requestForegroundLocationAfterAuth();
-          setSigningIn(false);
-          setOverlaySuccess(false);
-          setPhoneOrEmail('');
-          setPassword('');
-          setErrors({});
-          onClose();
-          const id = String(userObj.id ?? '').trim();
-          if (id) onLoggedIn?.({ userId: id });
-        }
-      }, 450);
+      const { needsEmailVerification: nev, isAuthenticated: authed } = authGateRef.current;
+      if (nev) {
+        setSigningIn(false);
+        onClose();
+        resetNavigationToVerifyEmail(phoneOrEmail.trim().toLowerCase());
+        return;
+      }
+      if (authed) {
+        finishGuestSuccess();
+        return;
+      }
+      setSigningIn(false);
+      const failMsg = 'Could not complete sign-in. Check your connection and try again.';
+      setErrors({ password: failMsg });
+      Alert.alert('Sign in failed', failMsg);
     } catch (e: unknown) {
-      const status =
-        e && typeof e === 'object' && 'status' in e ? (e as { status: unknown }).status : undefined;
-      const is429 = status === 429;
-      const message =
-        e && typeof e === 'object' && 'message' in e
-          ? String((e as { message: unknown }).message)
-          : 'Sign in failed. Check your credentials and backend.';
+      const message = firebaseAuthErrorToMessage(e);
       setErrors({ password: message });
-      if (is429) {
-        setLoginBlockedUntil(Date.now() + 60_000);
-        Alert.alert(
-          'Too many requests (429)',
-          'Your API server is rate-limiting login. Wait about 1 minute before trying again.'
-        );
-      } else {
-        Alert.alert('Sign in failed', message);
-      }
+      Alert.alert('Sign in failed', message);
       setSigningIn(false);
     }
   };
@@ -224,6 +200,15 @@ export default function LoginBottomSheet({
     });
   };
 
+  const openForgotPassword = () => {
+    if (signingIn) return;
+    Keyboard.dismiss();
+    InteractionManager.runAfterInteractions(() => {
+      onClose();
+      (navigation as NavigationProp<RootStackParamList>).navigate('ForgotPassword');
+    });
+  };
+
   return (
     <Modal
       visible={visible || modalShown}
@@ -233,7 +218,7 @@ export default function LoginBottomSheet({
       statusBarTranslucent
     >
       <View style={styles.modalRoot}>
-        {signingIn ? (
+        {signingIn || overlaySuccess ? (
           <View style={styles.loaderOverlay} pointerEvents="auto">
             <View style={styles.loaderBox}>
               {overlaySuccess ? (
@@ -275,7 +260,7 @@ export default function LoginBottomSheet({
               <Ionicons name="close" size={24} color={COLORS.textSecondary} />
             </TouchableOpacity>
           </View>
-          <Text style={styles.sheetSubtitle}>Use your phone or email and password</Text>
+          <Text style={styles.sheetSubtitle}>Email and password</Text>
 
           <ScrollView
             keyboardShouldPersistTaps="handled"
@@ -284,10 +269,10 @@ export default function LoginBottomSheet({
             contentContainerStyle={styles.scrollContent}
           >
             <Input
-              label="Phone or email"
+              label="Email"
               value={phoneOrEmail}
               onChangeText={setPhoneOrEmail}
-              placeholder="9876543210 or you@example.com"
+              placeholder="you@example.com"
               error={errors.phoneOrEmail}
               keyboardType="email-address"
               autoCapitalize="none"
@@ -303,16 +288,18 @@ export default function LoginBottomSheet({
               secureTextEntry
               editable={!signingIn}
             />
+            <TouchableOpacity
+              onPress={openForgotPassword}
+              disabled={signingIn}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              style={styles.forgotWrap}
+            >
+              <Text style={styles.forgotLink}>Forgot password?</Text>
+            </TouchableOpacity>
             <Button
-              title={
-                signingIn
-                  ? 'Signing in…'
-                  : loginOnCooldown
-                    ? `Wait ${cooldownSecs}s`
-                    : 'Sign in'
-              }
+              title={signingIn ? 'Signing in…' : 'Sign in'}
               onPress={handleLogin}
-              disabled={signingIn || loginOnCooldown}
+              disabled={signingIn}
               variant="primary"
               style={styles.signInBtn}
             />
@@ -387,6 +374,16 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     paddingBottom: 8,
+  },
+  forgotWrap: {
+    alignSelf: 'flex-end',
+    marginTop: 2,
+    marginBottom: 2,
+  },
+  forgotLink: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLORS.primary,
   },
   signInBtn: {
     marginTop: 6,

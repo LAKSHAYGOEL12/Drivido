@@ -5,10 +5,10 @@
  * Origin only — no `/api`, no trailing slash. After edits: `npx expo start --clear`.
  * Emulator: `http://10.0.2.2:3000` · Simulator: `http://localhost:3000` · Device: your LAN IP.
  *
- * - Sends Authorization: Bearer <accessToken> on every request (GET/POST /rides, GET /auth/me, etc.).
- *   If the backend requires this header and it's missing, you get 401 Unauthorized (not 404).
- * - 404 = route/URL not found on the backend. 401 = missing or invalid token.
- * - On 401: calls /auth/refresh with refreshToken, retries the request once; if refresh fails, clears tokens and triggers onSessionExpired.
+ * - Sends Authorization: Bearer <Drivido JWT> on every request. Tokens come from POST /api/auth/firebase
+ *   (Firebase `getIdToken()` exchange in AuthContext), not raw Firebase ID tokens — the API middleware uses JWT_ACCESS_SECRET.
+ * - If the header is missing, you get 401 Unauthorized (not 404).
+ * - On 401: with a backend refreshToken, calls /auth/refresh and retries once; otherwise tries a fresh Firebase ID token and re-exchange (see firebaseIdToken).
  *
  * Sign-in troubleshooting:
  * - App calls POST /api/auth/login (with /api prefix). Restart backend and try again.
@@ -20,6 +20,8 @@ import { Platform } from 'react-native';
 import { resolveApiBaseOrigin } from '../config/apiBaseUrl';
 import { API } from '../constants/API';
 import { setStoredTokens, clearStoredTokens } from './token-storage';
+import { getFreshFirebaseIdToken } from './firebaseIdToken';
+import { exchangeFirebaseIdTokenForBackendSession } from './backendAuthExchange';
 
 /** Hint for "cannot reach server" based on run environment. */
 function getConnectionHint(): string {
@@ -172,18 +174,33 @@ async function request<T>(
         ? {}
         : await res.json().catch(() => ({}));
 
-    if (res.status === 401 && !isRetryAfterRefresh && refreshToken) {
-      try {
-        const { accessToken: newAccess, refreshToken: newRefresh } = await doRefreshToken();
-        authToken = newAccess;
-        refreshToken = newRefresh;
-        await setStoredTokens(newAccess, newRefresh);
-        return request<T>(path, options, true);
-      } catch (refreshErr) {
-        await clearStoredTokens();
-        clearAuth();
-        onSessionExpired?.();
-        throw refreshErr;
+    if (res.status === 401 && !isRetryAfterRefresh) {
+      if (refreshToken) {
+        try {
+          const { accessToken: newAccess, refreshToken: newRefresh } = await doRefreshToken();
+          authToken = newAccess;
+          refreshToken = newRefresh;
+          await setStoredTokens(newAccess, newRefresh);
+          return request<T>(path, options, true);
+        } catch (refreshErr) {
+          await clearStoredTokens();
+          clearAuth();
+          onSessionExpired?.();
+          throw refreshErr;
+        }
+      } else {
+        const newFirebase = await getFreshFirebaseIdToken();
+        if (newFirebase) {
+          try {
+            const exchanged = await exchangeFirebaseIdTokenForBackendSession(newFirebase);
+            authToken = exchanged.token;
+            refreshToken = exchanged.refreshToken;
+            await setStoredTokens(exchanged.token, exchanged.refreshToken);
+            return request<T>(path, options, true);
+          } catch {
+            // Fall through to error response
+          }
+        }
       }
     }
 
@@ -289,18 +306,33 @@ async function getJsonWithEtagImpl<T>(
 
     const etagHeader = res.headers.get('etag') ?? res.headers.get('ETag');
 
-    if (res.status === 401 && !isRetryAfterRefresh && refreshToken) {
-      try {
-        const { accessToken: newAccess, refreshToken: newRefresh } = await doRefreshToken();
-        authToken = newAccess;
-        refreshToken = newRefresh;
-        await setStoredTokens(newAccess, newRefresh);
-        return getJsonWithEtagImpl<T>(path, extraHeaders, true);
-      } catch (refreshErr) {
-        await clearStoredTokens();
-        clearAuth();
-        onSessionExpired?.();
-        throw refreshErr;
+    if (res.status === 401 && !isRetryAfterRefresh) {
+      if (refreshToken) {
+        try {
+          const { accessToken: newAccess, refreshToken: newRefresh } = await doRefreshToken();
+          authToken = newAccess;
+          refreshToken = newRefresh;
+          await setStoredTokens(newAccess, newRefresh);
+          return getJsonWithEtagImpl<T>(path, extraHeaders, true);
+        } catch (refreshErr) {
+          await clearStoredTokens();
+          clearAuth();
+          onSessionExpired?.();
+          throw refreshErr;
+        }
+      } else {
+        const newFirebase = await getFreshFirebaseIdToken();
+        if (newFirebase) {
+          try {
+            const exchanged = await exchangeFirebaseIdTokenForBackendSession(newFirebase);
+            authToken = exchanged.token;
+            refreshToken = exchanged.refreshToken;
+            await setStoredTokens(exchanged.token, exchanged.refreshToken);
+            return getJsonWithEtagImpl<T>(path, extraHeaders, true);
+          } catch {
+            // Fall through
+          }
+        }
       }
     }
 

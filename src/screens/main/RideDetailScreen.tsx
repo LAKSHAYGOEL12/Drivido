@@ -89,6 +89,9 @@ export default function RideDetailScreen(): React.JSX.Element {
   const scrollRef = useRef<ScrollView>(null);
   const fullRideBlockAlertShownRef = useRef(false);
   const { user, isAuthenticated } = useAuth();
+  /** Latest backend user id (Mongo) for post–guest-sheet book; Auth updates after POST /auth/firebase. */
+  const authUserIdRef = useRef((user?.id ?? '').trim());
+  authUserIdRef.current = (user?.id ?? '').trim();
   const { ride: initialRide, passengerSearch } = route.params;
   const [ride, setRide] = useState<RideListItem>(initialRide);
   const [cancelling, setCancelling] = useState(false);
@@ -887,8 +890,8 @@ export default function RideDetailScreen(): React.JSX.Element {
       return;
     }
     const seatsToBook = Math.min(Math.max(1, bookSeatsCount), cap);
-    /** Guest sheet logs in in same tick as `login()`; context `user` may not exist yet — use id from sheet. */
-    const uid = (opts?.sessionUserId?.trim() || (user?.id ?? '').trim()).trim();
+    /** Prefer Mongo `user.id` from context (API); fall back to sheet callback after auth exchange. */
+    const uid = ((user?.id ?? '').trim() || (opts?.sessionUserId ?? '').trim()).trim();
     if (!uid) {
       setGuestLoginSheetVisible(true);
       return;
@@ -1852,9 +1855,10 @@ export default function RideDetailScreen(): React.JSX.Element {
       <LoginBottomSheet
         visible={guestLoginSheetVisible}
         onClose={() => setGuestLoginSheetVisible(false)}
-        onLoggedIn={({ userId }) => {
+        onLoggedIn={() => {
           InteractionManager.runAfterInteractions(() => {
-            void handleBook({ sessionUserId: userId });
+            const id = authUserIdRef.current.trim();
+            void handleBook(id ? { sessionUserId: id } : undefined);
           });
         }}
         navigation={navigation as NavigationProp<ParamListBase>}

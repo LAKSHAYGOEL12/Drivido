@@ -122,8 +122,8 @@ export default function Profile(): React.JSX.Element {
       setLoading(true);
       void (async () => {
         try {
+          // Ratings API is fast; Firestore inside `refreshUser()` can hang — never block the profile spinner on it.
           const summary = await getUserRatingsSummary(targetUserId);
-          if (isSelf) await refreshUser();
           if (cancelled) return;
           setProfileName(targetDisplayName);
           setAvgRating(summary.avgRating);
@@ -135,6 +135,9 @@ export default function Profile(): React.JSX.Element {
           setTotalRatings(0);
         } finally {
           if (!cancelled) setLoading(false);
+        }
+        if (!cancelled && isSelf) {
+          void refreshUser();
         }
       })();
 
@@ -258,8 +261,40 @@ export default function Profile(): React.JSX.Element {
       {isSelf ? (
         <>
           <Section title="Personal Details">
-            <InfoRow icon="call-outline" label="Phone Number" value={user?.phone || 'Not provided'} />
-            <InfoRow icon="mail-outline" label="Email Address" value={user?.email || 'Not provided'} />
+            <InfoRow icon="person-outline" label="Name" value={user?.name?.trim() || 'Not provided'} />
+            <InfoRow icon="mail-outline" label="Email" value={user?.email || 'Not provided'} />
+            <InfoRow
+              icon="calendar-outline"
+              label="Date of birth"
+              value={
+                user?.dateOfBirth
+                  ? (() => {
+                      const d = new Date(`${user.dateOfBirth}T12:00:00`);
+                      return Number.isNaN(d.getTime())
+                        ? user.dateOfBirth
+                        : d.toLocaleDateString(undefined, {
+                            year: 'numeric',
+                            month: 'short',
+                            day: 'numeric',
+                          });
+                    })()
+                  : 'Not provided'
+              }
+            />
+            <InfoRow
+              icon="male-female-outline"
+              label="Gender"
+              value={
+                user?.gender
+                  ? user.gender === 'prefer_not_to_say'
+                    ? 'Prefer not to say'
+                    : user.gender === 'non_binary'
+                      ? 'Non-binary'
+                      : user.gender.charAt(0).toUpperCase() + user.gender.slice(1).replace('_', ' ')
+                  : 'Not provided'
+              }
+            />
+            <InfoRow icon="call-outline" label="Phone" value={user?.phone?.trim() ? user.phone : 'Not provided'} />
           </Section>
 
           <Section title="Vehicle Information">
