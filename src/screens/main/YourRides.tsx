@@ -1076,6 +1076,7 @@ export default function YourRides(): React.JSX.Element {
         closeRatingSheet();
         showToast({
           title: 'Thanks for your feedback',
+          message: '',
           variant: 'success',
         });
       }
