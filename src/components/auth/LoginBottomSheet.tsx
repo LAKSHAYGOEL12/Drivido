@@ -23,8 +23,9 @@ import Button from '../common/Button';
 import Input from '../common/Input';
 import { COLORS } from '../../constants/colors';
 import type { RootStackParamList } from '../../navigation/types';
+import { hasAuthAccessToken } from '../../services/api';
+import { getFirebaseAuth } from '../../config/firebase';
 import { useAuth } from '../../contexts/AuthContext';
-import { resetNavigationToVerifyEmail } from '../../navigation/navigateToVerifyEmail';
 import { requestForegroundLocationAfterAuth } from '../../services/location-permission-auth';
 import {
   firebaseAuthErrorToMessage,
@@ -168,11 +169,16 @@ export default function LoginBottomSheet({
         await new Promise((r) => setTimeout(r, 50));
         if (!authGateRef.current.isAwaitingBackendSession) break;
       }
+      await new Promise((r) => setTimeout(r, 120));
       const { needsEmailVerification: nev, isAuthenticated: authed } = authGateRef.current;
+      const firebaseUser = getFirebaseAuth()?.currentUser;
+      if (firebaseUser && hasAuthAccessToken() && !nev) {
+        finishGuestSuccess();
+        return;
+      }
       if (nev) {
         setSigningIn(false);
         onClose();
-        resetNavigationToVerifyEmail(phoneOrEmail.trim().toLowerCase());
         return;
       }
       if (authed) {

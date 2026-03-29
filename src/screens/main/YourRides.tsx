@@ -9,7 +9,6 @@ import {
   TouchableOpacity,
   RefreshControl,
   Animated,
-  Easing,
   Modal,
   Pressable,
   TextInput,
@@ -458,11 +457,16 @@ export default function YourRides(): React.JSX.Element {
   const [rides, setRides] = useState<RideListItem[]>([]);
   const [bookedRideIds, setBookedRideIds] = useState<Set<string>>(new Set());
   const [filter, setFilter] = useState<FilterTab>('myRides');
+  const ridesRef = useRef(rides);
+  ridesRef.current = rides;
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   /** Softer copy + animation right after booking navigates here. */
   const [justBookedWelcome, setJustBookedWelcome] = useState(false);
-  const loaderOpacity = useRef(new Animated.Value(0)).current;
+  /** Soft / focus refetch: keep filters + list chrome; show spinner in list area instead of empty state. */
+  const [backgroundRefreshing, setBackgroundRefreshing] = useState(false);
+  /** Last accurate “All rides” count (browse merged). Live count drops on my/past-only refetches without catalog. */
+  const [cachedAllRidesCount, setCachedAllRidesCount] = useState(0);
   const [ratingRide, setRatingRide] = useState<RideListItem | null>(null);
   const [showRatingSheet, setShowRatingSheet] = useState(false);
   const [ratingStars, setRatingStars] = useState(0);
@@ -493,6 +497,10 @@ export default function YourRides(): React.JSX.Element {
       backSub.remove();
     };
   }, [isInitialLoaderVisible, navigation]);
+
+  useEffect(() => {
+    setCachedAllRidesCount(0);
+  }, [currentUserId]);
 
   useEffect(() => {
     const tabNav = navigation.getParent();
@@ -572,17 +580,28 @@ export default function YourRides(): React.JSX.Element {
     };
   }, [ratingKeyboardOffset]);
 
-  const fetchRides = useCallback(async (targetFilter?: FilterTab) => {
+  const fetchRides = useCallback(async (softRefresh = false) => {
     setError(null);
-    setLoading(true);
+    if (softRefresh) {
+      setBackgroundRefreshing(true);
+    } else {
+      setLoading(true);
+    }
     const ownerId = currentUserId.trim();
-    const effectiveFilter = targetFilter ?? filter;
     try {
       let saw429 = false;
 
-      /** Sequential + stagger: parallel calls often trigger 429 on rate-limited APIs. */
-      const myPublishedRes = await apiGetOrNull(API.endpoints.rides.myPublished);
+      /**
+       * GET /my-rides + GET /rides (catalog) in parallel — catalog used to run only after two round-trips
+       * and two staggers, so “All rides” felt like it hung. Booked stays staggered after to limit 429 bursts.
+       */
+      const [myPublishedRes, browseListResult] = await Promise.all([
+        apiGetOrNull(API.endpoints.rides.myPublished),
+        apiGetOrNull(API.endpoints.rides.list),
+      ]);
       if (myPublishedRes.status === 429) saw429 = true;
+      if (browseListResult.status === 429) saw429 = true;
+
       /** Driver’s published rides only — never treat full GET /rides as “published” (would mark everyone as owner). */
       let publishedRaw: Record<string, unknown>[] = [];
       if (myPublishedRes.data != null) {
@@ -596,6 +615,30 @@ export default function YourRides(): React.JSX.Element {
         console.log('========== GET /my-rides failed — driver list empty; catalog still from GET /rides ==========');
       }
 
+      let browseRaw: Record<string, unknown>[] = [];
+      if (browseListResult.data != null) {
+        browseRaw = extractRawList(browseListResult.data);
+        if (__DEV__) {
+          console.log('========== GET /rides (browse catalog) – API response ==========');
+          console.log(JSON.stringify(browseListResult.data, null, 2));
+          console.log('================================================');
+        }
+      } else if (browseListResult.status !== 429) {
+        /** Don’t retry immediately after 429 — same bucket, makes things worse. */
+        try {
+          await rideListStagger();
+          const ridesRes = await api.get<RidesResponse>(API.endpoints.rides.list);
+          browseRaw = extractRawList(ridesRes);
+          if (__DEV__) {
+            console.log('========== GET /rides (browse retry) – API response ==========');
+            console.log(JSON.stringify(ridesRes, null, 2));
+            console.log('================================================');
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+
       await rideListStagger();
       const bookedResult = await apiGetOrNull(API.endpoints.rides.booked);
       if (bookedResult.status === 429) saw429 = true;
@@ -606,35 +649,6 @@ export default function YourRides(): React.JSX.Element {
           console.log('========== GET /rides/booked – API response ==========');
           console.log(JSON.stringify(bookedResult.data, null, 2));
           console.log('================================================');
-        }
-      }
-
-      let browseRaw: Record<string, unknown>[] = [];
-      if (effectiveFilter === 'allRides') {
-        await rideListStagger();
-        const browseListResult = await apiGetOrNull(API.endpoints.rides.list);
-        if (browseListResult.status === 429) saw429 = true;
-        if (browseListResult.data != null) {
-          browseRaw = extractRawList(browseListResult.data);
-          if (__DEV__) {
-            console.log('========== GET /rides (browse catalog) – API response ==========');
-            console.log(JSON.stringify(browseListResult.data, null, 2));
-            console.log('================================================');
-          }
-        } else if (browseListResult.status !== 429) {
-          /** Don’t retry immediately after 429 — same bucket, makes things worse. */
-          try {
-            await rideListStagger();
-            const ridesRes = await api.get<RidesResponse>(API.endpoints.rides.list);
-            browseRaw = extractRawList(ridesRes);
-            if (__DEV__) {
-              console.log('========== GET /rides (browse retry) – API response ==========');
-              console.log(JSON.stringify(ridesRes, null, 2));
-              console.log('================================================');
-            }
-          } catch {
-            /* ignore */
-          }
         }
       }
 
@@ -808,6 +822,7 @@ export default function YourRides(): React.JSX.Element {
         }
       }
 
+      setCachedAllRidesCount(list.filter(matchesAllRidesTab).length);
       setRides(list);
       setBookedRideIds(bookedIds);
     } catch (e: unknown) {
@@ -817,14 +832,17 @@ export default function YourRides(): React.JSX.Element {
       if (message === 'Network request failed' || message === 'Aborted' || message.includes('timed out')) {
         message = 'Cannot reach server. Check that the backend is running and your device is on the same network.';
       }
-      setError(message);
-      setRides([]);
-      setBookedRideIds(new Set());
+      if (!softRefresh) {
+        setError(message);
+        setRides([]);
+        setBookedRideIds(new Set());
+      }
     } finally {
       setLoading(false);
+      setBackgroundRefreshing(false);
       setJustBookedWelcome(false);
     }
-  }, [currentUserId, filter]);
+  }, [currentUserId]);
 
   useFocusEffect(
     useCallback(() => {
@@ -835,12 +853,13 @@ export default function YourRides(): React.JSX.Element {
         navigation.setParams({ _afterBookRefresh: undefined });
         setRides([]);
         setBookedRideIds(new Set());
+        setCachedAllRidesCount(0);
         setError(null);
         setLoading(true);
-        void fetchRides('myRides');
+        void fetchRides(false);
         return;
       }
-      void fetchRides();
+      void fetchRides(ridesRef.current.length > 0);
     }, [fetchRides, navigation, route.params])
   );
 
@@ -1151,6 +1170,8 @@ export default function YourRides(): React.JSX.Element {
     [rides, listCtx]
   );
 
+  const allRidesTabLabelCount = Math.max(tabCounts.allRides, cachedAllRidesCount);
+
   const allRidesFlat = useMemo(
     () => sortRidesForYourRides(rides.filter(matchesAllRidesTab), 'upcoming'),
     [rides]
@@ -1176,57 +1197,37 @@ export default function YourRides(): React.JSX.Element {
     [rides, listCtx, currentUserId]
   );
 
-  useEffect(() => {
-    if (!(loading && rides.length === 0)) {
-      loaderOpacity.setValue(0);
-      return;
-    }
-    loaderOpacity.setValue(0);
-    const anim = Animated.timing(loaderOpacity, {
-      toValue: 1,
-      duration: 320,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: true,
-    });
-    anim.start();
-    return () => anim.stop();
-  }, [loading, rides.length, loaderOpacity]);
-
-  if (loading && rides.length === 0) {
-    return (
-      <View style={styles.center}>
-        <Animated.View style={[styles.loaderInner, { opacity: loaderOpacity }]}>
+  const initialLoadBlock =
+    loading && rides.length === 0 && !error ? (
+      <View style={styles.listBody}>
+        <View style={styles.loaderInner}>
           <ActivityIndicator size="large" color={COLORS.primary} />
           <Text style={styles.loadingTitle}>
             {justBookedWelcome ? "You're in" : 'Your rides'}
           </Text>
           <Text style={styles.loadingText}>
-            {justBookedWelcome
-              ? 'Syncing your bookings…'
-              : 'Loading your rides…'}
+            {justBookedWelcome ? 'Syncing your bookings…' : 'Loading your rides…'}
           </Text>
-        </Animated.View>
+        </View>
       </View>
-    );
-  }
+    ) : null;
 
-  if (error && rides.length === 0) {
-    return (
-      <View style={styles.center}>
+  const initialErrorBlock =
+    error && rides.length === 0 ? (
+      <View style={styles.listBody}>
         <Ionicons name="alert-circle-outline" size={48} color={COLORS.error} />
         <Text style={styles.errorText}>{error}</Text>
         <TouchableOpacity
           style={styles.retryButton}
           onPress={() => {
             clearRideDetailCache();
-            void fetchRides();
+            void fetchRides(false);
           }}
         >
           <Text style={styles.retryButtonText}>Retry</Text>
         </TouchableOpacity>
       </View>
-    );
-  }
+    ) : null;
 
   return (
     <View style={styles.wrapper}>
@@ -1242,11 +1243,17 @@ export default function YourRides(): React.JSX.Element {
         </TouchableOpacity>
         <TouchableOpacity
           style={[styles.filterTab, filter === 'allRides' && styles.filterTabActive]}
-          onPress={() => setFilter('allRides')}
+          onPress={() => {
+            if (filter === 'allRides') {
+              void fetchRides(ridesRef.current.length > 0);
+              return;
+            }
+            setFilter('allRides');
+          }}
           activeOpacity={0.8}
         >
           <Text style={[styles.filterTabText, filter === 'allRides' && styles.filterTabTextActive]}>
-            All rides{tabCounts.allRides > 0 ? ` (${tabCounts.allRides})` : ''}
+            All rides{allRidesTabLabelCount > 0 ? ` (${allRidesTabLabelCount})` : ''}
           </Text>
         </TouchableOpacity>
         <TouchableOpacity
@@ -1259,96 +1266,112 @@ export default function YourRides(): React.JSX.Element {
           </Text>
         </TouchableOpacity>
       </View>
-      {filter === 'allRides' ? (
-        <FlatList
-          data={allRidesFlat}
-          keyExtractor={(item) => item.id}
-          contentContainerStyle={allRidesFlat.length === 0 ? styles.emptyList : styles.list}
-          refreshControl={
-            <RefreshControl
-              refreshing={loading}
-              onRefresh={() => {
-                clearRideDetailCache();
-                void fetchRides();
-              }}
-              colors={[COLORS.primary]}
-            />
-          }
-          ListEmptyComponent={
-            <View style={styles.empty}>
-              <Ionicons name="car-outline" size={56} color={COLORS.textMuted} />
-              <Text style={styles.emptyTitle}>No upcoming rides</Text>
-              <Text style={styles.emptySubtitle}>
-                Nothing scheduled ahead right now. Pull to refresh or check back later.
-              </Text>
-            </View>
-          }
-          renderItem={({ item }) => (
-            <YourRidesRideCard
-              item={item}
-              filter={filter}
-              currentUserId={currentUserId}
-              currentUserName={currentUserName}
-              viewerAvatarUrl={viewerAvatarUrl}
-              bookedRideIds={bookedRideIds}
-              ratedRideIds={ratedRideIds}
-              ratedTargetsByRide={ratedTargetsByRide}
-              onNavigateDetail={goRideDetail}
-              onRateRide={openRateSheet}
-            />
-          )}
-        />
-      ) : (
-        <SectionList
-          sections={filter === 'myRides' ? myRidesSections : pastRidesSections}
-          keyExtractor={(item) => item.id}
-          renderSectionHeader={({ section }) => (
-            <Text style={styles.sectionHeader}>{section.title}</Text>
-          )}
-          stickySectionHeadersEnabled={false}
-          contentContainerStyle={
-            (filter === 'myRides' ? myRidesSections : pastRidesSections).length === 0
-              ? styles.emptyList
-              : styles.list
-          }
-          refreshControl={
-            <RefreshControl
-              refreshing={loading}
-              onRefresh={() => {
-                clearRideDetailCache();
-                void fetchRides();
-              }}
-              colors={[COLORS.primary]}
-            />
-          }
-          ListEmptyComponent={
-            <View style={styles.empty}>
-              <Ionicons name="car-outline" size={56} color={COLORS.textMuted} />
-              <Text style={styles.emptyTitle}>
-                {filter === 'myRides' ? 'No upcoming rides' : 'No past rides'}
-              </Text>
-              <Text style={styles.emptySubtitle}>
-                {filter === 'myRides'
-                  ? 'Publish a ride or book a seat — your active trips show up here, split by driving vs riding.'
-                  : 'When a ride ends or is cancelled, it moves here (for rides you hosted or joined).'}
-              </Text>
-            </View>
-          }
-          renderItem={({ item }) => (
-            <YourRidesRideCard
-              item={item}
-              filter={filter}
-              currentUserId={currentUserId}
-              currentUserName={currentUserName}
-              viewerAvatarUrl={viewerAvatarUrl}
-              bookedRideIds={bookedRideIds}
-              ratedRideIds={ratedRideIds}
-              ratedTargetsByRide={ratedTargetsByRide}
-              onNavigateDetail={goRideDetail}
-              onRateRide={openRateSheet}
-            />
-          )}
-        />
+      {initialLoadBlock ?? initialErrorBlock ?? (
+        filter === 'allRides' ? (
+          <FlatList
+            data={allRidesFlat}
+            keyExtractor={(item) => item.id}
+            contentContainerStyle={allRidesFlat.length === 0 ? styles.emptyList : styles.list}
+            refreshControl={
+              <RefreshControl
+                refreshing={loading}
+                onRefresh={() => {
+                  clearRideDetailCache();
+                  void fetchRides(false);
+                }}
+                colors={[COLORS.primary]}
+              />
+            }
+            ListEmptyComponent={
+              backgroundRefreshing ? (
+                <View style={styles.empty}>
+                  <ActivityIndicator size="large" color={COLORS.primary} />
+                  <Text style={styles.emptySubtitle}>Loading rides…</Text>
+                </View>
+              ) : (
+                <View style={styles.empty}>
+                  <Ionicons name="car-outline" size={56} color={COLORS.textMuted} />
+                  <Text style={styles.emptyTitle}>No upcoming rides</Text>
+                  <Text style={styles.emptySubtitle}>
+                    Nothing scheduled ahead right now. Pull to refresh or check back later.
+                  </Text>
+                </View>
+              )
+            }
+            renderItem={({ item }) => (
+              <YourRidesRideCard
+                item={item}
+                filter={filter}
+                currentUserId={currentUserId}
+                currentUserName={currentUserName}
+                viewerAvatarUrl={viewerAvatarUrl}
+                bookedRideIds={bookedRideIds}
+                ratedRideIds={ratedRideIds}
+                ratedTargetsByRide={ratedTargetsByRide}
+                onNavigateDetail={goRideDetail}
+                onRateRide={openRateSheet}
+              />
+            )}
+          />
+        ) : (
+          <SectionList
+            sections={filter === 'myRides' ? myRidesSections : pastRidesSections}
+            keyExtractor={(item) => item.id}
+            renderSectionHeader={({ section }) => (
+              <Text style={styles.sectionHeader}>{section.title}</Text>
+            )}
+            stickySectionHeadersEnabled={false}
+            contentContainerStyle={
+              (filter === 'myRides' ? myRidesSections : pastRidesSections).length === 0
+                ? styles.emptyList
+                : styles.list
+            }
+            refreshControl={
+              <RefreshControl
+                refreshing={loading}
+                onRefresh={() => {
+                  clearRideDetailCache();
+                  void fetchRides(false);
+                }}
+                colors={[COLORS.primary]}
+              />
+            }
+            ListEmptyComponent={
+              backgroundRefreshing ? (
+                <View style={styles.empty}>
+                  <ActivityIndicator size="large" color={COLORS.primary} />
+                  <Text style={styles.emptySubtitle}>Loading rides…</Text>
+                </View>
+              ) : (
+                <View style={styles.empty}>
+                  <Ionicons name="car-outline" size={56} color={COLORS.textMuted} />
+                  <Text style={styles.emptyTitle}>
+                    {filter === 'myRides' ? 'No upcoming rides' : 'No past rides'}
+                  </Text>
+                  <Text style={styles.emptySubtitle}>
+                    {filter === 'myRides'
+                      ? 'Publish a ride or book a seat — your active trips show up here, split by driving vs riding.'
+                      : 'When a ride ends or is cancelled, it moves here (for rides you hosted or joined).'}
+                  </Text>
+                </View>
+              )
+            }
+            renderItem={({ item }) => (
+              <YourRidesRideCard
+                item={item}
+                filter={filter}
+                currentUserId={currentUserId}
+                currentUserName={currentUserName}
+                viewerAvatarUrl={viewerAvatarUrl}
+                bookedRideIds={bookedRideIds}
+                ratedRideIds={ratedRideIds}
+                ratedTargetsByRide={ratedTargetsByRide}
+                onNavigateDetail={goRideDetail}
+                onRateRide={openRateSheet}
+              />
+            )}
+          />
+        )
       )}
       <Modal visible={showRatingSheet} transparent animationType="slide" onRequestClose={handleRatingModalRequestClose}>
         <View
@@ -1512,6 +1535,14 @@ const styles = StyleSheet.create({
   wrapper: {
     flex: 1,
     backgroundColor: COLORS.background,
+  },
+  /** List / loading / error area below filter tabs (tabs stay mounted). */
+  listBody: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: COLORS.background,
+    padding: 24,
   },
   filterRow: {
     flexDirection: 'row',

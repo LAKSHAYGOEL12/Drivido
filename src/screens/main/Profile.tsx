@@ -57,8 +57,10 @@ export default function Profile(): React.JSX.Element {
 
   const displayName = profileName || targetDisplayName;
   const routeAvatarUrl = route.params?.avatarUrl?.trim();
-  const profileHeaderPhotoUri =
-    (isSelf ? (user?.avatarUrl ?? routeAvatarUrl) : routeAvatarUrl) || undefined;
+  /** Own profile: only `user` from auth — never route params (they stay stale after remove photo). */
+  const profileHeaderPhotoUri = isSelf
+    ? (user?.avatarUrl ?? '').trim() || undefined
+    : routeAvatarUrl || undefined;
 
   const pickAndUpload = useCallback(
     async (source: 'library' | 'camera') => {

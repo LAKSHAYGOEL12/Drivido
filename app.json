@@ -5,13 +5,13 @@
     "scheme": "drivido",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/image-2.png",
     "userInterfaceStyle": "light",
     "plugins": [
       [
         "expo-notifications",
         {
-          "icon": "./assets/icon.png",
+          "icon": "./assets/image-2.png",
           "color": "#0ea5e9",
           "defaultChannel": "default",
           "sounds": [],
@@ -47,14 +47,12 @@
         "barStyle": "dark-content"
       },
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/android-icon-foreground.png",
-        "backgroundImage": "./assets/android-icon-background.png",
-        "monochromeImage": "./assets/android-icon-monochrome.png"
+        "backgroundColor": "#E8F5EE",
+        "foregroundImage": "./assets/image-2.png"
       }
     },
     "web": {
-      "favicon": "./assets/favicon.png"
+      "favicon": "./assets/image-2.png"
     }
   }
 }

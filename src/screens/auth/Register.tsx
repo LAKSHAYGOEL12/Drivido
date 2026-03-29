@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import {
   StyleSheet,
   Text,
@@ -8,7 +8,11 @@ import {
   ScrollView,
   Alert,
   TouchableOpacity,
+  Modal,
+  Pressable,
 } from 'react-native';
+import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
+import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import type { RootStackScreenProps } from '../../navigation/types';
@@ -30,9 +34,33 @@ import {
 import Button from '../../components/common/Button';
 import Input from '../../components/common/Input';
 import { COLORS } from '../../constants/colors';
-import { resetNavigationToVerifyEmail } from '../../navigation/navigateToVerifyEmail';
-
 type Props = RootStackScreenProps<'Register'>;
+
+function formatLocalYmd(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function parseYmdToLocalDate(iso: string): Date {
+  const [y, mo, da] = iso.split('-').map((n) => Number(n));
+  return new Date(y, mo - 1, da, 12, 0, 0, 0);
+}
+
+function clampDate(d: Date, min: Date, max: Date): Date {
+  const t = d.getTime();
+  if (t < min.getTime()) return new Date(min);
+  if (t > max.getTime()) return new Date(max);
+  return d;
+}
+
+function defaultPickerDate(min: Date, max: Date): Date {
+  const d = new Date();
+  d.setFullYear(d.getFullYear() - 25);
+  d.setHours(12, 0, 0, 0);
+  return clampDate(d, min, max);
+}
 
 export default function Register(): React.JSX.Element {
   const navigation = useNavigation<Props['navigation']>();
@@ -51,6 +79,42 @@ export default function Register(): React.JSX.Element {
   }>({});
   const scrollRef = useRef<ScrollView | null>(null);
   const passwordFieldYRef = useRef(0);
+  const [dobPickerOpen, setDobPickerOpen] = useState(false);
+  const [dobPickerDate, setDobPickerDate] = useState(() => new Date());
+
+  const { dobMin, dobMax } = useMemo(() => {
+    const max = new Date();
+    max.setFullYear(max.getFullYear() - 13);
+    const min = new Date();
+    min.setFullYear(min.getFullYear() - 120);
+    return { dobMin: min, dobMax: max };
+  }, []);
+
+  const openDobPicker = () => {
+    let next = defaultPickerDate(dobMin, dobMax);
+    if (dateOfBirth.trim() && validation.dateOfBirth(dateOfBirth.trim())) {
+      next = clampDate(parseYmdToLocalDate(dateOfBirth.trim()), dobMin, dobMax);
+    }
+    setDobPickerDate(next);
+    setDobPickerOpen(true);
+    setErrors((e) => ({ ...e, dateOfBirth: undefined }));
+  };
+
+  const onAndroidDobChange = (event: DateTimePickerEvent, date?: Date) => {
+    setDobPickerOpen(false);
+    if (event.type === 'dismissed') return;
+    if (date) {
+      const c = clampDate(date, dobMin, dobMax);
+      setDateOfBirth(formatLocalYmd(c));
+      setErrors((e) => ({ ...e, dateOfBirth: undefined }));
+    }
+  };
+
+  const confirmIosDob = () => {
+    setDateOfBirth(formatLocalYmd(clampDate(dobPickerDate, dobMin, dobMax)));
+    setDobPickerOpen(false);
+    setErrors((e) => ({ ...e, dateOfBirth: undefined }));
+  };
 
   const scrollFieldIntoView = () => {
     setTimeout(() => {
@@ -110,8 +174,6 @@ export default function Register(): React.JSX.Element {
     } finally {
       setIsLoading(false);
     }
-
-    resetNavigationToVerifyEmail(email.trim().toLowerCase());
   };
 
   return (
@@ -162,17 +224,82 @@ export default function Register(): React.JSX.Element {
               editable={!isLoading}
               onFocus={scrollFieldIntoView}
             />
-            <Input
-              label="Date of birth"
-              value={dateOfBirth}
-              onChangeText={setDateOfBirth}
-              placeholder="YYYY-MM-DD (e.g. 1995-03-15)"
-              error={errors.dateOfBirth}
-              keyboardType="numbers-and-punctuation"
-              autoCapitalize="none"
-              editable={!isLoading}
-              onFocus={scrollFieldIntoView}
-            />
+            {Platform.OS === 'web' ? (
+              <Input
+                label="Date of birth"
+                value={dateOfBirth}
+                onChangeText={setDateOfBirth}
+                placeholder="YYYY-MM-DD (e.g. 1995-03-15)"
+                error={errors.dateOfBirth}
+                keyboardType="numbers-and-punctuation"
+                autoCapitalize="none"
+                editable={!isLoading}
+                onFocus={scrollFieldIntoView}
+              />
+            ) : (
+              <View style={styles.dobBlock}>
+                <Text style={styles.dobLabel}>Date of birth</Text>
+                <TouchableOpacity
+                  style={[styles.dobTouchable, errors.dateOfBirth ? styles.dobTouchableError : null]}
+                  onPress={openDobPicker}
+                  disabled={isLoading}
+                  accessibilityRole="button"
+                  accessibilityLabel="Open calendar to choose date of birth"
+                >
+                  <Text style={[styles.dobValue, !dateOfBirth.trim() ? styles.dobPlaceholder : null]}>
+                    {dateOfBirth.trim() ? dateOfBirth.trim() : 'Tap to choose date'}
+                  </Text>
+                  <Ionicons name="calendar-outline" size={22} color="#64748b" />
+                </TouchableOpacity>
+                {errors.dateOfBirth ? <Text style={styles.genderError}>{errors.dateOfBirth}</Text> : null}
+              </View>
+            )}
+
+            {Platform.OS === 'android' && dobPickerOpen ? (
+              <DateTimePicker
+                value={dobPickerDate}
+                mode="date"
+                display="default"
+                minimumDate={dobMin}
+                maximumDate={dobMax}
+                onChange={onAndroidDobChange}
+              />
+            ) : null}
+
+            {Platform.OS === 'ios' ? (
+              <Modal
+                visible={dobPickerOpen}
+                animationType="slide"
+                transparent
+                onRequestClose={() => setDobPickerOpen(false)}
+              >
+                <View style={styles.dobModalRoot}>
+                  <Pressable style={styles.dobModalBackdrop} onPress={() => setDobPickerOpen(false)} />
+                  <SafeAreaView edges={['bottom']} style={styles.dobModalSheet}>
+                    <View style={styles.dobModalHeader}>
+                      <TouchableOpacity onPress={() => setDobPickerOpen(false)} hitSlop={12}>
+                        <Text style={styles.dobModalCancel}>Cancel</Text>
+                      </TouchableOpacity>
+                      <Text style={styles.dobModalTitle}>Date of birth</Text>
+                      <TouchableOpacity onPress={confirmIosDob} hitSlop={12}>
+                        <Text style={styles.dobModalDone}>Done</Text>
+                      </TouchableOpacity>
+                    </View>
+                    <DateTimePicker
+                      value={dobPickerDate}
+                      mode="date"
+                      display="inline"
+                      minimumDate={dobMin}
+                      maximumDate={dobMax}
+                      onChange={(_, d) => {
+                        if (d) setDobPickerDate(clampDate(d, dobMin, dobMax));
+                      }}
+                      themeVariant="light"
+                    />
+                  </SafeAreaView>
+                </View>
+              </Modal>
+            ) : null}
             <View style={styles.genderBlock}>
               <Text style={styles.genderLabel}>Gender</Text>
               <View style={styles.genderGrid}>
@@ -286,6 +413,75 @@ const styles = StyleSheet.create({
   },
   form: {
     marginBottom: 18,
+  },
+  dobBlock: {
+    marginBottom: 16,
+  },
+  dobLabel: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#334155',
+    marginBottom: 6,
+  },
+  dobTouchable: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    backgroundColor: COLORS.background,
+  },
+  dobTouchableError: {
+    borderColor: COLORS.error,
+  },
+  dobValue: {
+    fontSize: 16,
+    color: COLORS.text,
+    flex: 1,
+  },
+  dobPlaceholder: {
+    color: '#94a3b8',
+  },
+  dobModalRoot: {
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  dobModalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(15,23,42,0.45)',
+  },
+  dobModalSheet: {
+    backgroundColor: COLORS.background,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    paddingBottom: 8,
+  },
+  dobModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#e2e8f0',
+  },
+  dobModalTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: COLORS.text,
+  },
+  dobModalCancel: {
+    fontSize: 16,
+    color: COLORS.textSecondary,
+    fontWeight: '600',
+  },
+  dobModalDone: {
+    fontSize: 16,
+    color: COLORS.primary,
+    fontWeight: '700',
   },
   genderBlock: {
     marginBottom: 12,

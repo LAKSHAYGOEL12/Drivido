@@ -19,8 +19,10 @@ import { firebaseSignOutSafe } from '../services/firebaseAuthBridge';
 import {
   AuthExchangeError,
   exchangeFirebaseIdTokenForBackendSession,
+  parseAuthMePayload,
   type BackendAuthUser,
 } from '../services/backendAuthExchange';
+import { pickAvatarUrlFromRecord } from '../utils/avatarUrl';
 
 export type User = {
   id: string;
@@ -50,7 +52,8 @@ type AuthState = {
 
 type AuthContextValue = AuthState & {
   login: (user: User, accessToken: string, refreshToken?: string | null) => void;
-  logout: () => void;
+  /** Ends Firebase + API session; returns a promise that resolves when local state is cleared. */
+  logout: () => Promise<void>;
   setLoading: (loading: boolean) => void;
   /** Reload Firebase user + GET /api/auth/me (e.g. after avatar or profile change). */
   refreshUser: () => Promise<void>;
@@ -71,32 +74,41 @@ const initialState: AuthState = {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
+function strField(v: unknown): string {
+  if (v == null) return '';
+  if (typeof v === 'string') return v.trim();
+  if (typeof v === 'number' && Number.isFinite(v)) return String(v);
+  if (typeof v === 'object' && v !== null && '$date' in (v as object)) {
+    const d = (v as { $date?: string }).$date;
+    return typeof d === 'string' ? d.trim() : '';
+  }
+  return '';
+}
+
 /** Merge Mongo user from POST /auth/firebase (or GET /auth/me) with Firebase Auth display/photo. */
 function buildSessionUser(fbUser: FirebaseUser, backendUser: BackendAuthUser): User {
   const mongoId = String(backendUser.id || backendUser._id || '').trim();
   if (!mongoId) {
     throw new Error('Backend user missing id');
   }
+  const rec = backendUser as unknown as Record<string, unknown>;
   const beEmail = backendUser.email != null ? String(backendUser.email).trim() : '';
   const beName = backendUser.name != null ? String(backendUser.name).trim() : '';
   const bePhone = backendUser.phone != null ? String(backendUser.phone).trim() : '';
   const beDob =
-    backendUser.dateOfBirth != null && String(backendUser.dateOfBirth).trim() !== ''
-      ? String(backendUser.dateOfBirth).trim()
-      : '';
+    strField(rec.dateOfBirth) ||
+    strField(rec.date_of_birth) ||
+    strField(rec.dob) ||
+    '';
   const beGender =
-    backendUser.gender != null && String(backendUser.gender).trim() !== ''
-      ? String(backendUser.gender).trim()
-      : '';
+    strField(rec.gender) ||
+    strField(rec.userGender) ||
+    strField(rec.user_gender) ||
+    '';
   const beAvatar =
-    backendUser.avatarUrl != null && String(backendUser.avatarUrl).trim() !== ''
-      ? String(backendUser.avatarUrl).trim()
-      : backendUser.avatar_url != null && String(backendUser.avatar_url).trim() !== ''
-        ? String(backendUser.avatar_url).trim()
-        : '';
+    (pickAvatarUrlFromRecord(backendUser as unknown as Record<string, unknown>) ?? '').trim();
   const beCreated = backendUser.createdAt || backendUser.created_at;
   const fbPhone = phoneDigitsFromFirebasePhone(fbUser.phoneNumber);
-  const fbPhoto = fbUser.photoURL?.trim() ? fbUser.photoURL.trim() : '';
   const fbName = fbUser.displayName?.trim() || '';
   const fbEmail = fbUser.email?.trim() || '';
   return {
@@ -107,15 +119,16 @@ function buildSessionUser(fbUser: FirebaseUser, backendUser: BackendAuthUser): U
     ...(beDob ? { dateOfBirth: beDob } : {}),
     ...(beGender ? { gender: beGender } : {}),
     createdAt: beCreated || fbUser.metadata.creationTime || undefined,
-    ...(beAvatar ? { avatarUrl: beAvatar } : fbPhoto ? { avatarUrl: fbPhoto } : {}),
+    /** Only backend/Mongo avatar — Firebase `photoURL` was overwriting uploaded profile photos on refresh. */
+    ...(beAvatar ? { avatarUrl: beAvatar } : {}),
   };
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }): React.JSX.Element {
   const [state, setState] = useState<AuthState>(initialState);
 
-  const logout = useCallback(() => {
-    void (async () => {
+  const logout = useCallback((): Promise<void> => {
+    return (async () => {
       try {
         await unregisterPushTokenWithBackend();
       } catch {
@@ -175,13 +188,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
       const path = API.endpoints.auth.me.startsWith('/')
         ? API.endpoints.auth.me
         : `/${API.endpoints.auth.me}`;
-      const { user: me } = await api.get<{ user: BackendAuthUser }>(path);
+      const body = await api.get<unknown>(path);
+      const me = parseAuthMePayload(body);
+      if (!me || !(String(me.id ?? me._id ?? '').trim())) return;
       const next = buildSessionUser(u, me);
       setState((prev) => {
         if (!prev.isAuthenticated || !prev.token || !prev.user) return prev;
+        /** Merge so a just-uploaded `avatarUrl` is not wiped when GET /auth/me omits photo fields. */
+        const user: User = { ...prev.user, ...next, id: prev.user.id };
         return {
           ...prev,
-          user: { ...next, id: prev.user.id },
+          user,
         };
       });
     } catch {

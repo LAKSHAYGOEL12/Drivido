@@ -15,9 +15,9 @@ import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import type { RootStackScreenProps } from '../../navigation/types';
-import { getApiBaseUrl, testServerConnection } from '../../services/api';
+import { getApiBaseUrl, hasAuthAccessToken, testServerConnection } from '../../services/api';
 import { getApiBaseUrlDebug } from '../../config/apiBaseUrl';
-import { isFirebaseAuthConfigured } from '../../config/firebase';
+import { getFirebaseAuth, isFirebaseAuthConfigured } from '../../config/firebase';
 import { validation } from '../../constants/validation';
 import {
   firebaseAuthErrorToMessage,
@@ -28,7 +28,6 @@ import Input from '../../components/common/Input';
 import { COLORS } from '../../constants/colors';
 import { requestForegroundLocationAfterAuth } from '../../services/location-permission-auth';
 import { useAuth } from '../../contexts/AuthContext';
-import { resetNavigationToVerifyEmail } from '../../navigation/navigateToVerifyEmail';
 
 type Props = RootStackScreenProps<'Login'>;
 
@@ -95,9 +94,21 @@ export default function Login(): React.JSX.Element {
         await new Promise((r) => setTimeout(r, 50));
         if (!authGateRef.current.isAwaitingBackendSession) break;
       }
+      // Refs lag one frame behind AuthContext — avoid false "sign in failed" when session is already OK.
+      await new Promise((r) => setTimeout(r, 120));
       const { needsEmailVerification: nev, isAuthenticated: authed } = authGateRef.current;
+      const firebaseUser = getFirebaseAuth()?.currentUser;
+      if (firebaseUser && hasAuthAccessToken() && !nev) {
+        setOverlaySuccess(true);
+        setTimeout(() => {
+          void requestForegroundLocationAfterAuth();
+          navigation.goBack();
+          setSigningIn(false);
+          setOverlaySuccess(false);
+        }, 450);
+        return;
+      }
       if (nev) {
-        resetNavigationToVerifyEmail(phoneOrEmail.trim().toLowerCase());
         setSigningIn(false);
         return;
       }

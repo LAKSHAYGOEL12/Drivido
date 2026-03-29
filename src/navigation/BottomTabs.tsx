@@ -68,8 +68,8 @@ export default function BottomTabs(): React.JSX.Element {
 
   return (
     <Tab.Navigator
-      /** Detach inactive screens to reduce initial mount work / startup lag. */
-      detachInactiveScreens={true}
+      /** Keep tab screens mounted so Rides (etc.) state isn’t wiped when switching tabs — avoids empty flashes. */
+      detachInactiveScreens={false}
       screenOptions={{
         headerShown: true,
         tabBarActiveTintColor: COLORS.primary,

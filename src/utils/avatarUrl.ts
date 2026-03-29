@@ -16,7 +16,7 @@ export function stringifyApiUserId(value: unknown): string {
   }
 }
 
-/** Normalize avatar URL from API (snake_case / nested user). */
+/** Normalize profile photo URL from API (any common key / nested `user` / `profile`). */
 export function pickAvatarUrlFromRecord(r: Record<string, unknown> | undefined | null): string | undefined {
   if (!r) return undefined;
   const direct =
@@ -24,6 +24,9 @@ export function pickAvatarUrlFromRecord(r: Record<string, unknown> | undefined |
     r.avatar_url ??
     r.photoUrl ??
     r.photo_url ??
+    r.photoURL ??
+    r.profilePhoto ??
+    r.profile_photo ??
     r.profileImageUrl ??
     r.profile_image_url ??
     r.avatarUri ??
@@ -33,14 +36,25 @@ export function pickAvatarUrlFromRecord(r: Record<string, unknown> | undefined |
     r.profilePicture ??
     r.profile_picture ??
     r.imageUrl ??
-    r.image_url;
+    r.image_url ??
+    r.headshotUrl ??
+    r.headshot_url ??
+    r.thumbnailUrl ??
+    r.thumbnail_url ??
+    r.publicAvatarUrl ??
+    r.public_avatar_url;
   if (typeof direct === 'string' && direct.trim()) return direct.trim();
   if (typeof r.image === 'string' && r.image.trim()) return r.image.trim();
-  const nested =
-    r.user && typeof r.user === 'object'
-      ? pickAvatarUrlFromRecord(r.user as Record<string, unknown>)
-      : undefined;
-  return nested;
+
+  const profile = asObject(r.profile);
+  if (profile) {
+    const fromProfile = pickAvatarUrlFromRecord(profile);
+    if (fromProfile) return fromProfile;
+  }
+
+  const nestedUser =
+    r.user && typeof r.user === 'object' ? pickAvatarUrlFromRecord(r.user as Record<string, unknown>) : undefined;
+  return nestedUser;
 }
 
 const SUBJECT_LIKE_KEYS = [
@@ -109,7 +123,7 @@ export function findAvatarUrlForUserInTree(node: unknown, userId: string, maxDep
   return undefined;
 }
 
-/** Driver/publisher photo on a ride payload (top-level aliases or nested `user`). */
+/** Driver/publisher photo on a ride payload (top-level aliases or nested `user` / `publisher` / `driver`). */
 export function pickPublisherAvatarUrl(r: Record<string, unknown>): string | undefined {
   for (const key of [
     'publisherAvatarUrl',
@@ -119,6 +133,13 @@ export function pickPublisherAvatarUrl(r: Record<string, unknown>): string | und
   ] as const) {
     const v = r[key];
     if (typeof v === 'string' && v.trim()) return v.trim();
+  }
+  for (const nest of ['publisher', 'driver', 'owner', 'host'] as const) {
+    const v = r[nest];
+    if (v && typeof v === 'object') {
+      const hit = pickAvatarUrlFromRecord(v as Record<string, unknown>);
+      if (hit) return hit;
+    }
   }
   if (r.user && typeof r.user === 'object') {
     const u = pickAvatarUrlFromRecord(r.user as Record<string, unknown>);

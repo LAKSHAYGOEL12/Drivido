@@ -1,28 +1,55 @@
 import { API } from '../constants/API';
+import { pickAvatarUrlFromRecord } from '../utils/avatarUrl';
 import api from './api';
 
-function extractAvatarUrlFromResponse(raw: unknown): string | null {
-  if (!raw || typeof raw !== 'object') return null;
-  const root = raw as Record<string, unknown>;
-  const data = root.data && typeof root.data === 'object' ? (root.data as Record<string, unknown>) : root;
-  const user = data.user && typeof data.user === 'object' ? (data.user as Record<string, unknown>) : null;
-  const candidates = [
-    data.avatarUrl,
-    data.avatar_url,
-    data.photoUrl,
-    data.photo_url,
-    user?.avatarUrl,
-    user?.avatar_url,
-    user?.photoUrl,
-    user?.photo_url,
-  ];
-  for (const c of candidates) {
-    if (typeof c === 'string' && c.trim()) return c.trim();
+/** Common keys on upload / profile JSON where the server puts the file URL. */
+const URL_KEYS = [
+  'url',
+  'fileUrl',
+  'file_url',
+  'avatarUrl',
+  'avatar_url',
+  'photoUrl',
+  'photo_url',
+  'imageUrl',
+  'image_url',
+  'path',
+  'location',
+] as const;
+
+function scrapeUrlFields(obj: Record<string, unknown>): string | null {
+  for (const k of URL_KEYS) {
+    const v = obj[k];
+    if (typeof v === 'string' && v.trim()) return v.trim();
   }
   return null;
 }
 
-/** Upload profile photo. Backend: POST multipart /api/user/avatar with field `photo` or `avatar`. */
+function extractAvatarUrlFromResponse(raw: unknown): string | null {
+  if (raw == null) return null;
+  if (typeof raw === 'string' && raw.trim()) return raw.trim();
+  if (typeof raw !== 'object') return null;
+  const root = raw as Record<string, unknown>;
+  const layers: Record<string, unknown>[] = [root];
+  const data = root.data;
+  if (data && typeof data === 'object' && !Array.isArray(data)) {
+    layers.push(data as Record<string, unknown>);
+  }
+  for (const layer of layers) {
+    const scraped = scrapeUrlFields(layer);
+    if (scraped) return scraped;
+    const picked = pickAvatarUrlFromRecord(layer);
+    if (picked) return picked;
+    const user = layer.user;
+    if (user && typeof user === 'object') {
+      const u = user as Record<string, unknown>;
+      const s = scrapeUrlFields(u) ?? pickAvatarUrlFromRecord(u);
+      if (s) return s;
+    }
+  }
+  return null;
+}
+
 export async function uploadUserAvatar(localUri: string): Promise<string> {
   const form = new FormData();
   const uriLower = localUri.toLowerCase();
@@ -45,7 +72,6 @@ export async function uploadUserAvatar(localUri: string): Promise<string> {
   return url;
 }
 
-/** Remove avatar. Backend: DELETE /api/user/avatar */
 export async function deleteUserAvatar(): Promise<void> {
   await api.delete(API.endpoints.user.avatar);
 }

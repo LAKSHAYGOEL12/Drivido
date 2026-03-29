@@ -46,11 +46,19 @@ export default function RootNavigator(): React.JSX.Element | null {
     }
   }, [isAuthenticated, prefetchLocation]);
 
-  /** e.g. cold start with Firebase session but email still unverified — push Verify Email onto root stack. */
+  /** Push Verify Email when `needsEmailVerification` is true (cold start, signup, unverified login). */
   useEffect(() => {
-    if (!navReady || isLoading || !needsEmailVerification) {
-      if (!needsEmailVerification) verifyRedirectedRef.current = false;
+    if (!needsEmailVerification) {
+      verifyRedirectedRef.current = false;
       return;
+    }
+    if (!navReady || isLoading) return;
+    if (rootNavigationRef.isReady()) {
+      const r = rootNavigationRef.getCurrentRoute();
+      if (r?.name === 'VerifyEmail') {
+        verifyRedirectedRef.current = true;
+        return;
+      }
     }
     if (verifyRedirectedRef.current) return;
     verifyRedirectedRef.current = true;

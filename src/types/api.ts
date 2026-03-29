@@ -218,6 +218,9 @@ export interface RideListItem {
     pickupLocationName?: string;
     destinationLocationName?: string;
     avatarUrl?: string;
+    /** Embedded passenger profile when API includes it on booking / nested user. */
+    avgRating?: number;
+    ratingCount?: number;
   }>;
 }
 
@@ -267,6 +270,8 @@ export interface RideDetailResponse {
     pickupLocationName?: string;
     destinationLocationName?: string;
     avatarUrl?: string;
+    avgRating?: number;
+    ratingCount?: number;
   }>;
 }
 

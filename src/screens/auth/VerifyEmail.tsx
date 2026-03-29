@@ -64,8 +64,10 @@ export default function VerifyEmail(): React.JSX.Element {
     }
   };
 
-  const handleSignOut = () => {
-    void logout();
+  const handleSignOut = async () => {
+    /** Wait for Firebase sign-out + auth state before resetting nav, or `onAuthStateChanged` can
+     * briefly still see a user, re-run exchange, set `needsEmailVerification` again, and reopen Verify Email. */
+    await logout();
     if (rootNavigationRef.isReady()) {
       rootNavigationRef.reset({ index: 0, routes: [{ name: 'Main' }] });
     } else {
@@ -114,7 +116,7 @@ export default function VerifyEmail(): React.JSX.Element {
             />
             <Button
               title="Sign out"
-              onPress={handleSignOut}
+              onPress={() => void handleSignOut()}
               disabled={continuing || resending}
               variant="secondary"
               style={styles.buttonMuted}

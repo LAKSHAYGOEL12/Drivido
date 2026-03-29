@@ -18,6 +18,49 @@ function seatsFromRaw(raw: unknown): number {
   return 1;
 }
 
+function numField(v: unknown): number | undefined {
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  if (typeof v === 'string' && v.trim() !== '') {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : undefined;
+  }
+  return undefined;
+}
+
+/** Passenger / user aggregates from booking or nested `user` object (backend may snake_case). */
+function ratingFieldsFromRecord(rec: Record<string, unknown>): {
+  avgRating?: number;
+  ratingCount?: number;
+} {
+  const avgRaw =
+    numField(rec.avgRating) ??
+    numField(rec.avg_rating) ??
+    numField(rec.averageRating) ??
+    numField(rec.average_rating) ??
+    numField(rec.ratingAvg) ??
+    numField(rec.rating_avg) ??
+    numField(rec.publisherAvgRating) ??
+    numField(rec.publisher_avg_rating);
+  const countRaw =
+    numField(rec.ratingCount) ??
+    numField(rec.rating_count) ??
+    numField(rec.totalRatings) ??
+    numField(rec.total_ratings) ??
+    numField(rec.reviewCount) ??
+    numField(rec.review_count) ??
+    numField(rec.publisherRatingCount) ??
+    numField(rec.publisher_rating_count);
+
+  const avg =
+    avgRaw != null && avgRaw >= 0 && avgRaw <= 5 ? Number(avgRaw.toFixed(1)) : undefined;
+  const ratingCount =
+    countRaw != null && countRaw >= 0 ? Math.floor(countRaw) : undefined;
+  return {
+    ...(avg != null ? { avgRating: avg } : {}),
+    ...(ratingCount != null && ratingCount > 0 ? { ratingCount } : {}),
+  };
+}
+
 /** Map one booking object (from ride detail or booking list) to a row. */
 export function mapRawToBookingRow(o: Record<string, unknown>): RideBookingRow | null {
   const nestedUser =
@@ -30,6 +73,8 @@ export function mapRawToBookingRow(o: Record<string, unknown>): RideBookingRow |
     o.bookedBy && typeof o.bookedBy === 'object'
       ? (o.bookedBy as Record<string, unknown>)
       : undefined;
+  const rider =
+    o.rider && typeof o.rider === 'object' ? (o.rider as Record<string, unknown>) : undefined;
   const pickupObj =
     o.pickup != null && typeof o.pickup === 'object' ? (o.pickup as Record<string, unknown>) : undefined;
   const destinationObj =
@@ -72,7 +117,20 @@ export function mapRawToBookingRow(o: Record<string, unknown>): RideBookingRow |
     pickAvatarUrlFromRecord(o) ??
     (nestedUser ? pickAvatarUrlFromRecord(nestedUser) : undefined) ??
     (passenger ? pickAvatarUrlFromRecord(passenger) : undefined) ??
-    (bookedBy ? pickAvatarUrlFromRecord(bookedBy) : undefined);
+    (bookedBy ? pickAvatarUrlFromRecord(bookedBy) : undefined) ??
+    (rider ? pickAvatarUrlFromRecord(rider) : undefined);
+
+  let avgRating: number | undefined;
+  let ratingCount: number | undefined;
+  for (const src of [nestedUser, passenger, bookedBy, rider, o] as const) {
+    if (!src || typeof src !== 'object') continue;
+    const r = ratingFieldsFromRecord(src as Record<string, unknown>);
+    if (avgRating == null && r.avgRating != null) avgRating = r.avgRating;
+    if ((ratingCount == null || ratingCount === 0) && r.ratingCount != null && r.ratingCount > 0) {
+      ratingCount = r.ratingCount;
+    }
+    if (avgRating != null && ratingCount != null) break;
+  }
 
   const pickupLocationName = toStr(
     o.pickupLocationName ??
@@ -111,6 +169,8 @@ export function mapRawToBookingRow(o: Record<string, unknown>): RideBookingRow |
     ...(pickupLocationName ? { pickupLocationName } : {}),
     ...(destinationLocationName ? { destinationLocationName } : {}),
     ...(avatarUrl ? { avatarUrl } : {}),
+    ...(avgRating != null ? { avgRating } : {}),
+    ...(ratingCount != null && ratingCount > 0 ? { ratingCount } : {}),
   };
 }
 

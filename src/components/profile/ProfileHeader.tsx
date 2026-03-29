@@ -1,5 +1,6 @@
 import React from 'react';
 import { StyleSheet, Text, View, ViewStyle } from 'react-native';
+import { avatarInitialsFromName } from '../../utils/avatarInitials';
 
 type ProfileHeaderProps = {
   name: string;
@@ -18,8 +19,8 @@ export default function ProfileHeader({
     <View style={[styles.container, style]}>
       {avatar ?? (
         <View style={styles.avatarPlaceholder}>
-          <Text style={styles.avatarText}>
-            {name.charAt(0).toUpperCase()}
+          <Text style={styles.avatarText} adjustsFontSizeToFit numberOfLines={1}>
+            {avatarInitialsFromName(name)}
           </Text>
         </View>
       )}
