@@ -325,7 +325,8 @@ export interface ChatMessageResponse {
   text: string;
   sentAt: number;
   senderUserId: string;
-  status: 'sending' | 'sent' | 'delivered' | 'read';
+  /** Server may send legacy values; normalize with `normalizeChatStatus` in the app. */
+  status?: string;
 }
 
 export interface ChatMessagesResponse {

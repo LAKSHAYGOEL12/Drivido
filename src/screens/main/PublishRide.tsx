@@ -286,7 +286,13 @@ export default function PublishRide(): React.JSX.Element {
     setTimeLabel(formatTimeLabel(hour, minute));
   }, []);
 
-  const closeTimeModal = useCallback(() => {
+  const cancelTimeModal = useCallback(() => {
+    if (timeModalToastTimerRef.current) clearTimeout(timeModalToastTimerRef.current);
+    setTimeModalToast('');
+    setShowTimeModal(false);
+  }, []);
+
+  const confirmTimeModal = useCallback(() => {
     const candidate = { hour: clockHour24, minute: clockMinute };
     if (isSelectedDateTimeTooSoon(selectedDate, candidate, MIN_LEAD_MINUTES)) {
       if (timeModalToastTimerRef.current) clearTimeout(timeModalToastTimerRef.current);
@@ -321,22 +327,8 @@ export default function PublishRide(): React.JSX.Element {
         return;
       }
       setClockMinute(minute);
-      applyClockTime(clockHour24, minute);
-      setShowTimeModal(false);
     }
-  }, [clockMode, clockHour24, applyClockTime, selectedDate]);
-
-  const handleSelectTime = (hour: number, minute: number) => {
-    if (isSelectedDateTimeTooSoon(selectedDate, { hour, minute }, MIN_LEAD_MINUTES)) {
-      if (timeModalToastTimerRef.current) clearTimeout(timeModalToastTimerRef.current);
-      setTimeModalToast('Choose a time at least 30 minutes from now.');
-      timeModalToastTimerRef.current = setTimeout(() => setTimeModalToast(''), 1800);
-      return;
-    }
-    setSelectedTime({ hour, minute });
-    setTimeLabel(formatTimeLabel(hour, minute));
-    setShowTimeModal(false);
-  };
+  }, [clockMode, clockHour24, selectedDate]);
 
   useEffect(() => {
     return () => {
@@ -357,6 +349,21 @@ export default function PublishRide(): React.JSX.Element {
   /** After location pick we reset the stack; restore date/time/seats from draft + new coords from params. */
   const publishRestoreKey = (route.params as { _publishRestoreKey?: string } | undefined)
     ?._publishRestoreKey;
+  const priceReturnForLayout = (route.params || {}) as {
+    selectedDurationSeconds?: number;
+    selectedDistanceKm?: number;
+  };
+  const prDurSec =
+    typeof priceReturnForLayout.selectedDurationSeconds === 'number' &&
+    !Number.isNaN(priceReturnForLayout.selectedDurationSeconds)
+      ? priceReturnForLayout.selectedDurationSeconds
+      : -1;
+  const prDistKm =
+    typeof priceReturnForLayout.selectedDistanceKm === 'number' &&
+    !Number.isNaN(priceReturnForLayout.selectedDistanceKm)
+      ? priceReturnForLayout.selectedDistanceKm
+      : -1;
+
   useLayoutEffect(() => {
     if (!publishRestoreKey) return;
     const d = getPublishRideDraft(publishRestoreKey);
@@ -369,21 +376,23 @@ export default function PublishRide(): React.JSX.Element {
       destinationLatitude?: number;
       destinationLongitude?: number;
       selectedRate?: string;
+      selectedDurationSeconds?: number;
+      selectedDistanceKm?: number;
     };
     setPickup(String(p.selectedFrom ?? d.pickup ?? ''));
     setDestination(String(p.selectedTo ?? d.destination ?? ''));
-    setPickupLatitude(
-      typeof p.pickupLatitude === 'number' ? p.pickupLatitude : d.pickupLatitude
-    );
-    setPickupLongitude(
-      typeof p.pickupLongitude === 'number' ? p.pickupLongitude : d.pickupLongitude
-    );
-    setDestinationLatitude(
-      typeof p.destinationLatitude === 'number' ? p.destinationLatitude : d.destinationLatitude
-    );
-    setDestinationLongitude(
-      typeof p.destinationLongitude === 'number' ? p.destinationLongitude : d.destinationLongitude
-    );
+    const plat =
+      typeof p.pickupLatitude === 'number' ? p.pickupLatitude : d.pickupLatitude;
+    const plon =
+      typeof p.pickupLongitude === 'number' ? p.pickupLongitude : d.pickupLongitude;
+    const dlat =
+      typeof p.destinationLatitude === 'number' ? p.destinationLatitude : d.destinationLatitude;
+    const dlon =
+      typeof p.destinationLongitude === 'number' ? p.destinationLongitude : d.destinationLongitude;
+    setPickupLatitude(plat);
+    setPickupLongitude(plon);
+    setDestinationLatitude(dlat);
+    setDestinationLongitude(dlon);
     try {
       setSelectedDate(new Date(d.selectedDateIso));
     } catch {
@@ -415,9 +424,25 @@ export default function PublishRide(): React.JSX.Element {
     setClockHour24(draftHour24);
     setClockMinute(d.clockMinute);
     schedulePublishDraftCleanup(publishRestoreKey);
+
+    if (typeof p.selectedDurationSeconds === 'number' && !Number.isNaN(p.selectedDurationSeconds)) {
+      setRouteDurationSeconds(Math.max(0, Math.floor(p.selectedDurationSeconds)));
+    }
+    if (
+      typeof p.selectedDistanceKm === 'number' &&
+      !Number.isNaN(p.selectedDistanceKm) &&
+      typeof plat === 'number' &&
+      typeof plon === 'number' &&
+      typeof dlat === 'number' &&
+      typeof dlon === 'number'
+    ) {
+      const pk = publishStopsCoordKey(plat, plon, dlat, dlon);
+      setSelectedRouteDistanceKm(Math.max(1, p.selectedDistanceKm));
+      lastRouteFareCoordsKeyRef.current = pk;
+    }
     // Don't call setParams(all undefined) — RN dispatches SET_PARAMS with {} and no navigator handles it.
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- apply once when returning from picker reset
-  }, [publishRestoreKey, navigation]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- draft restore + price return (duration/km)
+  }, [publishRestoreKey, navigation, prDurSec, prDistKm]);
 
   useFocusEffect(
     React.useCallback(() => {
@@ -674,17 +699,26 @@ export default function PublishRide(): React.JSX.Element {
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        <Text style={styles.publishHeading}>Publish your ride</Text>
+        <Text style={styles.publishHeading}>Offer a ride</Text>
+        <Text style={styles.publishSubheading}>
+          Set your route, time, and fare — passengers can book when you publish.
+        </Text>
 
         <View style={styles.singleCard}>
+          <Text style={[styles.cardSectionLabel, styles.cardSectionLabelFirst]}>Route</Text>
           <TouchableOpacity style={styles.fieldRow} onPress={() => openLocationPicker('from')} activeOpacity={0.75}>
             <View style={styles.fieldLeft}>
               <View style={styles.greenDot} />
               <View style={styles.dottedLine} />
             </View>
             <View style={styles.fieldInputWrap}>
-              <Text style={styles.fieldValue} numberOfLines={1}>{pickup || 'Current Location'}</Text>
-              <Text style={[styles.fieldLabel, styles.pickupLabel]}>PICKUP POINT</Text>
+              <Text
+                style={[styles.fieldValue, !pickup.trim() && styles.fieldValuePlaceholder]}
+                numberOfLines={1}
+              >
+                {pickup.trim() ? pickup : 'Add pickup location'}
+              </Text>
+              <Text style={[styles.fieldLabel, styles.pickupLabel]}>PICKUP</Text>
             </View>
             <TouchableOpacity style={styles.swapBtn} onPress={() => {
               const p = pickup; const d = destination;
@@ -701,7 +735,12 @@ export default function PublishRide(): React.JSX.Element {
           <TouchableOpacity style={styles.fieldRow} onPress={() => openLocationPicker('to')} activeOpacity={0.75}>
             <View style={styles.fieldLeft}><View style={styles.redPin} /></View>
             <View style={styles.fieldInputWrap}>
-              <Text style={styles.fieldValue} numberOfLines={1}>{destination || 'Where to?'}</Text>
+              <Text
+                style={[styles.fieldValue, !destination.trim() && styles.fieldValuePlaceholder]}
+                numberOfLines={1}
+              >
+                {destination.trim() ? destination : 'Where to?'}
+              </Text>
               <Text style={[styles.fieldLabel, styles.destinationLabel]}>DESTINATION</Text>
             </View>
             <Ionicons name="chevron-forward" size={22} color={COLORS.textMuted} />
@@ -712,7 +751,7 @@ export default function PublishRide(): React.JSX.Element {
             <View style={styles.fieldLeft}><Ionicons name="calendar-outline" size={24} color={COLORS.textSecondary} /></View>
             <View style={styles.fieldInputWrap}>
               <Text style={styles.fieldValue}>{dateLabel}</Text>
-              <Text style={styles.fieldLabel}>DEPARTURE DATE</Text>
+              <Text style={styles.fieldLabel}>DATE</Text>
             </View>
             <Ionicons name="chevron-forward" size={22} color={COLORS.textMuted} />
           </TouchableOpacity>
@@ -726,12 +765,13 @@ export default function PublishRide(): React.JSX.Element {
             </View>
             <View style={styles.fieldInputWrap}>
               <Text style={[styles.fieldValue, styles.timeValue]}>{timeLabel}</Text>
-              <Text style={styles.fieldLabel}>PREFERRED TIME</Text>
+              <Text style={styles.fieldLabel}>TIME</Text>
             </View>
             <Ionicons name="chevron-forward" size={22} color={COLORS.textMuted} />
           </TouchableOpacity>
 
           <View style={styles.rowDivider} />
+          <Text style={styles.cardSectionLabel}>Pricing</Text>
           <TouchableOpacity
             style={[styles.fieldRow, !canSetFare && styles.fieldRowDisabled]}
             onPress={() => {
@@ -799,7 +839,7 @@ export default function PublishRide(): React.JSX.Element {
             </View>
             <View style={styles.fieldInputWrap}>
               <Text style={[styles.fieldValue, styles.fareValue]}>{estimatedFareLabel}</Text>
-              <Text style={styles.fieldLabel}>ESTIMATED FARE</Text>
+              <Text style={styles.fieldLabel}>FARE PER SEAT</Text>
             </View>
             {canSetFare ? (
               <Ionicons name="chevron-forward" size={22} color={COLORS.textMuted} />
@@ -809,29 +849,32 @@ export default function PublishRide(): React.JSX.Element {
           </TouchableOpacity>
 
           <View style={styles.rowDivider} />
+          <Text style={styles.cardSectionLabel}>Seats</Text>
           <TouchableOpacity style={styles.fieldRow} onPress={() => setShowPassengersModal(true)} activeOpacity={0.75}>
             <View style={styles.fieldLeft}><Ionicons name="people-outline" size={24} color="#6b7280" /></View>
             <View style={styles.fieldInputWrap}>
-              <Text style={styles.fieldValue}>{seats} passenger{seats !== 1 ? 's' : ''}</Text>
-              <Text style={styles.fieldLabel}>SEATING SPACE</Text>
+              <Text style={styles.fieldValue}>{seats} seat{seats !== 1 ? 's' : ''} offered</Text>
+              <Text style={styles.fieldLabel}>PASSENGERS</Text>
             </View>
             <Ionicons name="chevron-forward" size={22} color={COLORS.textMuted} />
           </TouchableOpacity>
         </View>
 
-        {/* BOOKING OPTIONS */}
         <View style={styles.section}>
+          <Text style={styles.cardSectionLabel}>Booking</Text>
           <View style={styles.toggleCard}>
-            <View>
-              <Text style={styles.toggleTitle}>Instant Booking</Text>
-              <Text style={styles.toggleDesc}>Approve requests automatically</Text>
+            <View style={styles.toggleCardBody}>
+              <Text style={styles.toggleTitle}>Instant booking</Text>
+              <Text style={styles.toggleDesc}>Bookings are confirmed without you approving each one</Text>
             </View>
-            <Switch
-              value={instantBooking}
-              onValueChange={setInstantBooking}
-              trackColor={{ false: COLORS.border, true: COLORS.primaryLight }}
-              thumbColor={instantBooking ? COLORS.primary : COLORS.background}
-            />
+            <View style={styles.toggleSwitchWrap}>
+              <Switch
+                value={instantBooking}
+                onValueChange={setInstantBooking}
+                trackColor={{ false: COLORS.border, true: COLORS.primaryLight }}
+                thumbColor={instantBooking ? COLORS.primary : COLORS.background}
+              />
+            </View>
           </View>
         </View>
 
@@ -844,9 +887,9 @@ export default function PublishRide(): React.JSX.Element {
           {publishLoading ? (
             <ActivityIndicator size="small" color={COLORS.text} style={styles.publishButtonSpinner} />
           ) : (
-            <Text style={styles.publishButtonText}>Publish</Text>
+            <Text style={styles.publishButtonText}>Publish ride</Text>
           )}
-          {!publishLoading && <Ionicons name="chevron-forward" size={22} color={COLORS.text} />}
+          {!publishLoading && <Ionicons name="rocket-outline" size={22} color={COLORS.text} />}
         </TouchableOpacity>
       </ScrollView>
 
@@ -923,18 +966,14 @@ export default function PublishRide(): React.JSX.Element {
         </TouchableOpacity>
       </Modal>
 
-      <Modal visible={showTimeModal} transparent animationType="fade">
-        <TouchableOpacity
-          style={styles.timeModalOverlay}
-          activeOpacity={1}
-          onPress={closeTimeModal}
-        >
+      <Modal visible={showTimeModal} transparent animationType="fade" onRequestClose={cancelTimeModal}>
+        <View style={styles.timeModalOverlay}>
           {timeModalToast ? (
             <View style={styles.timeModalToastWrap} pointerEvents="none">
               <Text style={styles.timeModalToastText}>{timeModalToast}</Text>
             </View>
           ) : null}
-          <View style={styles.timeModalContent}>
+          <View style={styles.timeModalContent} onStartShouldSetResponder={() => true}>
             <Text style={styles.dateModalHeading}>Select time</Text>
             <View style={styles.clockTimeSelectRow}>
               <TouchableOpacity
@@ -1035,11 +1074,16 @@ export default function PublishRide(): React.JSX.Element {
                 ? 'Tap clock to pick hour'
                 : 'Tap clock to pick minutes (0–55 in 5 min steps)'}
             </Text>
-            <TouchableOpacity style={styles.dateModalClose} onPress={closeTimeModal}>
-              <Text style={styles.dateModalCloseText}>Done</Text>
-            </TouchableOpacity>
+            <View style={styles.timeModalActionsRow}>
+              <TouchableOpacity style={styles.timeModalCancelBtn} onPress={cancelTimeModal} activeOpacity={0.85}>
+                <Text style={styles.timeModalCancelBtnText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.timeModalDoneBtn} onPress={confirmTimeModal} activeOpacity={0.85}>
+                <Text style={styles.timeModalDoneBtnText}>Done</Text>
+              </TouchableOpacity>
+            </View>
           </View>
-        </TouchableOpacity>
+        </View>
       </Modal>
 
       <PassengersPickerModal
@@ -1058,20 +1102,40 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.background,
   },
   scroll: { flex: 1 },
-  scrollContent: { paddingHorizontal: 20, paddingBottom: 32 },
+  scrollContent: { paddingHorizontal: 20, paddingBottom: 40 },
   publishHeading: {
-    marginTop: 18,
-    marginBottom: 20,
-    fontSize: 28,
-    lineHeight: 32,
+    marginTop: 16,
+    marginBottom: 8,
+    fontSize: 30,
+    lineHeight: 36,
     fontWeight: '800',
     color: COLORS.text,
+    letterSpacing: -0.5,
+  },
+  publishSubheading: {
+    fontSize: 15,
+    lineHeight: 22,
+    color: COLORS.textSecondary,
+    marginBottom: 22,
+    maxWidth: 340,
+  },
+  cardSectionLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.textMuted,
+    letterSpacing: 0.8,
+    marginTop: 18,
+    marginBottom: 6,
+    marginLeft: 2,
+  },
+  cardSectionLabelFirst: {
+    marginTop: 2,
   },
   section: {
-    marginTop: 24,
+    marginTop: 20,
   },
   singleCard: {
-    marginTop: 4,
+    marginTop: 0,
     backgroundColor: COLORS.background,
     borderRadius: 18,
     borderWidth: 1,
@@ -1163,6 +1227,10 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: COLORS.text,
     fontWeight: '700',
+  },
+  fieldValuePlaceholder: {
+    color: COLORS.textMuted,
+    fontWeight: '600',
   },
   timeIconCircle: {
     width: 38,
@@ -1337,13 +1405,23 @@ const styles = StyleSheet.create({
   toggleCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    gap: 12,
     backgroundColor: COLORS.background,
     borderRadius: 12,
-    padding: 16,
+    paddingVertical: 14,
+    paddingHorizontal: 14,
     marginBottom: 12,
     borderWidth: 1,
     borderColor: COLORS.borderLight,
+    overflow: 'hidden',
+  },
+  toggleCardBody: {
+    flex: 1,
+    minWidth: 0,
+  },
+  toggleSwitchWrap: {
+    flexShrink: 0,
+    justifyContent: 'center',
   },
   toggleTitle: {
     fontSize: 16,
@@ -1352,18 +1430,29 @@ const styles = StyleSheet.create({
   },
   toggleDesc: {
     fontSize: 13,
+    lineHeight: 18,
     color: COLORS.textSecondary,
-    marginTop: 2,
+    marginTop: 4,
+    flexShrink: 1,
   },
   publishButton: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 8,
+    gap: 10,
     backgroundColor: COLORS.primary,
-    paddingVertical: 16,
-    borderRadius: 12,
-    marginTop: 24,
+    paddingVertical: 17,
+    borderRadius: 14,
+    marginTop: 28,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 3 },
+        shadowOpacity: 0.12,
+        shadowRadius: 6,
+      },
+      android: { elevation: 4 },
+    }),
   },
   publishButtonText: {
     fontSize: 17,
@@ -1521,6 +1610,40 @@ const styles = StyleSheet.create({
     paddingHorizontal: 28,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  timeModalActionsRow: {
+    flexDirection: 'row',
+    width: '100%',
+    marginTop: 20,
+    gap: 12,
+  },
+  timeModalCancelBtn: {
+    flex: 1,
+    paddingVertical: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.backgroundSecondary,
+  },
+  timeModalCancelBtnText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: COLORS.textSecondary,
+  },
+  timeModalDoneBtn: {
+    flex: 1,
+    paddingVertical: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 12,
+    backgroundColor: COLORS.primary,
+  },
+  timeModalDoneBtnText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: COLORS.white,
   },
   clockTimeSelectRow: {
     flexDirection: 'row',

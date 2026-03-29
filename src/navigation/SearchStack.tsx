@@ -7,6 +7,7 @@ import SearchRides from '../screens/main/SearchRides';
 import LocationPickerScreen from '../screens/main/LocationPickerScreen';
 import SearchResultsScreen from '../screens/main/SearchResultsScreen';
 import RideDetailScreen from '../screens/main/RideDetailScreen';
+import PublishedRideRouteMapScreen from '../screens/main/PublishedRideRouteMapScreen';
 import EditRideScreen from '../screens/main/EditRideScreen';
 import BookPassengerDetailScreen from '../screens/main/BookPassengerDetailScreen';
 import ChatScreen from '../screens/main/ChatScreen';
@@ -50,6 +51,11 @@ export default function SearchStack(): React.JSX.Element {
       <Stack.Screen
         name="RideDetail"
         component={RideDetailScreen}
+        options={{ headerShown: false }}
+      />
+      <Stack.Screen
+        name="PublishedRideRouteMap"
+        component={PublishedRideRouteMapScreen}
         options={{ headerShown: false }}
       />
       <Stack.Screen

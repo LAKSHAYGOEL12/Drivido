@@ -84,7 +84,6 @@ export default function Inbox(): React.JSX.Element {
             backgroundColor={COLORS.primary}
             fallbackTextColor={COLORS.white}
           />
-          <View style={[styles.statusDot, { backgroundColor: COLORS.textMuted }]} />
         </View>
         <View style={styles.rowCenter}>
           <View style={styles.nameRow}>
@@ -100,14 +99,6 @@ export default function Inbox(): React.JSX.Element {
             <View style={styles.unreadBadge}>
               <Text style={styles.unreadCount}>{item.unreadCount}</Text>
             </View>
-          ) : item.isLastMessageFromMe ? (
-            <View style={styles.tickWrap}>
-              {item.messageStatus === 'read' ? (
-                <Ionicons name="checkmark-done" size={18} color={COLORS.primary} />
-              ) : (
-                <Ionicons name="checkmark" size={18} color={COLORS.textMuted} />
-              )}
-            </View>
           ) : null}
         </View>
       </TouchableOpacity>
@@ -119,14 +110,6 @@ export default function Inbox(): React.JSX.Element {
       <View style={styles.container}>
         <View style={styles.header}>
           <Text style={styles.title}>Inbox</Text>
-          <View style={styles.headerIcons}>
-            <TouchableOpacity style={styles.headerIcon} onPress={() => {}}>
-              <Ionicons name="shield" size={22} color={COLORS.error} />
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.headerIcon} onPress={() => {}}>
-              <Ionicons name="notifications-outline" size={24} color={COLORS.text} />
-            </TouchableOpacity>
-          </View>
         </View>
 
         <View style={styles.searchWrap}>
@@ -172,9 +155,6 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.background,
   },
   header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
     paddingHorizontal: 20,
     paddingTop: 8,
     paddingBottom: 16,
@@ -183,14 +163,6 @@ const styles = StyleSheet.create({
     fontSize: 28,
     fontWeight: '700',
     color: COLORS.text,
-  },
-  headerIcons: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 16,
-  },
-  headerIcon: {
-    padding: 4,
   },
   searchWrap: {
     flexDirection: 'row',
@@ -238,18 +210,7 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   avatarWrap: {
-    position: 'relative',
     marginRight: 14,
-  },
-  statusDot: {
-    position: 'absolute',
-    bottom: 2,
-    right: 2,
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    borderWidth: 2,
-    borderColor: COLORS.background,
   },
   rowCenter: {
     flex: 1,
@@ -311,9 +272,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
     color: COLORS.white,
-  },
-  tickWrap: {
-    marginTop: 2,
   },
   separator: {
     height: 1,

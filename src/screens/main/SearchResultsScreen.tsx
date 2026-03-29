@@ -1168,7 +1168,7 @@ export default function SearchResultsScreen(): React.JSX.Element {
                       style={[styles.editTextInput, !draftFrom.trim() && styles.editTextPlaceholder]}
                       numberOfLines={1}
                     >
-                      {draftFrom || 'Current Location'}
+                      {draftFrom || 'Where from?'}
                     </Text>
                   </TouchableOpacity>
                 </View>

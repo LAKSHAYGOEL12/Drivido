@@ -127,6 +127,14 @@ export default function EditRideScreen(): React.JSX.Element {
   const PRICE_STEP = 5;
 
   const openTimeModal = () => {
+    const parts = timeValue.split(':').map(Number);
+    const hh = parts[0];
+    const mm = parts[1];
+    const h = !Number.isNaN(hh) ? Math.min(23, Math.max(0, Math.floor(hh))) : 9;
+    const rawM = !Number.isNaN(mm) ? mm : 0;
+    const m = Math.round(rawM / 5) * 5 % 60;
+    setTimeHour(h);
+    setTimeMinute(m);
     setClockMode('hour');
     setShowTimeModal(true);
   };
@@ -154,8 +162,6 @@ export default function EditRideScreen(): React.JSX.Element {
       return;
     }
     setTimeMinute(minute);
-    setTimeValue(`${String(timeHour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`);
-    setShowTimeModal(false);
   };
 
   const openLocationPicker = (field: 'from' | 'to') => {
@@ -204,6 +210,12 @@ export default function EditRideScreen(): React.JSX.Element {
     if (timeModalToastTimerRef.current) clearTimeout(timeModalToastTimerRef.current);
     setTimeModalToast('Choose a time at least 30 minutes from now.');
     timeModalToastTimerRef.current = setTimeout(() => setTimeModalToast(''), 1800);
+  };
+
+  const cancelTimeModal = () => {
+    if (timeModalToastTimerRef.current) clearTimeout(timeModalToastTimerRef.current);
+    setTimeModalToast('');
+    setShowTimeModal(false);
   };
 
   const applyTimeAndClose = () => {
@@ -322,7 +334,7 @@ export default function EditRideScreen(): React.JSX.Element {
               <View style={styles.dottedLine} />
             </View>
             <View style={styles.pickTextWrap}>
-              <Text style={styles.pickMainText} numberOfLines={1}>{pickupLocation || 'Current Location'}</Text>
+              <Text style={styles.pickMainText} numberOfLines={1}>{pickupLocation || 'Where from?'}</Text>
               <Text style={styles.pickSubText}>PICKUP</Text>
             </View>
             <Ionicons name={majorFieldLocked ? 'lock-closed-outline' : 'chevron-forward'} size={20} color={COLORS.textMuted} />
@@ -536,8 +548,8 @@ export default function EditRideScreen(): React.JSX.Element {
         </TouchableOpacity>
       </Modal>
 
-      <Modal visible={showTimeModal} transparent animationType="slide" onRequestClose={applyTimeAndClose}>
-        <TouchableOpacity style={styles.bottomOverlay} activeOpacity={1} onPress={applyTimeAndClose}>
+      <Modal visible={showTimeModal} transparent animationType="slide" onRequestClose={cancelTimeModal}>
+        <View style={styles.bottomOverlay}>
           {timeModalToast ? (
             <View style={styles.timeModalToastWrap} pointerEvents="none">
               <Ionicons name="alert-circle" size={22} color={COLORS.error} style={styles.timeModalToastIcon} />
@@ -646,14 +658,16 @@ export default function EditRideScreen(): React.JSX.Element {
               </View>
             </Pressable>
 
-            <TouchableOpacity
-              style={styles.bottomDoneBtn}
-              onPress={applyTimeAndClose}
-            >
-              <Text style={styles.bottomDoneText}>Done</Text>
-            </TouchableOpacity>
+            <View style={styles.timeModalActionsRow}>
+              <TouchableOpacity style={styles.timeModalCancelBtn} onPress={cancelTimeModal} activeOpacity={0.85}>
+                <Text style={styles.timeModalCancelBtnText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.timeModalDoneBtn} onPress={applyTimeAndClose} activeOpacity={0.85}>
+                <Text style={styles.timeModalDoneBtnText}>Done</Text>
+              </TouchableOpacity>
+            </View>
           </View>
-        </TouchableOpacity>
+        </View>
       </Modal>
     </SafeAreaView>
   );
@@ -1001,6 +1015,41 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
     color: COLORS.primary,
+  },
+  timeModalActionsRow: {
+    flexDirection: 'row',
+    width: '100%',
+    marginTop: 14,
+    paddingHorizontal: 4,
+    gap: 12,
+  },
+  timeModalCancelBtn: {
+    flex: 1,
+    paddingVertical: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.backgroundSecondary,
+  },
+  timeModalCancelBtnText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: COLORS.textSecondary,
+  },
+  timeModalDoneBtn: {
+    flex: 1,
+    paddingVertical: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 12,
+    backgroundColor: COLORS.primary,
+  },
+  timeModalDoneBtnText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: COLORS.white,
   },
   clockTimeSelectRow: {
     flexDirection: 'row',

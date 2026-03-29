@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import UserAvatar from '../../components/common/UserAvatar';
 import { Ionicons } from '@expo/vector-icons';
@@ -47,6 +47,7 @@ export default function OwnerRatingsModal(): React.JSX.Element {
   const [totalRatings, setTotalRatings] = useState(0);
   const [recentReviews, setRecentReviews] = useState<UserRatingReview[]>([]);
   const [loading, setLoading] = useState(true);
+  const ratingsFetchSeqRef = useRef(0);
 
   useFocusEffect(
     useCallback(() => {
@@ -93,30 +94,32 @@ export default function OwnerRatingsModal(): React.JSX.Element {
       }
 
       let cancelled = false;
+      const runId = ++ratingsFetchSeqRef.current;
       setLoading(true);
 
       void (async () => {
         try {
           const summary = await getUserRatingsSummary(targetUserId);
-          if (cancelled) return;
+          if (cancelled || runId !== ratingsFetchSeqRef.current) return;
           setAvgRating(summary.avgRating ?? 0);
           setTotalRatings(summary.totalRatings ?? 0);
           setRecentReviews(summary.reviews ?? []);
           setFetchedSubjectAvatar(summary.subjectAvatarUrl);
         } catch {
-          if (cancelled) return;
+          if (cancelled || runId !== ratingsFetchSeqRef.current) return;
           setAvgRating(0);
           setTotalRatings(0);
           setRecentReviews([]);
           setFetchedSubjectAvatar(undefined);
         } finally {
-          if (cancelled) return;
+          if (cancelled || runId !== ratingsFetchSeqRef.current) return;
           setLoading(false);
         }
       })();
 
       return () => {
         cancelled = true;
+        ratingsFetchSeqRef.current += 1;
       };
     }, [targetUserId])
   );

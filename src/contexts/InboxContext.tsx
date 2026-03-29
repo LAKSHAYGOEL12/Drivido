@@ -5,6 +5,9 @@ import {
   loadChatThreads,
   saveChatThreads,
   threadKey as getThreadKey,
+  nameParticipantId,
+  normalizeChatRideId,
+  resolveOtherParticipantId,
   type StoredThread,
   type StoredThreads,
   type StoredMessage,
@@ -18,8 +21,9 @@ import {
   clearInFlightThreadFetch,
 } from '../utils/chatFetchThrottle';
 import { getInboxActivitySortKey } from '../utils/inboxList';
+import { normalizeChatStatus, type ChatDeliveryStatus } from '../utils/chatMessageStatus';
 
-export type InboxMessageStatus = 'sent' | 'read';
+export type InboxMessageStatus = ChatDeliveryStatus;
 
 /** Same shape as ChatScreen expects – isFromMe is computed from senderUserId vs currentUser. */
 export interface PersistedChatMessage {
@@ -27,7 +31,7 @@ export interface PersistedChatMessage {
   text: string;
   sentAt: number;
   isFromMe: boolean;
-  status: 'sending' | 'sent' | 'delivered' | 'read';
+  status: ChatDeliveryStatus;
 }
 
 export interface InboxConversation {
@@ -52,12 +56,32 @@ type InboxState = {
     ride: RideListItem,
     otherUserName: string,
     otherUserId?: string,
-    update?: { lastMessage: string; lastMessageAt: number; messageStatus?: InboxMessageStatus },
+    update?: {
+      lastMessage: string;
+      lastMessageAt: number;
+      messageStatus?: InboxMessageStatus;
+      /** When omitted with an update, defaults to current user (outgoing). Set when restoring preview after failed send. */
+      lastMessageSenderId?: string;
+    },
     opts?: { otherUserAvatarUrl?: string }
   ) => void;
   getMessages: (ride: RideListItem, otherUserName: string, otherUserId?: string) => PersistedChatMessage[];
   addMessage: (ride: RideListItem, otherUserName: string, otherUserId: string | undefined, msg: PersistedChatMessage) => void;
-  updateMessageStatus: (ride: RideListItem, otherUserName: string, otherUserId: string | undefined, messageId: string, status: PersistedChatMessage['status']) => void;
+  updateMessageStatus: (ride: RideListItem, otherUserName: string, otherUserId: string | undefined, messageId: string, status: ChatDeliveryStatus) => void;
+  /** Replace optimistic client id with server message after POST succeeds. */
+  reconcileOutboundMessage: (
+    ride: RideListItem,
+    otherUserName: string,
+    otherUserId: string | undefined,
+    clientMessageId: string,
+    server: { id: string; text: string; sentAt: number }
+  ) => void;
+  removeMessageById: (
+    ride: RideListItem,
+    otherUserName: string,
+    otherUserId: string | undefined,
+    messageId: string
+  ) => void;
   markAllAsRead: () => void;
   markConversationAsRead: (rideId: string, otherUserId?: string, otherUserName?: string) => void;
   /** Load messages for a thread from backend (call when opening chat). */
@@ -66,7 +90,7 @@ type InboxState = {
     otherUserId: string,
     otherUserName?: string,
     ride?: RideListItem,
-    opts?: { cancelled?: () => boolean }
+    opts?: { cancelled?: () => boolean; /** Bypass 45s throttle (e.g. while chat is open and polling). */ force?: boolean }
   ) => Promise<void>;
 };
 
@@ -84,6 +108,59 @@ function mergeMessagesById(a: StoredMessage[], b: StoredMessage[]): StoredMessag
   return [...byId.values()].sort((x, y) => x.sentAt - y.sentAt);
 }
 
+/**
+ * Reads `messages` from the exact `threadKey(rideId, viewerId, otherId)` buckets `addMessage` writes.
+ * Tries every viewer id (e.g. mongo id vs phone) × raw vs resolved other id so optimistic sends always show.
+ */
+function messagesFromViewerThreadKeys(
+  threads: StoredThreads,
+  rideId: string,
+  viewerIds: string[],
+  rawOtherParam: string,
+  resolvedOther: string
+): StoredMessage[] {
+  const rid = normalizeChatRideId(rideId);
+  const others = [...new Set([resolvedOther, rawOtherParam].filter(Boolean))];
+  const byId = new Map<string, StoredMessage>();
+  for (const vid of viewerIds) {
+    if (!vid) continue;
+    for (const oid of others) {
+      if (!oid) continue;
+      const key = getThreadKey(rid, vid, oid);
+      const t = threads[key];
+      if (!t?.messages?.length) continue;
+      for (const m of t.messages) {
+        if (!byId.has(m.id)) byId.set(m.id, m);
+      }
+    }
+  }
+  return [...byId.values()].sort((a, b) => a.sentAt - b.sentAt);
+}
+
+/** Same union as `getMessages` — used when merging API fetch so we never drop bucket-only rows. */
+function localMessagesForThreadMerge(
+  threads: StoredThreads,
+  rideId: string,
+  viewerIds: string[],
+  otherUserIdParam: string | undefined,
+  otherUserNameParam: string
+): StoredMessage[] {
+  const rid = normalizeChatRideId(rideId);
+  const rawOid = (otherUserIdParam ?? '').trim();
+  const resolvedOid = resolveOtherParticipantId(otherUserIdParam, otherUserNameParam);
+
+  const fromBuckets = messagesFromViewerThreadKeys(threads, rid, viewerIds, rawOid, resolvedOid);
+
+  let agg = allMessagesForConversation(threads, rid, viewerIds, rawOid, otherUserNameParam);
+  if (resolvedOid !== rawOid) {
+    agg = mergeMessagesById(
+      agg,
+      allMessagesForConversation(threads, rid, viewerIds, resolvedOid, otherUserNameParam)
+    );
+  }
+  return mergeMessagesById(fromBuckets, agg);
+}
+
 /** Local thread used name-* id; server thread uses real userId — same ride + same display name. */
 function isLocalAliasOfServerThread(
   t: StoredThread,
@@ -92,7 +169,7 @@ function isLocalAliasOfServerThread(
   serverOtherId: string,
   serverOtherName: string
 ): boolean {
-  if (!t?.ride || t.ride.id !== rideId) return false;
+  if (!t?.ride || normalizeChatRideId(t.ride.id) !== normalizeChatRideId(rideId)) return false;
   if (!t.participantIds?.includes(currentUserId)) return false;
   const other = t.participantIds.find((id) => id !== currentUserId) ?? '';
   const sid = (serverOtherId ?? '').trim();
@@ -107,19 +184,22 @@ function isLocalAliasOfServerThread(
 function allMessagesForConversation(
   threads: StoredThreads,
   rideId: string,
-  currentUserId: string,
+  viewerIds: string[],
   otherUserIdParam: string,
   otherUserNameParam: string
 ): StoredMessage[] {
+  const rid = normalizeChatRideId(rideId);
   const oid = (otherUserIdParam ?? '').trim();
   const oname = (otherUserNameParam ?? '').trim().toLowerCase();
-  const nameFallback = otherUserNameParam ? `name-${otherUserNameParam}` : '';
+  const nameFallback = oid ? '' : nameParticipantId(otherUserNameParam);
   const byId = new Map<string, StoredMessage>();
 
+  const viewerSet = new Set(viewerIds.filter(Boolean));
+
   for (const t of Object.values(threads)) {
-    if (!t?.ride || t.ride.id !== rideId) continue;
-    if (!t.participantIds?.includes(currentUserId)) continue;
-    const other = t.participantIds.find((id) => id !== currentUserId) ?? '';
+    if (!t?.ride || normalizeChatRideId(t.ride.id) !== rid) continue;
+    if (!t.participantIds?.some((pid) => viewerSet.has(pid))) continue;
+    const other = t.participantIds.find((id) => !viewerSet.has(id)) ?? '';
     let match = false;
     if (oid && other === oid) match = true;
     else if (oid && other.startsWith('name-')) {
@@ -129,6 +209,11 @@ function allMessagesForConversation(
     else if (!oid && oname && other.startsWith('name-')) {
       const pn = (t.participantNames?.[other] ?? '').trim().toLowerCase();
       if (pn === oname) match = true;
+    }
+    // Real id vs name-* alias: same peer display name on the thread
+    if (!match && oname) {
+      const pn = (t.participantNames?.[other] ?? '').trim().toLowerCase();
+      if (pn && pn === oname) match = true;
     }
     if (match) {
       for (const m of t.messages ?? []) {
@@ -152,7 +237,7 @@ function stripAliasThreads(
   const oname = (paramOtherName ?? '').trim().toLowerCase();
   const next = { ...prev };
   for (const [k, t] of Object.entries(prev)) {
-    if (k === canonicalKey || !t?.ride || t.ride.id !== rideId) continue;
+    if (k === canonicalKey || !t?.ride || normalizeChatRideId(t.ride.id) !== normalizeChatRideId(rideId)) continue;
     if (!t.participantIds?.includes(currentUserId)) continue;
     const other = t.participantIds.find((id) => id !== currentUserId) ?? '';
     if (other === oid) continue;
@@ -164,18 +249,20 @@ function stripAliasThreads(
   return next;
 }
 
-function buildConversationsForUser(threads: StoredThreads, currentUserId: string): InboxConversation[] {
+function buildConversationsForUser(threads: StoredThreads, viewerIds: string[]): InboxConversation[] {
+  const viewerSet = new Set(viewerIds.filter(Boolean));
   const list: InboxConversation[] = [];
   for (const key of Object.keys(threads)) {
     const t = threads[key];
-    if (!t?.participantIds?.includes(currentUserId)) continue;
-    if (t.deletedFor?.includes(currentUserId)) continue;
-    const otherId = t.participantIds.find((id) => id !== currentUserId) ?? '';
+    if (!t?.participantIds?.some((pid) => viewerSet.has(pid))) continue;
+    if (t.deletedFor?.some((d) => viewerSet.has(d))) continue;
+    const otherId = t.participantIds.find((id) => !viewerSet.has(id)) ?? '';
     const otherName = t.participantNames?.[otherId]?.trim() || 'User';
     const lastMsg = (t.messages ?? []).length > 0 ? t.messages[t.messages.length - 1] : null;
     const lastSenderId = (lastMsg?.senderUserId ?? t.lastMessageSenderId ?? '').trim();
-    const isLastMessageFromMe = lastSenderId === currentUserId;
-    const lastStatusRaw = (lastMsg?.status ?? 'sent').trim().toLowerCase();
+    const isLastMessageFromMe = Boolean(lastSenderId && viewerSet.has(lastSenderId));
+    const lastStatus = normalizeChatStatus(lastMsg?.status);
+    const unreadCount = viewerIds.reduce((m, vid) => Math.max(m, t.unreadFor?.[vid] ?? 0), 0);
     list.push({
       id: key,
       ride: t.ride,
@@ -184,9 +271,9 @@ function buildConversationsForUser(threads: StoredThreads, currentUserId: string
       otherUserAvatarUrl: t.otherUserAvatarUrl,
       lastMessage: t.lastMessage ?? '',
       lastMessageAt: t.lastMessageAt ?? 0,
-      messageStatus: lastStatusRaw === 'read' ? 'read' : 'sent',
+      messageStatus: isLastMessageFromMe ? lastStatus : 'sent',
       isLastMessageFromMe,
-      unreadCount: t.unreadFor?.[currentUserId] ?? 0,
+      unreadCount,
     });
   }
   return list.sort((a, b) => getInboxActivitySortKey(b) - getInboxActivitySortKey(a));
@@ -200,7 +287,8 @@ function mergeServerConversationsIntoThreads(
 ): StoredThreads {
   const next = { ...prev };
   for (const c of convs) {
-    const key = c.threadKey || getThreadKey(c.ride?.id ?? '', currentUserId, c.otherUserId ?? '');
+    const rid = normalizeChatRideId(c.ride?.id ?? '');
+    const key = c.threadKey || getThreadKey(rid, currentUserId, c.otherUserId ?? '');
     if (!key || !c.ride) continue;
     const existing = next[key];
     const participantIds = [currentUserId, (c.otherUserId ?? '').trim()].filter(Boolean).sort() as [string, string];
@@ -220,7 +308,7 @@ function mergeServerConversationsIntoThreads(
     }
     const avatarFromServer = c.otherUserAvatarUrl;
     next[key] = {
-      ride: c.ride,
+      ride: { ...c.ride, id: rid },
       participantIds: existing?.participantIds ?? participantIds,
       participantNames: { ...existing?.participantNames, ...participantNames },
       otherUserAvatarUrl:
@@ -240,8 +328,14 @@ function mergeServerConversationsIntoThreads(
 
 export function InboxProvider({ children }: { children: React.ReactNode }): React.JSX.Element {
   const { user } = useAuth();
-  const currentUserId = (user?.id ?? user?._id ?? '').trim();
+  /** Keep in sync with screens that read `user.id` / `user.phone` for thread membership. */
+  const currentUserId = (user?.id ?? user?.phone ?? '').trim();
   const currentUserName = (user?.name ?? '').trim() || 'Me';
+  /** Threads may store `phone` or `id` for the same viewer — match both when loading messages. */
+  const viewerParticipantIds = useMemo(
+    () => [...new Set([currentUserId, (user?.id ?? '').trim(), (user?.phone ?? '').trim()].filter(Boolean))],
+    [currentUserId, user?.id, user?.phone]
+  );
 
   const [threadsByKey, setThreadsByKey] = useState<StoredThreads>({});
   const [hydrated, setHydrated] = useState(false);
@@ -297,13 +391,14 @@ export function InboxProvider({ children }: { children: React.ReactNode }): Reac
       otherUserId: string,
       otherUserName?: string,
       ride?: RideListItem,
-      opts?: { cancelled?: () => boolean }
+      opts?: { cancelled?: () => boolean; force?: boolean }
     ) => {
-      const otherId = (otherUserId ?? '').trim() || (otherUserName ? `name-${otherUserName}` : '');
-      const key = getThreadKey(rideId, currentUserId, otherId);
+      const otherId = resolveOtherParticipantId(otherUserId, otherUserName);
+      const rid = normalizeChatRideId(rideId);
+      const key = getThreadKey(rid, currentUserId, otherId);
       const cancelled = opts?.cancelled;
 
-      if (shouldSkipThreadMessagesFetch(key)) {
+      if (!opts?.force && shouldSkipThreadMessagesFetch(key)) {
         return;
       }
 
@@ -313,13 +408,13 @@ export function InboxProvider({ children }: { children: React.ReactNode }): Reac
         inFlightPromise = Promise.resolve().then(async () => {
           let fromApi: StoredMessage[] = [];
           try {
-            const msgs = await fetchThreadMessages(rideId, otherUserId.trim() || otherId);
+            const msgs = await fetchThreadMessages(rid, otherUserId.trim() || otherId);
             fromApi = msgs.map((m) => ({
               id: m.id,
               text: m.text,
               sentAt: m.sentAt,
               senderUserId: m.senderUserId,
-              status: m.status,
+              status: normalizeChatStatus(m.status),
             }));
           } catch {
             return;
@@ -328,32 +423,30 @@ export function InboxProvider({ children }: { children: React.ReactNode }): Reac
 
           setThreadsByKey((prev) => {
             const t = prev[key];
-            const localCombined = allMessagesForConversation(
+            const localCombined = localMessagesForThreadMerge(
               prev,
-              rideId,
-              currentUserId,
-              (otherUserId ?? '').trim(),
+              rid,
+              viewerParticipantIds,
+              otherUserId,
               otherUserName ?? ''
             );
             /** Server empty but device has history (any alias thread) — don't wipe */
             if (fromApi.length === 0 && localCombined.length > 0) return prev;
-            const byId = new Map<string, StoredMessage>();
-            for (const m of fromApi) byId.set(m.id, m);
-            for (const m of localCombined) {
-              if (!byId.has(m.id)) byId.set(m.id, m);
-            }
-            const merged = [...byId.values()].sort((a, b) => a.sentAt - b.sentAt);
+            /** Union API + aggregated locals + this thread's rows (avoids drops if alias matching misses `t`). */
+            let merged = mergeMessagesById(fromApi, localCombined);
+            if (t?.messages?.length) merged = mergeMessagesById(merged, t.messages);
             if (t) {
-              const stripped = stripAliasThreads(prev, key, rideId, currentUserId, otherUserId ?? '', otherUserName ?? '');
+              const stripped = stripAliasThreads(prev, key, rid, currentUserId, otherUserId ?? '', otherUserName ?? '');
               return { ...stripped, [key]: { ...t, messages: merged } };
             }
             if (!ride) return prev;
             const ids = [currentUserId, otherId].sort() as [string, string];
-            const stripped = stripAliasThreads(prev, key, rideId, currentUserId, otherUserId ?? '', otherUserName ?? '');
+            const stripped = stripAliasThreads(prev, key, rid, currentUserId, otherUserId ?? '', otherUserName ?? '');
+            const rideNorm = { ...ride, id: rid };
             return {
               ...stripped,
               [key]: {
-                ride,
+                ride: rideNorm,
                 participantIds: ids,
                 participantNames: { [currentUserId]: currentUserName, [otherId]: (otherUserName ?? 'User').trim() },
                 lastMessage: '',
@@ -376,25 +469,27 @@ export function InboxProvider({ children }: { children: React.ReactNode }): Reac
         clearInFlightThreadFetch(key);
       }
     },
-    [currentUserId, currentUserName]
+    [currentUserId, currentUserName, viewerParticipantIds]
   );
 
   const conversations = useMemo(
-    () => buildConversationsForUser(threadsByKey, currentUserId),
-    [threadsByKey, currentUserId]
+    () => buildConversationsForUser(threadsByKey, viewerParticipantIds),
+    [threadsByKey, viewerParticipantIds]
   );
 
   const ensureThread = useCallback(
     (ride: RideListItem, otherUserName: string, otherUserId: string | undefined): string => {
-      const otherId = (otherUserId ?? '').trim() || `name-${otherUserName}`;
-      const key = getThreadKey(ride.id, currentUserId, otherId);
+      const otherId = resolveOtherParticipantId(otherUserId, otherUserName);
+      const rid = normalizeChatRideId(ride.id);
+      const key = getThreadKey(rid, currentUserId, otherId);
+      const rideNorm = { ...ride, id: rid };
       setThreadsByKey((prev) => {
         if (prev[key]) return prev;
         const ids = [currentUserId, otherId].sort();
         const next: StoredThreads = {
           ...prev,
           [key]: {
-            ride,
+            ride: rideNorm,
             participantIds: ids as [string, string],
             participantNames: { [currentUserId]: currentUserName, [otherId]: otherUserName.trim() || 'User' },
             lastMessage: '',
@@ -416,16 +511,23 @@ export function InboxProvider({ children }: { children: React.ReactNode }): Reac
       ride: RideListItem,
       otherUserName: string,
       otherUserId?: string,
-      update?: { lastMessage: string; lastMessageAt: number; messageStatus?: InboxMessageStatus },
+      update?: {
+        lastMessage: string;
+        lastMessageAt: number;
+        messageStatus?: InboxMessageStatus;
+        lastMessageSenderId?: string;
+      },
       opts?: { otherUserAvatarUrl?: string }
     ) => {
-      const otherId = (otherUserId ?? '').trim() || `name-${otherUserName}`;
-      const key = getThreadKey(ride.id, currentUserId, otherId);
+      const otherId = resolveOtherParticipantId(otherUserId, otherUserName);
+      const rid = normalizeChatRideId(ride.id);
+      const key = getThreadKey(rid, currentUserId, otherId);
+      const rideNorm = { ...ride, id: rid };
       const incomingAvatar = (opts?.otherUserAvatarUrl ?? '').trim();
       setThreadsByKey((prev) => {
         const existing = prev[key];
         const base: StoredThread = existing ?? {
-          ride,
+          ride: rideNorm,
           participantIds: [currentUserId, otherId].sort() as [string, string],
           participantNames: { [currentUserId]: currentUserName, [otherId]: otherUserName.trim() || 'User' },
           lastMessage: '',
@@ -434,13 +536,20 @@ export function InboxProvider({ children }: { children: React.ReactNode }): Reac
           messages: [],
           unreadFor: {},
         };
+        const lastMessageSenderId =
+          update == null
+            ? base.lastMessageSenderId
+            : update.lastMessageSenderId !== undefined
+              ? update.lastMessageSenderId
+              : currentUserId;
         const updated: StoredThread = {
           ...base,
+          ride: { ...base.ride, ...rideNorm, id: rid },
           participantNames: { ...base.participantNames, [currentUserId]: currentUserName, [otherId]: otherUserName.trim() || 'User' },
           otherUserAvatarUrl: incomingAvatar || base.otherUserAvatarUrl,
           lastMessage: update?.lastMessage ?? base.lastMessage,
           lastMessageAt: update?.lastMessageAt ?? base.lastMessageAt,
-          lastMessageSenderId: update ? currentUserId : base.lastMessageSenderId,
+          lastMessageSenderId,
         };
         return { ...prev, [key]: updated };
       });
@@ -450,28 +559,31 @@ export function InboxProvider({ children }: { children: React.ReactNode }): Reac
 
   const getMessages = useCallback(
     (ride: RideListItem, otherUserName: string, otherUserId?: string): PersistedChatMessage[] => {
-      const list = allMessagesForConversation(
+      const list = localMessagesForThreadMerge(
         threadsByKey,
         ride.id,
-        currentUserId,
-        (otherUserId ?? '').trim(),
+        viewerParticipantIds,
+        otherUserId,
         otherUserName
       );
+
       return list.map((m: StoredMessage) => ({
         id: m.id,
         text: m.text,
         sentAt: m.sentAt,
-        isFromMe: m.senderUserId === currentUserId,
-        status: m.status,
+        isFromMe: viewerParticipantIds.some((v) => v && m.senderUserId === v),
+        status: normalizeChatStatus(m.status),
       }));
     },
-    [threadsByKey, currentUserId]
+    [threadsByKey, viewerParticipantIds]
   );
 
   const addMessage = useCallback(
     (ride: RideListItem, otherUserName: string, otherUserId: string | undefined, msg: PersistedChatMessage) => {
-      const otherId = (otherUserId ?? '').trim() || `name-${otherUserName}`;
-      const key = getThreadKey(ride.id, currentUserId, otherId);
+      const otherId = resolveOtherParticipantId(otherUserId, otherUserName);
+      const rid = normalizeChatRideId(ride.id);
+      const key = getThreadKey(rid, currentUserId, otherId);
+      const rideNorm: RideListItem = { ...ride, id: rid };
       const stored: StoredMessage = {
         id: msg.id,
         text: msg.text,
@@ -481,7 +593,7 @@ export function InboxProvider({ children }: { children: React.ReactNode }): Reac
       };
       setThreadsByKey((prev) => {
         const t = prev[key] ?? {
-          ride,
+          ride: rideNorm,
           participantIds: [currentUserId, otherId].sort() as [string, string],
           participantNames: { [currentUserId]: currentUserName, [otherId]: otherUserName.trim() || 'User' },
           lastMessage: '',
@@ -496,6 +608,7 @@ export function InboxProvider({ children }: { children: React.ReactNode }): Reac
           ...prev,
           [key]: {
             ...t,
+            ride: { ...t.ride, ...rideNorm, id: rid },
             lastMessage: msg.text,
             lastMessageAt: msg.sentAt,
             lastMessageSenderId: currentUserId,
@@ -514,10 +627,10 @@ export function InboxProvider({ children }: { children: React.ReactNode }): Reac
       otherUserName: string,
       otherUserId: string | undefined,
       messageId: string,
-      status: PersistedChatMessage['status']
+      status: ChatDeliveryStatus
     ) => {
-      const otherId = (otherUserId ?? '').trim() || `name-${otherUserName}`;
-      const key = getThreadKey(ride.id, currentUserId, otherId);
+      const otherId = resolveOtherParticipantId(otherUserId, otherUserName);
+      const key = getThreadKey(normalizeChatRideId(ride.id), currentUserId, otherId);
       setThreadsByKey((prev) => {
         const t = prev[key];
         if (!t) return prev;
@@ -533,33 +646,109 @@ export function InboxProvider({ children }: { children: React.ReactNode }): Reac
     [currentUserId]
   );
 
+  const reconcileOutboundMessage = useCallback(
+    (
+      ride: RideListItem,
+      otherUserName: string,
+      otherUserId: string | undefined,
+      clientMessageId: string,
+      server: { id: string; text: string; sentAt: number }
+    ) => {
+      const otherId = resolveOtherParticipantId(otherUserId, otherUserName);
+      const key = getThreadKey(normalizeChatRideId(ride.id), currentUserId, otherId);
+      setThreadsByKey((prev) => {
+        const t = prev[key];
+        if (!t) return prev;
+        return {
+          ...prev,
+          [key]: {
+            ...t,
+            messages: t.messages.map((m) =>
+              m.id === clientMessageId
+                ? {
+                    ...m,
+                    id: server.id,
+                    text: server.text,
+                    sentAt: server.sentAt,
+                    status: 'sent' as const,
+                  }
+                : m
+            ),
+          },
+        };
+      });
+    },
+    [currentUserId]
+  );
+
+  const removeMessageById = useCallback(
+    (ride: RideListItem, otherUserName: string, otherUserId: string | undefined, messageId: string) => {
+      const otherId = resolveOtherParticipantId(otherUserId, otherUserName);
+      const key = getThreadKey(normalizeChatRideId(ride.id), currentUserId, otherId);
+      setThreadsByKey((prev) => {
+        const t = prev[key];
+        if (!t) return prev;
+        const removed = t.messages.find((m) => m.id === messageId);
+        const messages = t.messages.filter((m) => m.id !== messageId);
+        const unreadFor = { ...t.unreadFor };
+        if (removed && viewerParticipantIds.some((v) => v && removed.senderUserId === v)) {
+          unreadFor[otherId] = Math.max(0, (unreadFor[otherId] ?? 0) - 1);
+        }
+        return {
+          ...prev,
+          [key]: {
+            ...t,
+            messages,
+            unreadFor,
+          },
+        };
+      });
+    },
+    [currentUserId, viewerParticipantIds]
+  );
+
   const markAllAsRead = useCallback(() => {
     setThreadsByKey((prev) => {
       const next = { ...prev };
       for (const k of Object.keys(next)) {
         const t = next[k];
-        if (t.unreadFor?.[currentUserId]) {
-          next[k] = { ...t, unreadFor: { ...t.unreadFor, [currentUserId]: 0 } };
+        let unreadFor = t.unreadFor ? { ...t.unreadFor } : {};
+        let changed = false;
+        for (const vid of viewerParticipantIds) {
+          if ((unreadFor[vid] ?? 0) > 0) {
+            unreadFor[vid] = 0;
+            changed = true;
+          }
         }
+        if (changed) next[k] = { ...t, unreadFor };
       }
       return next;
     });
-  }, [currentUserId]);
+  }, [viewerParticipantIds]);
 
   const markConversationAsRead = useCallback(
     (rideId: string, otherUserId?: string, otherUserName?: string) => {
-      const otherId = (otherUserId ?? '').trim() || (otherUserName ? `name-${otherUserName}` : '');
-      const key = getThreadKey(rideId, currentUserId, otherId);
+      const otherId = resolveOtherParticipantId(otherUserId, otherUserName);
+      const key = getThreadKey(normalizeChatRideId(rideId), currentUserId, otherId);
       setThreadsByKey((prev) => {
         const t = prev[key];
-        if (!t || !(t.unreadFor?.[currentUserId] > 0)) return prev;
+        if (!t) return prev;
+        const unreadFor = { ...t.unreadFor };
+        let changed = false;
+        for (const vid of viewerParticipantIds) {
+          if ((unreadFor[vid] ?? 0) > 0) {
+            unreadFor[vid] = 0;
+            changed = true;
+          }
+        }
+        if (!changed) return prev;
         return {
           ...prev,
-          [key]: { ...t, unreadFor: { ...t.unreadFor, [currentUserId]: 0 } },
+          [key]: { ...t, unreadFor },
         };
       });
     },
-    [currentUserId]
+    [currentUserId, viewerParticipantIds]
   );
 
   const hasUnread = conversations.some((c) => c.unreadCount > 0);
@@ -573,6 +762,8 @@ export function InboxProvider({ children }: { children: React.ReactNode }): Reac
       getMessages,
       addMessage,
       updateMessageStatus,
+      reconcileOutboundMessage,
+      removeMessageById,
       markAllAsRead,
       markConversationAsRead,
       loadThreadMessages,
@@ -585,6 +776,8 @@ export function InboxProvider({ children }: { children: React.ReactNode }): Reac
       getMessages,
       addMessage,
       updateMessageStatus,
+      reconcileOutboundMessage,
+      removeMessageById,
       markAllAsRead,
       markConversationAsRead,
       loadThreadMessages,

@@ -28,13 +28,44 @@ export async function fetchThreadMessages(
   return res?.messages ?? [];
 }
 
+/** Backend may return the message at top level or under `data` / `message`. */
+function unwrapChatMessagePayload(res: unknown): ChatMessageResponse | null {
+  if (!res || typeof res !== 'object') return null;
+  const r = res as Record<string, unknown>;
+  if (typeof r.id === 'string') {
+    const sentAt = r.sentAt;
+    const sentAtNum =
+      typeof sentAt === 'number'
+        ? sentAt
+        : typeof sentAt === 'string'
+          ? (() => {
+              const t = Date.parse(sentAt);
+              return Number.isNaN(t) ? Date.now() : t;
+            })()
+          : Date.now();
+    return {
+      id: r.id,
+      text: typeof r.text === 'string' ? r.text : '',
+      sentAt: sentAtNum,
+      senderUserId: typeof r.senderUserId === 'string' ? r.senderUserId : '',
+      status: typeof r.status === 'string' ? r.status : undefined,
+    };
+  }
+  const inner = r.data ?? r.message;
+  if (inner && typeof inner === 'object') {
+    return unwrapChatMessagePayload(inner);
+  }
+  return null;
+}
+
 export async function sendChatMessage(
   payload: ChatSendMessageRequest
 ): Promise<ChatMessageResponse> {
-  const res = await api.post<ChatMessageResponse>(API.endpoints.chat.send, payload, {
+  const res = await api.post<unknown>(API.endpoints.chat.send, payload, {
     timeout: 15000,
   });
-  if (!res?.id) throw new Error('Invalid send message response');
-  return res;
+  const msg = unwrapChatMessagePayload(res);
+  if (!msg?.id) throw new Error('Invalid send message response');
+  return msg;
 }
 

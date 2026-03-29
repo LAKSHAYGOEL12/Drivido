@@ -5,7 +5,7 @@ export function alertRouteRequiredBeforePrice(): void {
   showToast({
     variant: 'info',
     title: 'Finish your route first',
-    message: 'Choose pickup and destination on the map. We need that distance to suggest a fair price range.',
+    message: 'Add pickup and drop-off (search, then pin on the map). We need both points to suggest a fair fare.',
   });
 }
 
@@ -46,7 +46,7 @@ export function alertFareRequiredBeforePublish(): void {
   showToast({
     variant: 'info',
     title: 'Set a price',
-    message: 'Open Estimated fare and enter how much you charge per seat.',
+    message: 'Open fare per seat and enter how much you charge.',
   });
 }
 

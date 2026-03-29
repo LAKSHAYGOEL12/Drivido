@@ -5,6 +5,7 @@ import type { RidesStackParamList } from './types';
 import { COLORS } from '../constants/colors';
 import YourRides from '../screens/main/YourRides';
 import RideDetailScreen from '../screens/main/RideDetailScreen';
+import PublishedRideRouteMapScreen from '../screens/main/PublishedRideRouteMapScreen';
 import LocationPickerScreen from '../screens/main/LocationPickerScreen';
 import EditRideScreen from '../screens/main/EditRideScreen';
 import BookPassengerDetailScreen from '../screens/main/BookPassengerDetailScreen';
@@ -37,6 +38,11 @@ export default function RidesStack(): React.JSX.Element {
       <Stack.Screen
         name="RideDetail"
         component={RideDetailScreen}
+        options={{ headerShown: false }}
+      />
+      <Stack.Screen
+        name="PublishedRideRouteMap"
+        component={PublishedRideRouteMapScreen}
         options={{ headerShown: false }}
       />
       <Stack.Screen

@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import {
   Animated,
   StyleSheet,
@@ -24,7 +24,7 @@ import {
   resetToYourRidesAfterGuestLoginGate,
 } from '../../navigation/navigateAfterBook';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import type { RidesStackParamList, SearchStackParamList } from '../../navigation/types';
+import type { InboxStackParamList, RidesStackParamList, SearchStackParamList } from '../../navigation/types';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../contexts/AuthContext';
 import api from '../../services/api';
@@ -32,6 +32,7 @@ import { fetchRideDetailRaw, invalidateRideDetailCache } from '../../services/ri
 import { recordOwnerCancelledRide } from '../../services/ownerCancelledRidesStorage';
 import { hasCurrentUserRatedRide, submitRideRating } from '../../services/ratings';
 import { hasHandledRatingPrompt, markRatingPromptHandled } from '../../services/ratingPromptStorage';
+import { mergeOwnerRatedPassenger, mergePassengerRatedRide } from '../../services/ratedRidesStorage';
 import { API } from '../../constants/API';
 import type { CreateBookingRequest, RideListItem } from '../../types/api';
 import { COLORS } from '../../constants/colors';
@@ -66,10 +67,50 @@ import LoginBottomSheet from '../../components/auth/LoginBottomSheet';
 import UserAvatar from '../../components/common/UserAvatar';
 import { mapRawToBookingRow } from '../../utils/bookingNormalize';
 import { pickAvatarUrlFromRecord, pickPublisherAvatarUrl } from '../../utils/avatarUrl';
+import { getPublisherRouteCoords } from '../../utils/ridePublisherCoords';
 
-type RideDetailRouteProp = RouteProp<RidesStackParamList, 'RideDetail'> | RouteProp<SearchStackParamList, 'RideDetail'>;
+type RideDetailRouteProp =
+  | RouteProp<RidesStackParamList, 'RideDetail'>
+  | RouteProp<SearchStackParamList, 'RideDetail'>
+  | RouteProp<InboxStackParamList, 'RideDetail'>;
 
 type BookingItem = NonNullable<RideListItem['bookings']>[number];
+
+function bookingTimelineMs(b: BookingItem): number {
+  const ext = b as BookingItem & { updatedAt?: string; createdAt?: string };
+  const raw = ext.bookedAt ?? ext.updatedAt ?? ext.createdAt ?? '';
+  const t = new Date(raw).getTime();
+  return Number.isNaN(t) ? 0 : t;
+}
+
+/** Prefer active confirmed booking; otherwise newest row (e.g. latest cancellation). */
+function pickOwnerPrimaryBookingRow(sortedNewestFirst: BookingItem[]): BookingItem | null {
+  if (!sortedNewestFirst.length) return null;
+  const active = sortedNewestFirst.find((r) => {
+    const s = String(r.status ?? '').trim().toLowerCase();
+    const seats = typeof r.seats === 'number' && Number.isFinite(r.seats) ? Math.floor(r.seats) : 0;
+    return s === 'confirmed' && seats > 0 && !bookingIsCancelled(r.status);
+  });
+  if (active) return active;
+  return sortedNewestFirst[0];
+}
+
+function formatBookingHistoryLineWhen(iso: string): string {
+  const t = iso.trim();
+  if (!t) return '';
+  const d = new Date(t);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+function bookingStatusShortLabel(statusRaw: string): string {
+  const s = String(statusRaw ?? '').trim().toLowerCase();
+  if (bookingIsCancelled(statusRaw)) return 'Cancelled';
+  if (s === 'pending') return 'Pending';
+  if (s === 'rejected') return 'Rejected';
+  if (s === 'confirmed') return 'Confirmed';
+  return s ? s : '—';
+}
 
 export default function RideDetailScreen(): React.JSX.Element {
   const navigation = useNavigation();
@@ -246,11 +287,58 @@ export default function RideDetailScreen(): React.JSX.Element {
     // Passenger/co-passenger list hides request/rejected rows.
     return status !== 'pending' && status !== 'rejected';
   });
+
+  /** Owner: all booking rows per passenger (re-book / cancel cycles) for primary row + chronological history. */
+  const ownerPassengerSummaries = useMemo(() => {
+    if (!isOwner) return [];
+    const byUser = new Map<string, BookingItem[]>();
+    const noUserId: BookingItem[] = [];
+    for (const p of passengers) {
+      const uid = (p.userId ?? '').trim();
+      if (!uid) {
+        noUserId.push(p);
+        continue;
+      }
+      const list = byUser.get(uid) ?? [];
+      list.push(p);
+      byUser.set(uid, list);
+    }
+    const summaries: Array<{
+      userId: string;
+      primary: BookingItem;
+      historyChronological: BookingItem[];
+    }> = [];
+    for (const [uid, list] of byUser) {
+      const newestFirst = [...list].sort((a, b) => bookingTimelineMs(b) - bookingTimelineMs(a));
+      const primary = pickOwnerPrimaryBookingRow(newestFirst);
+      if (!primary) continue;
+      const historyChronological = [...list].sort((a, b) => bookingTimelineMs(a) - bookingTimelineMs(b));
+      summaries.push({ userId: uid, primary, historyChronological });
+    }
+    for (const orphan of noUserId) {
+      summaries.push({
+        userId: '',
+        primary: orphan,
+        historyChronological: [orphan],
+      });
+    }
+    summaries.sort((a, b) =>
+      bookingPassengerDisplayName(a.primary).localeCompare(bookingPassengerDisplayName(b.primary))
+    );
+    return summaries;
+  }, [isOwner, passengers]);
+
   const totalBookingsCount = getRideTotalBookingCount(ride);
   const availableSeatsCount = getRideAvailableSeats(ride);
 
   const publishedPickupStr = ride.pickupLocationName ?? ride.from ?? 'Pickup';
   const publishedDestStr = ride.destinationLocationName ?? ride.to ?? 'Destination';
+  const publisherCoords = useMemo(() => getPublisherRouteCoords(ride), [
+    ride.pickupLatitude,
+    ride.pickupLongitude,
+    ride.destinationLatitude,
+    ride.destinationLongitude,
+  ]);
 
   const searchFrom = passengerSearch?.from?.trim() ?? '';
   const searchTo = passengerSearch?.to?.trim() ?? '';
@@ -327,11 +415,25 @@ export default function RideDetailScreen(): React.JSX.Element {
   const cardAvatarName = isOwner
     ? (currentUserName || user?.name || 'You').trim() || 'You'
     : driverName;
-  const firstPassenger = activePassengers[0] ?? passengers[0];
-  const chatOtherUserName = isOwner
-    ? (firstPassenger ? bookingPassengerDisplayName(firstPassenger, 'Rider') : 'Rider')
-    : driverName;
-  const chatOtherUserId = isOwner ? firstPassenger?.userId : ride.userId;
+  const ownerUserIdForChat = (ride.userId ?? '').trim();
+  /** Signed-in non-owners can message the driver from ride detail; booking is not required. */
+  const passengerCanMessageOwner =
+    isAuthenticated &&
+    !isOwner &&
+    Boolean(ownerUserIdForChat) &&
+    Boolean(currentUserId);
+  const openChatWithOwner = useCallback(() => {
+    const oid = (ride.userId ?? '').trim();
+    if (!oid) return;
+    (navigation as { navigate: (n: string, p: Record<string, unknown>) => void }).navigate('Chat', {
+      ride,
+      otherUserName: driverName,
+      otherUserId: oid,
+      ...(ride.publisherAvatarUrl?.trim()
+        ? { otherUserAvatarUrl: ride.publisherAvatarUrl.trim() }
+        : {}),
+    });
+  }, [navigation, ride, driverName]);
   const priceDisplay = formatRidePrice(ride);
   const normalizeRequestBookingItem = useCallback((raw: unknown): BookingItem | null => {
     if (!raw || typeof raw !== 'object') return null;
@@ -569,6 +671,22 @@ export default function RideDetailScreen(): React.JSX.Element {
     return nextRideSnapshot;
   }, [initialRide.id, currentUserId]);
 
+  const openPublishedRouteMap = useCallback(() => {
+    const c = getPublisherRouteCoords(ride);
+    if (!c) return;
+    (navigation as { navigate: (n: string, p: Record<string, unknown>) => void }).navigate(
+      'PublishedRideRouteMap',
+      {
+        pickupLabel: publishedPickupStr,
+        destinationLabel: publishedDestStr,
+        pickupLatitude: c.pickupLatitude,
+        pickupLongitude: c.pickupLongitude,
+        destinationLatitude: c.destinationLatitude,
+        destinationLongitude: c.destinationLongitude,
+      }
+    );
+  }, [navigation, ride, publishedPickupStr, publishedDestStr]);
+
   const fetchSeatRequests = useCallback(async () => {
     if (!isOwner || !isRequestBookingMode) {
       setSeatRequests([]);
@@ -803,7 +921,11 @@ export default function RideDetailScreen(): React.JSX.Element {
       const handled = await hasHandledRatingPrompt(currentUserId, ride.id);
       if (cancelled || handled) return;
       try {
-        const alreadyRated = await hasCurrentUserRatedRide(ride.id, currentUserId);
+        const alreadyRated = await hasCurrentUserRatedRide(
+          ride.id,
+          currentUserId,
+          (ratingTargetUserId ?? '').trim() || undefined
+        );
         if (cancelled) return;
         if (alreadyRated) {
           await markRatingPromptHandled(currentUserId, ride.id);
@@ -1129,10 +1251,29 @@ export default function RideDetailScreen(): React.JSX.Element {
         review: ratingReview.trim() || undefined,
       });
       await markRatingPromptHandled(currentUserId, ride.id);
+      if (isOwner) {
+        void mergeOwnerRatedPassenger(currentUserId, ride.id, ratingTargetUserId);
+      } else {
+        void mergePassengerRatedRide(currentUserId, ride.id);
+      }
       setRatingSubmitted(true);
       setShowRatingModal(false);
       Alert.alert('Thanks for your feedback');
     } catch (e: unknown) {
+      const status =
+        e && typeof e === 'object' && 'status' in e ? (e as { status?: number }).status : undefined;
+      if (status === 409) {
+        await markRatingPromptHandled(currentUserId, ride.id);
+        if (isOwner) {
+          void mergeOwnerRatedPassenger(currentUserId, ride.id, ratingTargetUserId);
+        } else {
+          void mergePassengerRatedRide(currentUserId, ride.id);
+        }
+        setRatingSubmitted(true);
+        setShowRatingModal(false);
+        Alert.alert('Already rated', 'Your feedback was recorded earlier.');
+        return;
+      }
       const message =
         e && typeof e === 'object' && 'message' in e
           ? String((e as { message: unknown }).message)
@@ -1149,6 +1290,7 @@ export default function RideDetailScreen(): React.JSX.Element {
     ratingStars,
     ratingReview,
     ride.id,
+    isOwner,
   ]);
 
   return (
@@ -1258,6 +1400,25 @@ export default function RideDetailScreen(): React.JSX.Element {
             </View>
           )}
 
+          {publisherCoords ? (
+            <TouchableOpacity
+              style={styles.viewRouteMapRow}
+              onPress={openPublishedRouteMap}
+              activeOpacity={0.75}
+            >
+              <View style={styles.viewRouteMapIconWrap}>
+                <Ionicons name="map-outline" size={22} color={COLORS.primary} />
+              </View>
+              <View style={styles.viewRouteMapTextCol}>
+                <Text style={styles.viewRouteMapTitle}>View route map</Text>
+                <Text style={styles.viewRouteMapSub} numberOfLines={2}>
+                  Driving directions for the route the driver published
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={22} color={COLORS.textMuted} />
+            </TouchableOpacity>
+          ) : null}
+
           {ownerShowPassengerItineraryToggle ? (
             <View style={styles.passengerItineraryWrap}>
               <TouchableOpacity
@@ -1350,69 +1511,57 @@ export default function RideDetailScreen(): React.JSX.Element {
               ) : null}
             </View>
             {!isOwner ? (
-              <TouchableOpacity
-                style={styles.detailsPill}
-                onPress={() => {
-                  const ownerId = (ride.userId ?? '').trim();
-                  if (!ownerId) {
-                    scrollRef.current?.scrollToEnd({ animated: true });
-                    return;
-                  }
+              <View style={styles.cardDriverActions}>
+                {passengerCanMessageOwner ? (
+                  <TouchableOpacity
+                    style={styles.ownerRowChatPill}
+                    onPress={openChatWithOwner}
+                    activeOpacity={0.75}
+                    accessibilityRole="button"
+                    accessibilityLabel="Message driver"
+                  >
+                    <Ionicons name="chatbubble-ellipses-outline" size={20} color={COLORS.primary} />
+                    <Text style={styles.ownerRowChatPillText}>Chat</Text>
+                  </TouchableOpacity>
+                ) : null}
+                <TouchableOpacity
+                  style={styles.detailsPill}
+                  onPress={() => {
+                    const ownerId = (ride.userId ?? '').trim();
+                    if (!ownerId) {
+                      scrollRef.current?.scrollToEnd({ animated: true });
+                      return;
+                    }
 
-                  // Hide bottom tabs immediately while the profile screen mounts.
-                  const parentNav = (navigation as any)?.getParent?.();
-                  parentNav?.setOptions?.({ tabBarStyle: { display: 'none' } });
+                    // Hide bottom tabs immediately while the profile screen mounts.
+                    const parentNav = (navigation as any)?.getParent?.();
+                    parentNav?.setOptions?.({ tabBarStyle: { display: 'none' } });
 
-                  (navigation as any).navigate('OwnerProfileModal', {
-                    userId: ownerId,
-                    displayName: driverName || ride.name || ride.username || 'User',
-                    ...(ride.publisherAvatarUrl?.trim()
-                      ? { avatarUrl: ride.publisherAvatarUrl.trim() }
-                      : {}),
-                    ...(typeof ride.publisherAvgRating === 'number' &&
-                    Number.isFinite(ride.publisherAvgRating)
-                      ? { publisherAvgRating: ride.publisherAvgRating }
-                      : {}),
-                    ...(typeof ride.publisherRatingCount === 'number' &&
-                    Number.isFinite(ride.publisherRatingCount) &&
-                    ride.publisherRatingCount >= 0
-                      ? { publisherRatingCount: ride.publisherRatingCount }
-                      : {}),
-                  });
-                }}
-                activeOpacity={0.75}
-              >
-                <Text style={styles.detailsPillText}>Details</Text>
-                <Ionicons name="chevron-forward" size={18} color={COLORS.textSecondary} />
-              </TouchableOpacity>
+                    (navigation as any).navigate('OwnerProfileModal', {
+                      userId: ownerId,
+                      displayName: driverName || ride.name || ride.username || 'User',
+                      ...(ride.publisherAvatarUrl?.trim()
+                        ? { avatarUrl: ride.publisherAvatarUrl.trim() }
+                        : {}),
+                      ...(typeof ride.publisherAvgRating === 'number' &&
+                      Number.isFinite(ride.publisherAvgRating)
+                        ? { publisherAvgRating: ride.publisherAvgRating }
+                        : {}),
+                      ...(typeof ride.publisherRatingCount === 'number' &&
+                      Number.isFinite(ride.publisherRatingCount) &&
+                      ride.publisherRatingCount >= 0
+                        ? { publisherRatingCount: ride.publisherRatingCount }
+                        : {}),
+                    });
+                  }}
+                  activeOpacity={0.75}
+                >
+                  <Text style={styles.detailsPillText}>Details</Text>
+                  <Ionicons name="chevron-forward" size={18} color={COLORS.textSecondary} />
+                </TouchableOpacity>
+              </View>
             ) : null}
           </View>
-
-          {false ? (
-            <View style={styles.cardQuickActions}>
-              <TouchableOpacity style={styles.driverActionBtn} onPress={() => {}} activeOpacity={0.7}>
-                <Ionicons name="call-outline" size={22} color={COLORS.text} />
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.driverActionBtn, styles.driverActionBtnChat]}
-                onPress={() =>
-                  (navigation as any).navigate('Chat', {
-                    ride,
-                    otherUserName: chatOtherUserName,
-                    otherUserId: chatOtherUserId,
-                    ...(!isOwner && ride.publisherAvatarUrl?.trim()
-                      ? { otherUserAvatarUrl: ride.publisherAvatarUrl.trim() }
-                      : isOwner && firstPassenger && (firstPassenger as { avatarUrl?: string }).avatarUrl?.trim()
-                        ? { otherUserAvatarUrl: String((firstPassenger as { avatarUrl?: string }).avatarUrl).trim() }
-                        : {}),
-                  })
-                }
-                activeOpacity={0.7}
-              >
-                <Ionicons name="chatbubble-outline" size={20} color={COLORS.white} />
-              </TouchableOpacity>
-            </View>
-          ) : null}
         </View>
 
         {/* Payment & seats */}
@@ -1570,20 +1719,20 @@ export default function RideDetailScreen(): React.JSX.Element {
         {isAuthenticated ? (
           <View style={styles.block}>
             <Text style={styles.passengersHeading}>Passengers</Text>
-            {passengersForDisplayFiltered.length > 0 ? (
-              <View style={styles.passengersList}>
-                {passengersForDisplayFiltered.map((b) => {
-                  const isMe = (b.userId ?? '').trim() === currentUserId;
-                  const displayName = isMe ? (currentUserName || 'You') : bookingPassengerDisplayName(b);
-                  const bookingCancelled = bookingIsCancelled(b.status);
-                  const isRebooked =
-                    !bookingCancelled &&
-                    !isPastRide &&
-                    cancelledPassengerUserIds.has((b.userId ?? '').trim()) &&
-                    activePassengerUserIds.has((b.userId ?? '').trim());
-                  const shouldFadeCancelled = bookingCancelled && !isRebooked;
-
-                  if (isOwner) {
+            {isOwner ? (
+              ownerPassengerSummaries.length > 0 ? (
+                <View style={styles.passengersList}>
+                  {ownerPassengerSummaries.map(({ userId: ownerSummaryUserId, primary, historyChronological }) => {
+                    const b = primary;
+                    const isMe = (b.userId ?? '').trim() === currentUserId;
+                    const displayName = isMe ? (currentUserName || 'You') : bookingPassengerDisplayName(b);
+                    const bookingCancelled = bookingIsCancelled(b.status);
+                    const isRebooked =
+                      !bookingCancelled &&
+                      !isPastRide &&
+                      cancelledPassengerUserIds.has((b.userId ?? '').trim()) &&
+                      activePassengerUserIds.has((b.userId ?? '').trim());
+                    const shouldFadeCancelled = bookingCancelled && !isRebooked;
                     const mergedForRoute: BookingItem =
                       isMe && passengerSearch?.from?.trim() && passengerSearch?.to?.trim()
                         ? {
@@ -1597,7 +1746,7 @@ export default function RideDetailScreen(): React.JSX.Element {
                     const { lineShort } = bookingPickupDrop(ride, mergedForRoute);
                     return (
                       <TouchableOpacity
-                        key={b.id}
+                        key={ownerSummaryUserId || b.id}
                         style={[styles.passengerRowOwner, shouldFadeCancelled && styles.passengerRowCancelled]}
                         onPress={() =>
                           (navigation as { navigate: (n: string, p: Record<string, unknown>) => void }).navigate(
@@ -1650,6 +1799,20 @@ export default function RideDetailScreen(): React.JSX.Element {
                           >
                             {lineShort}
                           </Text>
+                          {historyChronological.length > 1 ? (
+                            <View style={styles.passengerBookingHistory}>
+                              <Text style={styles.passengerBookingHistoryTitle}>Booking history</Text>
+                              {historyChronological.map((h) => {
+                                const when = formatBookingHistoryLineWhen(h.bookedAt ?? '');
+                                return (
+                                  <Text key={h.id} style={styles.passengerBookingHistoryLine} numberOfLines={2}>
+                                    {h.seats} seat{h.seats !== 1 ? 's' : ''} · {bookingStatusShortLabel(h.status)}
+                                    {when ? ` · ${when}` : ''}
+                                  </Text>
+                                );
+                              })}
+                            </View>
+                          ) : null}
                         </View>
                         <View style={styles.passengerRowOwnerRight}>
                           <Text
@@ -1664,7 +1827,23 @@ export default function RideDetailScreen(): React.JSX.Element {
                         </View>
                       </TouchableOpacity>
                     );
-                  }
+                  })}
+                </View>
+              ) : (
+                <Text style={styles.noPassengers}>No other passengers yet</Text>
+              )
+            ) : passengersForDisplayFiltered.length > 0 ? (
+              <View style={styles.passengersList}>
+                {passengersForDisplayFiltered.map((b) => {
+                  const isMe = (b.userId ?? '').trim() === currentUserId;
+                  const displayName = isMe ? (currentUserName || 'You') : bookingPassengerDisplayName(b);
+                  const bookingCancelled = bookingIsCancelled(b.status);
+                  const isRebooked =
+                    !bookingCancelled &&
+                    !isPastRide &&
+                    cancelledPassengerUserIds.has((b.userId ?? '').trim()) &&
+                    activePassengerUserIds.has((b.userId ?? '').trim());
+                  const shouldFadeCancelled = bookingCancelled && !isRebooked;
 
                   const coPassengerUid = (b.userId ?? '').trim();
                   const canOpenRatings = Boolean(coPassengerUid);
@@ -2462,6 +2641,39 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.borderLight,
     marginVertical: 14,
   },
+  viewRouteMapRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 4,
+    gap: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: COLORS.borderLight,
+  },
+  viewRouteMapIconWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(41, 190, 139, 0.12)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  viewRouteMapTextCol: {
+    flex: 1,
+    minWidth: 0,
+  },
+  viewRouteMapTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: COLORS.text,
+  },
+  viewRouteMapSub: {
+    fontSize: 12,
+    color: COLORS.textSecondary,
+    marginTop: 2,
+    lineHeight: 16,
+  },
   passengerItineraryWrap: {
     marginTop: 16,
     borderTopWidth: StyleSheet.hairlineWidth,
@@ -2572,6 +2784,28 @@ const styles = StyleSheet.create({
     color: COLORS.textSecondary,
     marginTop: 3,
   },
+  cardDriverActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexShrink: 0,
+    gap: 8,
+  },
+  ownerRowChatPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(41, 190, 139, 0.1)',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: COLORS.primary,
+  },
+  ownerRowChatPillText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: COLORS.primary,
+  },
   detailsPill: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2587,16 +2821,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: COLORS.text,
     marginRight: 4,
-  },
-  cardQuickActions: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    alignItems: 'center',
-    marginTop: 14,
-    paddingTop: 14,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: COLORS.borderLight,
-    gap: 10,
   },
   block: {
     backgroundColor: COLORS.backgroundSecondary,
@@ -2625,20 +2849,6 @@ const styles = StyleSheet.create({
     fontSize: 19,
     fontWeight: '800',
     color: COLORS.primary,
-  },
-  driverActionBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: COLORS.background,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  driverActionBtnChat: {
-    backgroundColor: COLORS.primary,
-    borderColor: COLORS.primary,
   },
   passengersHeading: {
     fontSize: 14,
@@ -2892,6 +3102,27 @@ const styles = StyleSheet.create({
   },
   passengerBookingRebookedLabel: {
     color: '#16a34a',
+  },
+  passengerBookingHistory: {
+    marginTop: 10,
+    paddingTop: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: COLORS.border,
+    alignSelf: 'stretch',
+  },
+  passengerBookingHistoryTitle: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: COLORS.textMuted,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+    marginBottom: 6,
+  },
+  passengerBookingHistoryLine: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: COLORS.textSecondary,
+    marginBottom: 4,
   },
   passengerBookedRouteCaption: {
     fontSize: 10,

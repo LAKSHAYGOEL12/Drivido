@@ -59,6 +59,11 @@ import {
 import { showToast } from '../../utils/toast';
 import { hasCurrentUserRatedRide, submitRideRating } from '../../services/ratings';
 import { hasHandledRatingPrompt, markRatingPromptHandled } from '../../services/ratingPromptStorage';
+import {
+  loadRatedRidesCache,
+  mergeOwnerRatedPassenger,
+  mergePassengerRatedRide,
+} from '../../services/ratedRidesStorage';
 import { pickPublisherAvatarUrl } from '../../utils/avatarUrl';
 
 type FilterTab = YourRidesFilterTab;
@@ -320,9 +325,10 @@ function rideListStagger(): Promise<void> {
 }
 
 function apiErrorStatus(e: unknown): number | undefined {
-  if (e && typeof e === 'object' && 'status' in e) {
-    const s = (e as { status: unknown }).status;
-    return typeof s === 'number' ? s : undefined;
+  if (e && typeof e === 'object') {
+    const o = e as { status?: unknown; statusCode?: unknown };
+    if (typeof o.status === 'number') return o.status;
+    if (typeof o.statusCode === 'number') return o.statusCode;
   }
   return undefined;
 }
@@ -502,6 +508,34 @@ export default function YourRides(): React.JSX.Element {
     setCachedAllRidesCount(0);
   }, [currentUserId]);
 
+  /** Restore “already rated” from device so past rides don’t prompt again after app reload (GET /ratings/check still confirms). */
+  useEffect(() => {
+    if (!currentUserId) return;
+    let cancelled = false;
+    void (async () => {
+      const cache = await loadRatedRidesCache(currentUserId);
+      if (cancelled) return;
+      setRatedRideIds((prev) => {
+        const next = new Set(prev);
+        for (const rid of cache.passengerRideIds) {
+          if (rid.trim()) next.add(rid.trim());
+        }
+        return next;
+      });
+      setRatedTargetsByRide((prev) => {
+        const out: Record<string, string[]> = { ...prev };
+        for (const [rid, uids] of Object.entries(cache.ownerByRide)) {
+          const cur = out[rid] ?? [];
+          out[rid] = [...new Set([...cur, ...(Array.isArray(uids) ? uids : [])])];
+        }
+        return out;
+      });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUserId]);
+
   useEffect(() => {
     const tabNav = navigation.getParent();
     if (!tabNav) return;
@@ -525,14 +559,47 @@ export default function YourRides(): React.JSX.Element {
     void (async () => {
       for (const ride of candidates) {
         if (cancelled) break;
+        const isOwner = isViewerRideOwner(ride, currentUserId);
+
+        if (isOwner) {
+          const activePassengerIds = (ride.bookings ?? [])
+            .filter((b) => !bookingIsCancelled(b.status))
+            .map((b) => (b.userId ?? '').trim())
+            .filter((uid) => uid && uid !== currentUserId);
+          for (const uid of activePassengerIds) {
+            if (cancelled) break;
+            if ((ratedTargetsByRide[ride.id] ?? []).includes(uid)) continue;
+            const inflightKey = `owner:${ride.id}:${uid}`;
+            if (ratingCheckInFlightRef.current.has(inflightKey)) continue;
+            ratingCheckInFlightRef.current.add(inflightKey);
+            try {
+              const rated = await hasCurrentUserRatedRide(ride.id, currentUserId, uid);
+              if (cancelled) break;
+              if (rated) {
+                setRatedTargetsByRide((prev) => {
+                  const existing = prev[ride.id] ?? [];
+                  if (existing.includes(uid)) return prev;
+                  return { ...prev, [ride.id]: [...existing, uid] };
+                });
+                void mergeOwnerRatedPassenger(currentUserId, ride.id, uid);
+              }
+            } catch {
+              // ignore
+            } finally {
+              ratingCheckInFlightRef.current.delete(inflightKey);
+            }
+            await rideListStagger();
+          }
+          continue;
+        }
+
         if (ratedRideIds.has(ride.id)) continue;
-        if (ratingCheckInFlightRef.current.has(ride.id)) continue;
-        ratingCheckInFlightRef.current.add(ride.id);
+        const inflightKey = `passenger:${ride.id}`;
+        if (ratingCheckInFlightRef.current.has(inflightKey)) continue;
+        ratingCheckInFlightRef.current.add(inflightKey);
         try {
-          const targetUserId = isViewerRideOwner(ride, currentUserId)
-            ? undefined
-            : (ride.userId ?? '').trim() || undefined;
-          const rated = await hasCurrentUserRatedRide(ride.id, currentUserId, targetUserId);
+          const driverId = (ride.userId ?? '').trim() || undefined;
+          const rated = await hasCurrentUserRatedRide(ride.id, currentUserId, driverId);
           if (cancelled) break;
           if (rated) {
             setRatedRideIds((prev) => {
@@ -540,19 +607,21 @@ export default function YourRides(): React.JSX.Element {
               next.add(ride.id);
               return next;
             });
+            void mergePassengerRatedRide(currentUserId, ride.id);
           }
         } catch {
           // ignore pre-check failures; submit path remains backend-protected
         } finally {
-          ratingCheckInFlightRef.current.delete(ride.id);
+          ratingCheckInFlightRef.current.delete(inflightKey);
         }
+        await rideListStagger();
       }
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [rides, filter, currentUserId, ratedRideIds]);
+  }, [rides, filter, currentUserId, ratedRideIds, ratedTargetsByRide]);
 
   useEffect(() => {
     const onShow = (e: { endCoordinates?: { height?: number } }) => {
@@ -915,6 +984,7 @@ export default function YourRides(): React.JSX.Element {
               next.add(ride.id);
               return next;
             });
+            void mergePassengerRatedRide(currentUserId, ride.id);
             showToast({
               title: 'Already rated',
               message: 'You have already rated this ride.',
@@ -1050,6 +1120,11 @@ export default function YourRides(): React.JSX.Element {
         if (!isOwner) next.add(ratingRide.id);
         return next;
       });
+      if (!isOwner) {
+        void mergePassengerRatedRide(currentUserId, ratingRide.id);
+      } else if (toUserId) {
+        void mergeOwnerRatedPassenger(currentUserId, ratingRide.id, toUserId);
+      }
       await markRatingPromptHandled(currentUserId, ratingRide.id);
       if (isOwner && ownerCandidatesCount > 1) {
         const existingRated = new Set(ratedTargetsByRide[ratingRide.id] ?? []);
@@ -1081,10 +1156,7 @@ export default function YourRides(): React.JSX.Element {
         });
       }
     } catch (e: unknown) {
-      const statusCode =
-        e && typeof e === 'object' && 'statusCode' in e
-          ? Number((e as { statusCode?: unknown }).statusCode)
-          : undefined;
+      const statusCode = apiErrorStatus(e);
       const message =
         e && typeof e === 'object' && 'message' in e
           ? String((e as { message: unknown }).message)
@@ -1096,6 +1168,7 @@ export default function YourRides(): React.JSX.Element {
             if (existing.includes(toUserId)) return prev;
             return { ...prev, [ratingRide.id]: [...existing, toUserId] };
           });
+          void mergeOwnerRatedPassenger(currentUserId, ratingRide.id, toUserId);
           const existingRated = new Set(ratedTargetsByRide[ratingRide.id] ?? []);
           existingRated.add(toUserId);
           if (existingRated.size >= ownerCandidatesCount) {
@@ -1117,6 +1190,7 @@ export default function YourRides(): React.JSX.Element {
             next.add(ratingRide.id);
             return next;
           });
+          void mergePassengerRatedRide(currentUserId, ratingRide.id);
           closeRatingSheet();
         }
         showToast({ title: 'Already rated', message, variant: 'info' });

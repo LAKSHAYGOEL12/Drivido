@@ -1,41 +1,37 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   StyleSheet,
   Text,
   View,
   TouchableOpacity,
   TextInput,
-  ScrollView,
+  FlatList,
   KeyboardAvoidingView,
   Platform,
   Keyboard,
 } from 'react-native';
-import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
+import { useNavigation, useRoute, useFocusEffect, type RouteProp } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import type { RidesStackParamList, SearchStackParamList, InboxStackParamList } from '../../navigation/types';
 import { Ionicons } from '@expo/vector-icons';
 import type { RideListItem } from '../../types/api';
-import { useInbox, type PersistedChatMessage } from '../../contexts/InboxContext';
+import { useInbox, type InboxConversation, type PersistedChatMessage } from '../../contexts/InboxContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { sendChatMessage } from '../../services/chat-api';
 import { COLORS } from '../../constants/colors';
 import { bookingIsCancelled, pickPreferredBookingForUser } from '../../utils/bookingStatus';
+import { resolveOtherParticipantId, normalizeChatRideId } from '../../services/chat-storage';
+import { fetchRideDetailRaw } from '../../services/rideDetailCache';
+import { unwrapRideFromDetailResponse } from '../../utils/unwrapRideDetail';
+import { isRideCompletedForChat } from '../../utils/rideChat';
 import UserAvatar from '../../components/common/UserAvatar';
+
+/** Poll thread while this screen is focused so new messages from the other person appear without leaving. */
+const CHAT_THREAD_POLL_MS = 8000;
 
 const ROUTE_LABEL_MAX = 15;
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-
-/** Sent = single tick (e.g. net off at receiver). Delivered/Read = double tick. */
-export type MessageStatus = 'sending' | 'sent' | 'delivered' | 'read';
-
-export interface ChatMessage {
-  id: string;
-  text: string;
-  sentAt: number;
-  isFromMe: boolean;
-  status: MessageStatus;
-}
 
 function shortLabel(str: string, max: number): string {
   const s = String(str).trim();
@@ -72,26 +68,90 @@ function formatRideDateTime(ride: RideListItem): string {
   return '—';
 }
 
+/** Prefer route param; then inbox thread / refreshed ride (list payloads often omit `publisherAvatarUrl` until detail). */
+function resolvePeerAvatarUrl(
+  routeUrl: string | undefined,
+  ride: RideListItem,
+  otherUserId: string | undefined,
+  otherUserName: string | undefined,
+  conversations: InboxConversation[]
+): string {
+  const fromRoute = (routeUrl ?? '').trim();
+  if (fromRoute) return fromRoute;
+
+  const peerId = resolveOtherParticipantId(otherUserId, otherUserName);
+  const rid = normalizeChatRideId(ride.id);
+  const matchConv = conversations.find(
+    (c) =>
+      normalizeChatRideId(c.ride.id) === rid &&
+      resolveOtherParticipantId(c.otherUserId, c.otherUserName) === peerId
+  );
+  const fromConv = (matchConv?.otherUserAvatarUrl ?? '').trim();
+  if (fromConv) return fromConv;
+
+  const ownerId = (ride.userId ?? '').trim();
+  if (peerId && ownerId && peerId === ownerId) {
+    const u = (ride.publisherAvatarUrl ?? '').trim();
+    if (u) return u;
+  }
+
+  if (ride.bookings?.length && peerId && !peerId.startsWith('name-')) {
+    for (const b of ride.bookings) {
+      if ((b.userId ?? '').trim() !== peerId) continue;
+      if (bookingIsCancelled(b.status)) continue;
+      const u = (b.avatarUrl ?? '').trim();
+      if (u) return u;
+    }
+  }
+
+  return '';
+}
+
 export default function ChatScreen(): React.JSX.Element {
   const navigation = useNavigation();
   const route = useRoute<ChatRouteProp>();
-  const { ride, otherUserName, otherUserId, otherUserAvatarUrl: routePeerAvatar } = route.params;
-  const peerAvatarUrl = (routePeerAvatar ?? '').trim();
+  const { ride: rideParam, otherUserName, otherUserId, otherUserAvatarUrl: routePeerAvatar } = route.params;
+  const [rideSnapshot, setRideSnapshot] = useState<RideListItem>(() => rideParam);
+  const ride = rideSnapshot;
+  /** Align with persisted thread keys (`normalizeChatRideId` in InboxContext). */
+  const rideIdForChat = useMemo(() => normalizeChatRideId(ride.id), [ride.id]);
+  const rideForInbox = useMemo(
+    () => ({ ...ride, id: rideIdForChat }),
+    [ride, rideIdForChat]
+  );
+  const {
+    conversations,
+    addOrUpdateConversation,
+    getMessages,
+    addMessage,
+    reconcileOutboundMessage,
+    updateMessageStatus,
+    loadThreadMessages,
+  } = useInbox();
+  const peerAvatarUrl = useMemo(
+    () => resolvePeerAvatarUrl(routePeerAvatar, ride, otherUserId, otherUserName, conversations),
+    [routePeerAvatar, ride, otherUserId, otherUserName, conversations]
+  );
   const peerAvatarOpts = useMemo(
     () => (peerAvatarUrl ? { otherUserAvatarUrl: peerAvatarUrl } : undefined),
     [peerAvatarUrl]
   );
-  const { addOrUpdateConversation, getMessages, addMessage, updateMessageStatus, loadThreadMessages } = useInbox();
   const { user } = useAuth();
   const [message, setMessage] = useState('');
-  const messages = getMessages(ride, otherUserName, otherUserId);
+  const messages = getMessages(rideForInbox, otherUserName, otherUserId);
+  /**
+   * `inverted` FlatList draws index 0 at the **bottom** (above the input). `getMessages` is oldest → newest,
+   * so we reverse to newest → first so latest messages sit at the bottom like typical chat apps.
+   */
+  const messagesNewestFirst = useMemo(() => [...messages].reverse(), [messages]);
+  /** Stable signal for inverted FlatList to repaint when content changes. */
+  const chatListExtraData = messages.map((m) => `${m.id}:${m.sentAt}:${m.text.length}`).join('|');
   const [inputFocused, setInputFocused] = useState(false);
   const [keyboardVisible, setKeyboardVisible] = useState(false);
   const [layoutKey, setLayoutKey] = useState(0);
-  const [now, setNow] = useState(() => Date.now());
-  const scrollRef = useRef<ScrollView>(null);
 
   const currentUserId = (user?.id ?? user?.phone ?? '').trim();
+  const otherStoredId = resolveOtherParticipantId(otherUserId, otherUserName);
   const isRideOwner = Boolean(currentUserId && (ride.userId ?? '').trim() === currentUserId);
 
   const myBookingStatusCandidate = (() => {
@@ -108,7 +168,37 @@ export default function ChatScreen(): React.JSX.Element {
       ? 'Cancelled'
       : 'Booked';
 
-  const canSend = true;
+  const chatEndedForRide = isRideCompletedForChat(ride, currentUserId);
+  const canSend = !chatEndedForRide;
+
+  useEffect(() => {
+    setRideSnapshot(rideParam);
+  }, [rideParam]);
+
+  useFocusEffect(
+    useCallback(() => {
+      const id = (rideParam.id ?? '').trim();
+      if (!id) return;
+      let cancelled = false;
+      fetchRideDetailRaw(id, { force: true, viewerUserId: currentUserId })
+        .then((raw) => {
+          if (cancelled) return;
+          const fresh = unwrapRideFromDetailResponse(raw);
+          if (fresh) setRideSnapshot((prev) => ({ ...prev, ...fresh, id: fresh.id || prev.id }));
+        })
+        .catch(() => {});
+      return () => {
+        cancelled = true;
+      };
+    }, [rideParam.id, currentUserId])
+  );
+
+  const openRideDetail = useCallback(() => {
+    (navigation as { navigate: (name: 'RideDetail', params: { ride: RideListItem }) => void }).navigate(
+      'RideDetail',
+      { ride: rideSnapshot }
+    );
+  }, [navigation, rideSnapshot]);
 
   useEffect(() => {
     // Robustly hide bottom tab bar while inside chat.
@@ -120,28 +210,30 @@ export default function ChatScreen(): React.JSX.Element {
   }, [navigation]);
 
   useEffect(() => {
-    addOrUpdateConversation(ride, otherUserName, otherUserId, undefined, peerAvatarOpts);
-  }, [ride.id, otherUserName, otherUserId, addOrUpdateConversation, peerAvatarOpts]);
+    addOrUpdateConversation(rideForInbox, otherUserName, otherUserId, undefined, peerAvatarOpts);
+  }, [rideForInbox, otherUserName, otherUserId, addOrUpdateConversation, peerAvatarOpts]);
 
-  // Load messages from backend when opening chat (survives reinstall / device change).
-  // Cleanup avoids applying merged state after navigating away; InboxContext also TTL/dedupes fetches.
-  useEffect(() => {
-    const oid = otherUserId?.trim();
-    const oname = otherUserName?.trim() || 'User';
-    if (!oid && !oname) return;
-    let cancelled = false;
-    loadThreadMessages(ride.id, oid ?? '', oname, ride, { cancelled: () => cancelled }).catch(
-      () => {}
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [ride.id, otherUserId, otherUserName, loadThreadMessages]);
-
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 30_000);
-    return () => clearInterval(id);
-  }, []);
+  // While chat is focused: initial fetch + periodic refresh (no WebSocket — polling picks up peer messages).
+  useFocusEffect(
+    useCallback(() => {
+      const oid = otherUserId?.trim();
+      const oname = otherUserName?.trim() || 'User';
+      if (!oid && !oname) return undefined;
+      let cancelled = false;
+      const run = () => {
+        loadThreadMessages(rideIdForChat, oid ?? '', oname, rideForInbox, {
+          cancelled: () => cancelled,
+          force: true,
+        }).catch(() => {});
+      };
+      run();
+      const intervalId = setInterval(run, CHAT_THREAD_POLL_MS);
+      return () => {
+        cancelled = true;
+        clearInterval(intervalId);
+      };
+    }, [rideIdForChat, otherUserId, otherUserName, loadThreadMessages, rideForInbox])
+  );
 
   useEffect(() => {
     const show = Keyboard.addListener(
@@ -176,52 +268,21 @@ export default function ChatScreen(): React.JSX.Element {
   const handleSend = async () => {
     const trimmed = message.trim();
     if (!trimmed) return;
-    const otherId = (otherUserId ?? '').trim();
-    if (otherId) {
-      try {
-        const res = await sendChatMessage({
-          rideId: ride.id,
-          otherUserId: otherId,
-          text: trimmed,
-        });
-        addMessage(ride, otherUserName, otherUserId, {
-          id: res.id,
-          text: res.text,
-          sentAt: res.sentAt,
-          isFromMe: true,
-          status: res.status,
-        });
-        addOrUpdateConversation(
-          ride,
-          otherUserName,
-          otherUserId,
-          {
-            lastMessage: res.text,
-            lastMessageAt: res.sentAt,
-            messageStatus: 'sent',
-          },
-          peerAvatarOpts
-        );
-        setMessage('');
-        setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
-        return;
-      } catch {
-        // Backend may not have chat API yet; fall back to local-only
-      }
-    }
-    const id = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    if (chatEndedForRide) return;
+
+    const clientId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
     const sentAt = Date.now();
-    const newMsg: PersistedChatMessage = {
-      id,
+    const optimistic: PersistedChatMessage = {
+      id: clientId,
       text: trimmed,
       sentAt,
       isFromMe: true,
-      status: 'sending',
+      status: 'sent',
     };
-    addMessage(ride, otherUserName, otherUserId, newMsg);
+    addMessage(rideForInbox, otherUserName, otherUserId, optimistic);
     setMessage('');
     addOrUpdateConversation(
-      ride,
+      rideForInbox,
       otherUserName,
       otherUserId,
       {
@@ -231,12 +292,11 @@ export default function ChatScreen(): React.JSX.Element {
       },
       peerAvatarOpts
     );
-    setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
-    setTimeout(() => updateMessageStatus(ride, otherUserName, otherUserId, id, 'sent'), 600);
-    setTimeout(() => {
-      updateMessageStatus(ride, otherUserName, otherUserId, id, 'delivered');
+
+    const otherId = (otherUserId ?? '').trim();
+    if (!otherId) {
       addOrUpdateConversation(
-        ride,
+        rideForInbox,
         otherUserName,
         otherUserId,
         {
@@ -246,8 +306,73 @@ export default function ChatScreen(): React.JSX.Element {
         },
         peerAvatarOpts
       );
-    }, 1800);
+      return;
+    }
+
+    try {
+      const res = await sendChatMessage({
+        rideId: rideForInbox.id,
+        otherUserId: otherId,
+        text: trimmed,
+      });
+      reconcileOutboundMessage(rideForInbox, otherUserName, otherUserId, clientId, {
+        id: res.id,
+        text: res.text,
+        sentAt: res.sentAt,
+      });
+      addOrUpdateConversation(
+        rideForInbox,
+        otherUserName,
+        otherUserId,
+        {
+          lastMessage: res.text,
+          lastMessageAt: res.sentAt,
+          messageStatus: 'sent',
+        },
+        peerAvatarOpts
+      );
+    } catch {
+      /** Keep the bubble in the thread; mark unsynced so we don't treat it as server-confirmed. */
+      updateMessageStatus(rideForInbox, otherUserName, otherUserId, clientId, 'pending');
+    }
   };
+
+  const renderListEmpty = useCallback(() => {
+    return (
+      <View style={styles.emptyInvertedWrap}>
+        <Text style={styles.emptyChatHint}>No messages yet</Text>
+      </View>
+    );
+  }, []);
+
+  const renderMessage = useCallback(({ item: msg }: { item: PersistedChatMessage }) => {
+    return (
+      <View
+        style={[styles.bubbleRow, msg.isFromMe ? styles.bubbleRowMe : styles.bubbleRowThem]}
+      >
+        <View
+          style={[
+            styles.bubble,
+            msg.isFromMe ? styles.bubbleMe : styles.bubbleThem,
+          ]}
+        >
+          <Text style={[styles.bubbleText, msg.isFromMe && styles.bubbleTextMe]}>
+            {msg.text}
+          </Text>
+          <View style={styles.bubbleFooter}>
+            <Text
+              style={[
+                styles.bubbleTime,
+                msg.isFromMe && styles.bubbleTimeMe,
+              ]}
+            >
+              {formatMessageTime(msg.sentAt)}
+            </Text>
+          </View>
+        </View>
+      </View>
+    );
+  }, []);
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
@@ -273,109 +398,71 @@ export default function ChatScreen(): React.JSX.Element {
               style={styles.headerAvatar}
             />
             <View style={styles.headerNameCol}>
-              <View style={styles.headerNameRow}>
-                <Text style={styles.headerName}>{displayName}</Text>
-                <View style={styles.ratingBadge}>
-                  <Ionicons name="star" size={12} color={COLORS.warning} />
-                  <Text style={styles.ratingText}>4.5/5</Text>
-                </View>
-              </View>
+              <Text style={styles.headerName}>{displayName}</Text>
               {inputFocused ? (
                 <Text style={styles.headerRouteShort} numberOfLines={1}>{shortRoute}</Text>
               ) : null}
             </View>
           </View>
-          <View style={styles.headerActions}>
-            <TouchableOpacity style={styles.headerIconBtn} onPress={() => {}} hitSlop={8}>
-              <Ionicons name="call-outline" size={22} color={COLORS.primary} />
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.headerIconBtn} onPress={() => {}} hitSlop={8}>
-              <Ionicons name="ellipsis-horizontal" size={22} color={COLORS.primary} />
-            </TouchableOpacity>
-          </View>
         </View>
 
-        {/* Ride bar: visible by default; collapses when input focused (description in header) */}
-        <TouchableOpacity
-          style={[
-            styles.rideBar,
-            inputFocused && styles.rideBarCollapsed,
-          ]}
-          onPress={() => navigation.goBack()}
-          activeOpacity={0.8}
-          disabled={inputFocused}
-          pointerEvents={inputFocused ? 'none' : 'auto'}
-        >
-          <View style={styles.rideBarContent}>
-            <Text style={styles.rideRoute} numberOfLines={1}>{shortRoute}</Text>
-            {bookingStatusLabel ? (
-              <Text style={styles.rideMeta}>
-                <Text style={styles.rideStatus}>{bookingStatusLabel}</Text>
-                {' • '}{rideDateTimeStr}
-              </Text>
-            ) : (
-              <Text style={styles.rideMeta}>{rideDateTimeStr}</Text>
-            )}
-          </View>
-          <Ionicons name="chevron-forward" size={20} color={COLORS.textMuted} />
-        </TouchableOpacity>
+        {/* Ride bar: opens ride detail for this chat’s ride */}
+        <View pointerEvents={inputFocused ? 'none' : 'auto'}>
+          <TouchableOpacity
+            style={[
+              styles.rideBar,
+              inputFocused && styles.rideBarCollapsed,
+            ]}
+            onPress={openRideDetail}
+            activeOpacity={0.8}
+            disabled={inputFocused}
+            accessibilityRole="button"
+            accessibilityLabel="Open ride details"
+          >
+            <View style={styles.rideBarContent}>
+              <Text style={styles.rideRoute} numberOfLines={1}>{shortRoute}</Text>
+              {bookingStatusLabel ? (
+                <Text style={styles.rideMeta}>
+                  <Text style={styles.rideStatus}>{bookingStatusLabel}</Text>
+                  {' • '}{rideDateTimeStr}
+                </Text>
+              ) : (
+                <Text style={styles.rideMeta}>{rideDateTimeStr}</Text>
+              )}
+              <Text style={styles.rideBarHint}>Tap for ride details</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color={COLORS.textMuted} />
+          </TouchableOpacity>
+        </View>
 
-        {/* Chat area */}
-        <ScrollView
-          ref={scrollRef}
-          style={styles.chatArea}
-          contentContainerStyle={[
-            styles.chatAreaContent,
-            messages.length > 0 && styles.chatAreaContentWithMessages,
-            !canSend ? { paddingBottom: 26 } : null,
-          ]}
+        {chatEndedForRide ? (
+          <View style={styles.chatEndedBanner}>
+            <Ionicons name="lock-closed-outline" size={18} color={COLORS.textSecondary} />
+            <Text style={styles.chatEndedBannerText}>
+              This ride is completed. This chat is read-only.
+            </Text>
+          </View>
+        ) : null}
+
+        {/* Inverted list + newest-first data → latest bubbles sit above the input */}
+        <FlatList
+          key={`chat-thread-${ride.id}-${otherStoredId}`}
+          data={messagesNewestFirst}
+          inverted
+          keyExtractor={(m) => m.id}
+          extraData={chatListExtraData}
+          renderItem={renderMessage}
+          ListEmptyComponent={renderListEmpty}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
-          onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}
-        >
-          {messages.length === 0 ? (
-            <Text style={styles.emptyChatHint}>
-              No messages yet
-            </Text>
-          ) : (
-            messages.map((msg) => (
-              <View
-                key={msg.id}
-                style={[styles.bubbleRow, msg.isFromMe ? styles.bubbleRowMe : styles.bubbleRowThem]}
-              >
-                <View
-                  style={[
-                    styles.bubble,
-                    msg.isFromMe ? styles.bubbleMe : styles.bubbleThem,
-                  ]}
-                >
-                  <Text style={[styles.bubbleText, msg.isFromMe && styles.bubbleTextMe]}>
-                    {msg.text}
-                  </Text>
-                  <View style={styles.bubbleFooter}>
-                    <Text
-                      style={[
-                        styles.bubbleTime,
-                        msg.isFromMe && styles.bubbleTimeMe,
-                      ]}
-                    >
-                      {formatMessageTime(msg.sentAt)}
-                    </Text>
-                    {msg.isFromMe && (
-                      <View style={styles.tickWrap}>
-                        {msg.status === 'read' ? (
-                          <Ionicons name="checkmark-done" size={16} color={COLORS.primary} />
-                        ) : (
-                          <Ionicons name="checkmark" size={16} color={COLORS.textMuted} />
-                        )}
-                      </View>
-                    )}
-                  </View>
-                </View>
-              </View>
-            ))
-          )}
-        </ScrollView>
+          removeClippedSubviews={false}
+          style={styles.chatArea}
+          contentContainerStyle={[
+            styles.chatListContent,
+            messages.length === 0 && styles.chatListContentEmpty,
+            !canSend ? { paddingBottom: 26 } : null,
+          ]}
+        />
 
         {/* Warnings */}
         <View style={styles.warnings}>
@@ -415,7 +502,11 @@ export default function ChatScreen(): React.JSX.Element {
                 <Ionicons name="send" size={20} color={message.trim() ? COLORS.white : COLORS.textMuted} />
               </TouchableOpacity>
             </View>
-          ) : null}
+          ) : (
+            <View style={styles.chatClosedRow}>
+              <Text style={styles.chatClosedText}>This ride is completed. Chat is closed.</Text>
+            </View>
+          )}
         </View>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -457,11 +548,6 @@ const styles = StyleSheet.create({
   headerNameCol: {
     flex: 1,
   },
-  headerNameRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
   headerRouteShort: {
     fontSize: 12,
     color: COLORS.textMuted,
@@ -471,28 +557,6 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontWeight: '700',
     color: COLORS.text,
-  },
-  ratingBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#fef08a',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 10,
-    gap: 4,
-  },
-  ratingText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: COLORS.text,
-  },
-  headerActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  headerIconBtn: {
-    padding: 6,
   },
   rideBar: {
     flexDirection: 'row',
@@ -529,18 +593,47 @@ const styles = StyleSheet.create({
     color: COLORS.primary,
     fontWeight: '600',
   },
+  rideBarHint: {
+    fontSize: 11,
+    color: COLORS.textMuted,
+    marginTop: 4,
+    fontWeight: '500',
+  },
+  chatEndedBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    backgroundColor: COLORS.backgroundSecondary,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  chatEndedBannerText: {
+    flex: 1,
+    fontSize: 13,
+    color: COLORS.textSecondary,
+    lineHeight: 18,
+  },
   chatArea: {
     flex: 1,
     backgroundColor: COLORS.background,
   },
-  chatAreaContent: {
+  chatListContentEmpty: {
     flexGrow: 1,
-    padding: 16,
-    justifyContent: 'center',
   },
-  chatAreaContentWithMessages: {
-    justifyContent: 'flex-end',
-    paddingBottom: 8,
+  emptyInvertedWrap: {
+    flexGrow: 1,
+    transform: [{ scaleY: -1 }],
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 16,
+  },
+  chatListContent: {
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 16,
+    flexGrow: 1,
   },
   emptyChatHint: {
     fontSize: 15,
@@ -595,9 +688,6 @@ const styles = StyleSheet.create({
   bubbleTimeMe: {
     color: 'rgba(255,255,255,0.85)',
   },
-  tickWrap: {
-    marginLeft: 2,
-  },
   chatClosedBanner: {
     flexDirection: 'row',
     alignItems: 'flex-start',
@@ -612,6 +702,14 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: COLORS.textSecondary,
     lineHeight: 18,
+  },
+  chatClosedRow: {
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 20,
+    backgroundColor: COLORS.background,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
   },
   warnings: {
     paddingHorizontal: 16,

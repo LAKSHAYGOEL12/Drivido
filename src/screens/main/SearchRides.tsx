@@ -303,8 +303,8 @@ export default function SearchRides(): React.JSX.Element {
               onPress={() => handleOpenLocationPicker('from')}
               activeOpacity={0.7}
             >
-              <Text style={styles.pickupText} numberOfLines={1}>
-                {from || 'Current Location'}
+              <Text style={[styles.pickupText, !from && styles.placeholder]} numberOfLines={1}>
+                {from || 'Where from?'}
               </Text>
               <Text style={styles.label}>Pickup</Text>
             </TouchableOpacity>

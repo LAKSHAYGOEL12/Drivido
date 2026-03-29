@@ -14,7 +14,7 @@ import {
   Keyboard,
   ScrollView,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { SearchStackParamList } from '../../navigation/types';
 import { useLocation } from '../../contexts/LocationContext';
@@ -47,6 +47,12 @@ const DEFAULT_REGION = {
 
 const STREET_DELTA = 0.012;
 const NEIGHBORHOOD_DELTA = 0.04;
+/** ~45m — skip reverse-geocode when map center barely moved (fewer native geocode calls). */
+const PUBLISH_MIN_MOVE_FOR_GEOCODE_DEG = 0.00042;
+/** Wait after map stops before reverse-geocode (lets user finish dragging). */
+const PUBLISH_REVERSE_GEOCODE_DEBOUNCE_MS = 1750;
+/** Ignore region events right after programmatic `animateToRegion` (no extra geocode). */
+const PUBLISH_SKIP_GEOCODE_AFTER_ANIM_MS = 950;
 
 function centerRegion(lat: number, lng: number, delta = STREET_DELTA) {
   return {
@@ -62,17 +68,6 @@ function newPlacesSessionToken(): string {
   return `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
-/** True if typed query matches any saved place (title or address) — used to defer showing the map on Publish. */
-function queryMatchesAnyRecent(query: string, recents: PlaceRecentEntry[]): boolean {
-  const q = query.trim().toLowerCase();
-  if (!q) return false;
-  return recents.some((r) => {
-    const t = r.title.trim().toLowerCase();
-    const a = r.formattedAddress.trim().toLowerCase();
-    return t.includes(q) || a.includes(q) || q.includes(t) || q.includes(a);
-  });
-}
-
 let MapView: React.ComponentType<any> | null = null;
 let Marker: React.ComponentType<any> | null = null;
 let PROVIDER_DEFAULT: string | undefined;
@@ -86,9 +81,10 @@ try {
   Marker = null;
 }
 
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 export default function LocationPickerScreen({ navigation, route }: Props): React.JSX.Element {
+  const insets = useSafeAreaInsets();
   const field = route.params?.field ?? 'from';
   const currentFrom = route.params?.currentFrom ?? '';
   const currentTo = route.params?.currentTo ?? '';
@@ -136,54 +132,94 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
   /** false when user dropped pin by tapping map — no name on map marker */
   const [showNameOnSelectedMarker, setShowNameOnSelectedMarker] = useState(true);
   const mapExploreSeq = useRef(0);
-  /** Publish: show map only after free text doesn’t match recents (same flow as Search search-first). */
+  const publishGeocodeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Publish: map hidden until user types, picks a place, or opens map manually (unless pre-filled from Publish). */
   const [publishMapVisible, setPublishMapVisible] = useState(false);
+  const skipPublishGeocodeUntilRef = useRef(0);
+  const lastPublishGeocodedRef = useRef<{ latitude: number; longitude: number } | null>(null);
+
+  const isPublishFlow = returnScreen === 'PublishRide';
+  const publishSearchOnly = isPublishFlow && !publishMapVisible;
+  /** Full-screen map + floating controls (Publish). */
+  const publishImmersiveMap = isPublishFlow && publishMapVisible;
+
+  const bumpSkipPublishGeocode = useCallback((ms = PUBLISH_SKIP_GEOCODE_AFTER_ANIM_MS) => {
+    skipPublishGeocodeUntilRef.current = Date.now() + ms;
+  }, []);
 
   const loadRecentsForField = useCallback(async () => {
     const list = await loadPlaceRecents(placeFieldType, recentUserKey);
     setRecentPlaces(list);
   }, [placeFieldType, recentUserKey]);
 
+  const hasValidCoord = useCallback((lat: unknown, lon: unknown): boolean => {
+    if (typeof lat !== 'number' || typeof lon !== 'number' || Number.isNaN(lat) || Number.isNaN(lon)) {
+      return false;
+    }
+    return lat !== 0 || lon !== 0;
+  }, []);
+
   useEffect(() => {
-    // Search + Publish: search + recents first; map hidden for Publish until needed.
     if (returnScreen === 'SearchRides' || returnScreen === 'PublishRide') {
       setIsFocused(true);
       void loadRecentsForField();
       placesSessionTokenRef.current = newPlacesSessionToken();
     }
-    if (returnScreen === 'PublishRide') {
-      setPublishMapVisible(false);
-      setSearchQuery('');
-      setSelectedLabel(null);
-      setSelectedCoords(null);
-      setSuggestions([]);
-      setNearbyPlacesList([]);
-      setMapExploring(false);
-      skipAutocompleteRef.current = false;
-      suppressMapExploreRef.current = false;
-    }
-  }, [returnScreen, field, loadRecentsForField]);
+  }, [returnScreen, loadRecentsForField]);
 
-  /** Publish: reveal map when user types ≥3 chars and nothing in recents matches (debounced). */
   useEffect(() => {
     if (returnScreen !== 'PublishRide') return;
-    const q = searchQuery.trim();
-    if (q.length < 3) {
-      setPublishMapVisible(false);
-      return;
+    setSuggestions([]);
+    setNearbyPlacesList([]);
+    setMapExploring(false);
+    suppressMapExploreRef.current = false;
+    lastPublishGeocodedRef.current = null;
+    if (field === 'from') {
+      const lab = (currentFrom ?? '').trim();
+      const hasCoords = hasValidCoord(currentPickupLat, currentPickupLon);
+      const hadPrefill = lab.length > 0 || hasCoords;
+      setSearchQuery(lab);
+      setSelectedLabel(lab.length > 0 ? lab : null);
+      if (hasCoords) {
+        setSelectedCoords({ latitude: currentPickupLat as number, longitude: currentPickupLon as number });
+      } else {
+        setSelectedCoords(null);
+      }
+      skipAutocompleteRef.current = hadPrefill;
+      setPublishMapVisible(hasCoords);
+      if (hasCoords) bumpSkipPublishGeocode();
+    } else {
+      const lab = (currentTo ?? '').trim();
+      const hasCoords = hasValidCoord(currentDestLat, currentDestLon);
+      const hadPrefill = lab.length > 0 || hasCoords;
+      setSearchQuery(lab);
+      setSelectedLabel(lab.length > 0 ? lab : null);
+      if (hasCoords) {
+        setSelectedCoords({ latitude: currentDestLat as number, longitude: currentDestLon as number });
+      } else {
+        setSelectedCoords(null);
+      }
+      skipAutocompleteRef.current = hadPrefill;
+      setPublishMapVisible(hasCoords);
+      if (hasCoords) bumpSkipPublishGeocode();
     }
-    if (queryMatchesAnyRecent(q, recentPlaces)) {
-      setPublishMapVisible(false);
-      return;
-    }
-    const id = setTimeout(() => setPublishMapVisible(true), 420);
-    return () => clearTimeout(id);
-  }, [searchQuery, recentPlaces, returnScreen]);
+  }, [
+    returnScreen,
+    field,
+    currentFrom,
+    currentTo,
+    currentPickupLat,
+    currentPickupLon,
+    currentDestLat,
+    currentDestLon,
+    hasValidCoord,
+    bumpSkipPublishGeocode,
+  ]);
 
-  const openPublishMapManually = useCallback(() => {
-    setPublishMapVisible(true);
-    setIsFocused(false);
-    Keyboard.dismiss();
+  useEffect(() => {
+    return () => {
+      if (publishGeocodeTimerRef.current) clearTimeout(publishGeocodeTimerRef.current);
+    };
   }, []);
 
   const didAutoCenterUserRef = useRef(false);
@@ -191,13 +227,18 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
   useFocusEffect(
     useCallback(() => {
       didAutoCenterUserRef.current = false;
-      prefetchLocation();
-    }, [prefetchLocation])
+      if (returnScreen !== 'PublishRide') {
+        prefetchLocation();
+      }
+    }, [prefetchLocation, returnScreen])
   );
 
   const mapInitialRegion = useMemo(() => {
     const has = (n: unknown): n is number => typeof n === 'number' && !Number.isNaN(n);
     if (returnScreen === 'PublishRide') {
+      if (selectedCoords && has(selectedCoords.latitude) && has(selectedCoords.longitude)) {
+        return centerRegion(selectedCoords.latitude, selectedCoords.longitude);
+      }
       if (field === 'from' && has(currentPickupLat) && has(currentPickupLon)) {
         return centerRegion(currentPickupLat, currentPickupLon);
       }
@@ -207,6 +248,7 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
       if (field === 'to' && has(currentPickupLat) && has(currentPickupLon)) {
         return centerRegion(currentPickupLat, currentPickupLon, NEIGHBORHOOD_DELTA);
       }
+      return DEFAULT_REGION;
     }
     if (field === 'from' && has(currentFromLat) && has(currentFromLon)) {
       return centerRegion(currentFromLat, currentFromLon);
@@ -238,7 +280,7 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
   }, []);
 
   useEffect(() => {
-    if (!location) return;
+    if (returnScreen === 'PublishRide' || !location) return;
     const t = setTimeout(() => {
       if (!didAutoCenterUserRef.current && mapRef.current) {
         animateToUserLocation(location.latitude, location.longitude);
@@ -246,14 +288,40 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
       }
     }, 380);
     return () => clearTimeout(t);
-  }, [location?.latitude, location?.longitude, animateToUserLocation]);
+  }, [returnScreen, location?.latitude, location?.longitude, animateToUserLocation]);
+
+  const focusPublishMapOnCoords = useCallback(
+    (coords: { latitude: number; longitude: number }) => {
+      bumpSkipPublishGeocode();
+      const region = { ...coords, latitudeDelta: STREET_DELTA, longitudeDelta: STREET_DELTA };
+      const apply = () => mapRef.current?.animateToRegion?.(region, 380);
+      apply();
+      requestAnimationFrame(apply);
+      setTimeout(apply, 120);
+      setTimeout(apply, 420);
+    },
+    [bumpSkipPublishGeocode]
+  );
 
   const onMapReady = useCallback(() => {
+    if (returnScreen === 'PublishRide') {
+      if (publishMapVisible && selectedCoords) {
+        focusPublishMapOnCoords(selectedCoords);
+      }
+      return;
+    }
     if (location && !didAutoCenterUserRef.current) {
       animateToUserLocation(location.latitude, location.longitude);
       didAutoCenterUserRef.current = true;
     }
-  }, [location, animateToUserLocation]);
+  }, [
+    returnScreen,
+    publishMapVisible,
+    selectedCoords,
+    focusPublishMapOnCoords,
+    location,
+    animateToUserLocation,
+  ]);
 
   const navigateBackWithValue = useCallback(
     (value: string | undefined, coords?: { latitude: number; longitude: number }) => {
@@ -375,6 +443,7 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
   );
 
   const handleUseCurrentLocation = useCallback(async () => {
+    if (returnScreen === 'PublishRide') return;
     setUseCurrentLoading(true);
     try {
       const coords = await requestLocation();
@@ -382,8 +451,6 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
         Alert.alert('Location', locationError || 'Could not get your location. Check permissions and try again.');
         return;
       }
-      mapRef.current?.animateToRegion?.(centerRegion(coords.latitude, coords.longitude, STREET_DELTA), 500);
-      didAutoCenterUserRef.current = true;
       try {
         const Location = await import('expo-location');
         const results = await Location.reverseGeocodeAsync({ latitude: coords.latitude, longitude: coords.longitude });
@@ -395,7 +462,7 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
         } else {
           label = `${coords.latitude.toFixed(4)}, ${coords.longitude.toFixed(4)}`;
         }
-        if (returnScreen === 'SearchRides' || returnScreen === 'PublishRide') {
+        if (returnScreen === 'SearchRides') {
           skipAutocompleteRef.current = true;
           suppressMapExploreRef.current = true;
           placesSessionTokenRef.current = null;
@@ -404,17 +471,15 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
         }
         navigateBackWithValue(label, coords);
       } catch {
-        if (returnScreen === 'SearchRides' || returnScreen === 'PublishRide') {
+        const fallbackLabel = `${coords.latitude.toFixed(4)}, ${coords.longitude.toFixed(4)}`;
+        if (returnScreen === 'SearchRides') {
           skipAutocompleteRef.current = true;
           suppressMapExploreRef.current = true;
           placesSessionTokenRef.current = null;
-          navigateBackWithValue(
-            `${coords.latitude.toFixed(4)}, ${coords.longitude.toFixed(4)}`,
-            coords
-          );
+          navigateBackWithValue(fallbackLabel, coords);
           return;
         }
-        navigateBackWithValue(`${coords.latitude.toFixed(4)}, ${coords.longitude.toFixed(4)}`, coords);
+        navigateBackWithValue(fallbackLabel, coords);
       }
     } finally {
       setUseCurrentLoading(false);
@@ -424,14 +489,19 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
   const handleDone = () => {
     const label = selectedLabel || searchQuery || undefined;
     if (returnScreen === 'PublishRide' || returnScreen === 'SearchRides') {
+      if (returnScreen === 'PublishRide' && !publishMapVisible) {
+        Alert.alert(
+          'Set location',
+          'Pick a place from search results or recent searches first. The map opens on that spot so you can fine-tune the pin, then tap Done.'
+        );
+        return;
+      }
       if (!selectedCoords) {
         Alert.alert(
           'Set location',
           returnScreen === 'SearchRides'
             ? 'Please select a place from the list (or use "Use current location").'
-            : publishMapVisible
-              ? 'Tap on the map to set the exact location, or use "Use current location", then tap Done.'
-              : 'Choose a recent place, a search result, or tap "Choose on map".'
+            : 'Move the map until the pin is on your spot. Wait a moment for the address to update, then tap Done.'
         );
         return;
       }
@@ -482,7 +552,7 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
       setMapExploring(false);
       return;
     }
-    if (returnScreen === 'PublishRide' && !publishMapVisible) {
+    if (returnScreen === 'PublishRide') {
       setNearbyPlacesList([]);
       setMapExploring(false);
       return;
@@ -585,8 +655,18 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
           );
           setRecentPlaces(updated);
 
-          if (returnScreen === 'SearchRides' || returnScreen === 'PublishRide') {
+          if (returnScreen === 'SearchRides') {
             navigateBackWithValue(backLabel, coords);
+            return;
+          }
+          if (returnScreen === 'PublishRide') {
+            setPublishMapVisible(true);
+            setSuggestions([]);
+            lastPublishGeocodedRef.current = { latitude: coords.latitude, longitude: coords.longitude };
+            focusPublishMapOnCoords(coords);
+            void nearbyPlaces(coords.latitude, coords.longitude, 1400)
+              .then(setNearbyPlacesList)
+              .catch(() => setNearbyPlacesList([]));
             return;
           }
 
@@ -615,7 +695,7 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
         navigateBackWithValue(item.description);
       }
     },
-    [returnScreen]
+    [returnScreen, focusPublishMapOnCoords, navigateBackWithValue, placeFieldType, recentUserKey]
   );
 
   const handleSelectRecent = useCallback(
@@ -632,7 +712,6 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
         const coords = { latitude: item.latitude, longitude: item.longitude };
         const backLabel = item.formattedAddress || item.title;
 
-        // Move reused recents to the top and then immediately return on SearchRides.
         const updated = await upsertPlaceRecent(
           {
             placeId: item.placeId,
@@ -647,7 +726,19 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
         );
         setRecentPlaces(updated);
 
-        navigateBackWithValue(backLabel, coords);
+        if (returnScreen === 'SearchRides') {
+          navigateBackWithValue(backLabel, coords);
+          return;
+        }
+        setPublishMapVisible(true);
+        setSelectedCoords(coords);
+        setSelectedLabel(backLabel);
+        setSearchQuery(backLabel);
+        lastPublishGeocodedRef.current = { latitude: coords.latitude, longitude: coords.longitude };
+        focusPublishMapOnCoords(coords);
+        void nearbyPlaces(coords.latitude, coords.longitude, 1400)
+          .then(setNearbyPlacesList)
+          .catch(() => setNearbyPlacesList([]));
         return;
       }
 
@@ -656,7 +747,7 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
         longitude: item.longitude,
       });
     },
-    [navigateBackWithValue, recentUserKey, returnScreen]
+    [navigateBackWithValue, recentUserKey, returnScreen, focusPublishMapOnCoords]
   );
 
   const handleMapPress = useCallback(
@@ -695,6 +786,81 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
     [navigateBackWithValue, returnScreen]
   );
 
+  const reverseGeocodeLatLng = useCallback(async (latitude: number, longitude: number) => {
+    try {
+      const Location = await import('expo-location');
+      const results = await Location.reverseGeocodeAsync({ latitude, longitude });
+      let label: string;
+      if (results?.length > 0) {
+        const addr = results[0];
+        const parts = [addr.street, addr.streetNumber, addr.city, addr.region, addr.country].filter(Boolean);
+        label = parts.length > 0 ? parts.join(', ') : `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`;
+      } else {
+        label = `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`;
+      }
+      setSelectedLabel(label);
+      setSearchQuery(label);
+      skipAutocompleteRef.current = true;
+    } catch {
+      const label = `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`;
+      setSelectedLabel(label);
+      setSearchQuery(label);
+    }
+  }, []);
+
+  const handlePublishRegionChangeComplete = useCallback(
+    (region: { latitude: number; longitude: number }) => {
+      if (!isPublishFlow || !publishMapVisible) return;
+      const lat = region.latitude;
+      const lng = region.longitude;
+      setSelectedCoords({ latitude: lat, longitude: lng });
+
+      if (Date.now() < skipPublishGeocodeUntilRef.current) {
+        return;
+      }
+
+      const prev = lastPublishGeocodedRef.current;
+      if (
+        prev &&
+        Math.abs(prev.latitude - lat) < PUBLISH_MIN_MOVE_FOR_GEOCODE_DEG &&
+        Math.abs(prev.longitude - lng) < PUBLISH_MIN_MOVE_FOR_GEOCODE_DEG
+      ) {
+        return;
+      }
+
+      if (publishGeocodeTimerRef.current) clearTimeout(publishGeocodeTimerRef.current);
+      publishGeocodeTimerRef.current = setTimeout(() => {
+        publishGeocodeTimerRef.current = null;
+        setReverseGeocodeLoading(true);
+        void (async () => {
+          try {
+            await reverseGeocodeLatLng(lat, lng);
+            lastPublishGeocodedRef.current = { latitude: lat, longitude: lng };
+          } finally {
+            setReverseGeocodeLoading(false);
+          }
+          try {
+            const n = await nearbyPlaces(lat, lng, 1400);
+            setNearbyPlacesList(n);
+          } catch {
+            setNearbyPlacesList([]);
+          }
+        })();
+      }, PUBLISH_REVERSE_GEOCODE_DEBOUNCE_MS);
+    },
+    [isPublishFlow, publishMapVisible, reverseGeocodeLatLng]
+  );
+
+  const handlePublishMapPress = useCallback(
+    (e: { nativeEvent: { coordinate: { latitude: number; longitude: number } } }) => {
+      if (!isPublishFlow) return;
+      const { latitude, longitude } = e.nativeEvent.coordinate;
+      bumpSkipPublishGeocode();
+      mapRef.current?.animateToRegion?.(centerRegion(latitude, longitude, STREET_DELTA), 350);
+    },
+    [isPublishFlow, bumpSkipPublishGeocode]
+  );
+
   const selectNearbyPlace = useCallback(
     async (p: NearbyPlace) => {
       skipAutocompleteRef.current = true;
@@ -705,6 +871,7 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
       setNearbyPlacesList([]);
       mapExploreSeq.current += 1;
       const coords = { latitude: p.latitude, longitude: p.longitude };
+      bumpSkipPublishGeocode();
       setShowNameOnSelectedMarker(true);
       setSelectedCoords(coords);
       setSelectedLabel(p.name);
@@ -732,70 +899,188 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
       } finally {
         setReverseGeocodeLoading(false);
       }
+      lastPublishGeocodedRef.current = coords;
     },
-    []
+    [bumpSkipPublishGeocode]
   );
 
-  const publishSearchOnly = returnScreen === 'PublishRide' && !publishMapVisible;
+  const clearPublishSelection = () => {
+    setSelectedLabel(null);
+    setSearchQuery('');
+    setSuggestions([]);
+    setNearbyPlacesList([]);
+    setShowNameOnSelectedMarker(true);
+    mapExploreSeq.current += 1;
+    skipAutocompleteRef.current = false;
+    suppressMapExploreRef.current = false;
+    lastPublishGeocodedRef.current = null;
+    if (publishGeocodeTimerRef.current) clearTimeout(publishGeocodeTimerRef.current);
+    setPublishMapVisible(false);
+    Keyboard.dismiss();
+  };
+
+  const mapLayer = publishImmersiveMap ? (
+    <View style={[StyleSheet.absoluteFillObject, styles.publishMapLayer]} pointerEvents="box-none">
+      {reverseGeocodeLoading && (
+        <View style={styles.mapOverlay}>
+          <ActivityIndicator size="large" color={COLORS.primary} />
+          <Text style={styles.mapOverlayText}>Updating address…</Text>
+          <Text style={styles.mapOverlaySubtext}>Waits until you finish moving the map</Text>
+        </View>
+      )}
+      {MapView ? (
+        <>
+          <MapView
+            key={`publish-map-${field}`}
+            ref={mapRef}
+            style={StyleSheet.absoluteFillObject}
+            initialRegion={mapInitialRegion}
+            showsUserLocation={false}
+            showsMyLocationButton={false}
+            mapType="standard"
+            provider={PROVIDER_DEFAULT}
+            onMapReady={onMapReady}
+            onPress={handlePublishMapPress}
+            onRegionChangeComplete={handlePublishRegionChangeComplete}
+          >
+            {Marker &&
+              nearbyPlacesList.map((p) => {
+                if (
+                  selectedCoords &&
+                  Math.abs(selectedCoords.latitude - p.latitude) < 1e-5 &&
+                  Math.abs(selectedCoords.longitude - p.longitude) < 1e-5
+                ) {
+                  return null;
+                }
+                return (
+                  <Marker
+                    key={p.placeId}
+                    coordinate={{ latitude: p.latitude, longitude: p.longitude }}
+                    title={p.name}
+                    anchor={{ x: 0.5, y: 0.5 }}
+                    tracksViewChanges={false}
+                    onPress={() => selectNearbyPlace(p)}
+                  >
+                    <View style={styles.nearbyMapDot} />
+                  </Marker>
+                );
+              })}
+          </MapView>
+          <View style={styles.centerPinOverlay} pointerEvents="none">
+            <Ionicons name="location-sharp" size={46} color={COLORS.error} style={styles.centerPinIcon} />
+          </View>
+          {Platform.OS === 'android' && (
+            <View style={styles.mapHint}>
+              <Text style={styles.mapHintText}>
+                Map black? Don't use Expo Go. Run: npm run android:build
+              </Text>
+            </View>
+          )}
+        </>
+      ) : (
+        <View style={[StyleSheet.absoluteFillObject, styles.mapPlaceholder]}>
+          <Text style={styles.mapPlaceholderText}>Map unavailable (dev client required)</Text>
+        </View>
+      )}
+    </View>
+  ) : null;
 
   return (
     <SafeAreaView
       style={[
         styles.container,
         returnScreen === 'SearchRides' || publishSearchOnly ? styles.containerSearchRides : null,
+        publishImmersiveMap && styles.containerPublishMap,
       ]}
-      edges={['top']}
+      edges={publishImmersiveMap ? [] : ['top']}
     >
-      {returnScreen === 'PublishRide' && publishMapVisible ? (
-        <View style={styles.header}>
-          <TouchableOpacity onPress={handleDone} style={styles.doneBtn} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
-            <Text style={styles.doneText}>← Done</Text>
+      {mapLayer}
+
+      {publishImmersiveMap ? (
+        <View
+          style={[styles.publishTopChrome, { paddingTop: insets.top + 6 }]}
+          pointerEvents="box-none"
+        >
+          <TouchableOpacity
+            onPress={() => navigation.goBack()}
+            style={styles.publishTopIconBtn}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+          >
+            <Ionicons name="chevron-back" size={22} color={COLORS.text} />
+          </TouchableOpacity>
+          <View style={styles.publishTopTitleBlock}>
+            <Text style={styles.publishTopFieldTag}>
+              {field === 'from' ? 'PICKUP' : 'DROP-OFF'}
+            </Text>
+          </View>
+          <TouchableOpacity
+            onPress={handleDone}
+            style={styles.publishTopDonePill}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+          >
+            <Text style={styles.publishTopDoneText}>Done</Text>
           </TouchableOpacity>
         </View>
       ) : null}
 
-      {returnScreen === 'PublishRide' && publishMapVisible && selectedLabel ? (
-        <View style={styles.selectedBar}>
-          <Text style={styles.selectedLabel} numberOfLines={1}>{selectedLabel}</Text>
+      {isPublishFlow && !publishImmersiveMap ? (
+        <View style={styles.header}>
           <TouchableOpacity
-            onPress={() => {
-              setSelectedLabel(null);
-              setSelectedCoords(null);
-              setSearchQuery('');
-              setSuggestions([]);
-              setNearbyPlacesList([]);
-              setShowNameOnSelectedMarker(true);
-              setPublishMapVisible(false);
-              mapExploreSeq.current += 1;
-              Keyboard.dismiss();
-            }}
-            style={styles.changeBtn}
-            hitSlop={8}
+            onPress={() => navigation.goBack()}
+            style={styles.headerBackBtn}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
           >
-            <Text style={styles.changeBtnText}>Change</Text>
+            <Ionicons name="chevron-back" size={24} color={COLORS.text} />
+          </TouchableOpacity>
+          <View style={styles.headerTitleSpacer} />
+          <TouchableOpacity onPress={handleDone} style={styles.doneBtn} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
+            <Text style={styles.doneText}>Done</Text>
           </TouchableOpacity>
         </View>
-      ) : (
-        <View style={[styles.searchSection, publishSearchOnly && styles.searchSectionFlex]}>
-          <View style={styles.searchInputRow}>
-            {returnScreen === 'SearchRides' || publishSearchOnly ? (
-              <TouchableOpacity
-                onPress={() => navigation.goBack()}
-                style={styles.searchBackButton}
-                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-              >
-                <Ionicons name="chevron-back" size={20} color={COLORS.textSecondary} />
-              </TouchableOpacity>
-            ) : null}
-            <TextInput
-              style={[
-                styles.searchInput,
-                (returnScreen === 'SearchRides' || publishSearchOnly) && styles.searchInputEmbedded,
-              ]}
-              placeholder={field === 'to' ? 'Search destination' : 'Search for a place or address'}
-              placeholderTextColor={COLORS.textMuted}
-              value={searchQuery}
-              onChangeText={(v) => {
+      ) : null}
+
+      {isPublishFlow && selectedLabel && !publishImmersiveMap ? (
+        <View style={styles.selectedBar}>
+          <Text style={styles.selectedLabel} numberOfLines={2}>
+            {selectedLabel}
+          </Text>
+          <TouchableOpacity onPress={clearPublishSelection} style={styles.changeBtn} hitSlop={8}>
+            <Text style={styles.changeBtnText}>Clear</Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
+
+      <View
+        style={[
+          styles.searchSection,
+          publishSearchOnly && styles.searchSectionFlex,
+          publishImmersiveMap && styles.searchSectionOnMap,
+          publishImmersiveMap && {
+            top: insets.top + 52,
+            maxHeight: isFocused ? SCREEN_HEIGHT * 0.44 : undefined,
+          },
+        ]}
+      >
+        <View style={[styles.searchInputRow, publishImmersiveMap && styles.searchInputRowOnMap]}>
+          {returnScreen === 'SearchRides' ? (
+            <TouchableOpacity
+              onPress={() => navigation.goBack()}
+              style={styles.searchBackButton}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            >
+              <Ionicons name="chevron-back" size={20} color={COLORS.textSecondary} />
+            </TouchableOpacity>
+          ) : null}
+          <TextInput
+            style={[
+              styles.searchInput,
+              (returnScreen === 'SearchRides' || publishSearchOnly || publishImmersiveMap) &&
+                styles.searchInputEmbedded,
+            ]}
+            placeholder={field === 'to' ? 'Search destination' : 'Search for a place or address'}
+            placeholderTextColor={COLORS.textMuted}
+            value={searchQuery}
+            onChangeText={(v) => {
                 // User started typing again (not selecting a recent item).
                 skipAutocompleteRef.current = false;
                 suppressMapExploreRef.current = false;
@@ -813,12 +1098,12 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
                 // Allow taps on suggestions to register before hiding dropdown.
                 setTimeout(() => setIsFocused(false), 150);
               }}
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-          </View>
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+        </View>
 
-          {canShowUseCurrentLocation && (
+          {canShowUseCurrentLocation && !isPublishFlow && (
             <TouchableOpacity
               style={styles.useCurrentLocationRow}
               onPress={handleUseCurrentLocation}
@@ -836,20 +1121,14 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
             </TouchableOpacity>
           )}
 
-          {publishSearchOnly && (
-            <TouchableOpacity
-              style={styles.chooseMapRow}
-              onPress={openPublishMapManually}
-              activeOpacity={0.7}
-            >
-              <Ionicons name="map-outline" size={22} color={COLORS.primary} />
-              <Text style={styles.chooseMapText}>Choose on map</Text>
-              <Ionicons name="chevron-forward" size={20} color={COLORS.textMuted} />
-            </TouchableOpacity>
-          )}
-
           {isFocused && searchQuery.trim().length < 3 && recentPlaces.length > 0 && (
-            <View style={[styles.suggestionsList, publishSearchOnly && styles.suggestionsListPublish]}>
+            <View
+              style={[
+                styles.suggestionsList,
+                isPublishFlow && !publishImmersiveMap && styles.suggestionsListPublish,
+                publishImmersiveMap && styles.suggestionsListOnMap,
+              ]}
+            >
               <View style={styles.listSectionHeader}>
                 <Text style={styles.sectionHeaderText}>Recent Searches</Text>
               </View>
@@ -887,7 +1166,13 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
           )}
 
           {isFocused && searchQuery.trim().length >= 3 && suggestions.length > 0 && (
-            <View style={styles.suggestionsList}>
+            <View
+              style={[
+                styles.suggestionsList,
+                isPublishFlow && !publishImmersiveMap && styles.suggestionsListPublish,
+                publishImmersiveMap && styles.suggestionsListOnMap,
+              ]}
+            >
               <View style={styles.listSectionHeader}>
                 <Text style={styles.sectionHeaderText}>Search Results</Text>
               </View>
@@ -919,7 +1204,13 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
             suggestionsLoading &&
             suggestions.length === 0 &&
             searchQuery.trim().length >= 3 && (
-              <View style={styles.suggestionsList}>
+              <View
+                style={[
+                  styles.suggestionsList,
+                  isPublishFlow && !publishImmersiveMap && styles.suggestionsListPublish,
+                  publishImmersiveMap && styles.suggestionsListOnMap,
+                ]}
+              >
                 <View style={styles.listSectionHeader}>
                   <Text style={styles.sectionHeaderText}>Search Results</Text>
                 </View>
@@ -929,9 +1220,9 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
                 </View>
               </View>
             )}
-          {returnScreen === 'PublishRide' && publishMapVisible && nearbyPlacesList.length > 0 && (
+          {isPublishFlow && publishMapVisible && !publishImmersiveMap && nearbyPlacesList.length > 0 && (
             <View style={styles.nearbySection}>
-              <Text style={styles.nearbySectionTitle}>Tap a place on the map or below</Text>
+              <Text style={styles.nearbySectionTitle}>Center the pin, or pick a nearby place</Text>
               <ScrollView
                 horizontal
                 showsHorizontalScrollIndicator={false}
@@ -951,8 +1242,9 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
               </ScrollView>
             </View>
           )}
-          {returnScreen === 'PublishRide' &&
+          {isPublishFlow &&
             publishMapVisible &&
+            !publishImmersiveMap &&
             mapExploring &&
             nearbyPlacesList.length === 0 &&
             searchQuery.trim().length >= 3 && (
@@ -962,74 +1254,57 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
             </View>
           )}
         </View>
-      )}
 
-      {returnScreen === 'PublishRide' && publishMapVisible ? (
-      <View style={styles.mapWrapper}>
-        {reverseGeocodeLoading && (
-          <View style={styles.mapOverlay}>
-            <ActivityIndicator size="large" color={COLORS.primary} />
-            <Text style={styles.mapOverlayText}>Getting address…</Text>
-          </View>
-        )}
-        {MapView ? (
-          <>
-            <MapView
-              ref={mapRef}
-              style={styles.map}
-              initialRegion={mapInitialRegion}
-              showsUserLocation={!!location}
-              showsMyLocationButton
-              mapType="standard"
-              provider={PROVIDER_DEFAULT}
-              onMapReady={onMapReady}
-              onPress={handleMapPress}
-            >
-              {Marker && selectedCoords && (
-                <Marker
-                  coordinate={selectedCoords}
-                  title={showNameOnSelectedMarker ? (selectedLabel || 'Selected') : undefined}
-                  description={undefined}
-                  pinColor={COLORS.error}
-                />
-              )}
-              {Marker &&
-                nearbyPlacesList.map((p) => {
-                  if (
-                    selectedCoords &&
-                    Math.abs(selectedCoords.latitude - p.latitude) < 1e-5 &&
-                    Math.abs(selectedCoords.longitude - p.longitude) < 1e-5
-                  ) {
-                    return null;
-                  }
-                  return (
-                    <Marker
-                      key={p.placeId}
-                      coordinate={{ latitude: p.latitude, longitude: p.longitude }}
-                      title={p.name}
-                      anchor={{ x: 0.5, y: 0.5 }}
-                      tracksViewChanges={false}
-                      onPress={() => selectNearbyPlace(p)}
-                    >
-                      <View style={styles.nearbyMapDot} />
-                    </Marker>
-                  );
-                })}
-            </MapView>
-            {Platform.OS === 'android' && (
-              <View style={styles.mapHint}>
-                <Text style={styles.mapHintText}>
-                  Map black? Don't use Expo Go. Run: npm run android:build
-                </Text>
-              </View>
-            )}
-          </>
-        ) : (
-          <View style={styles.mapPlaceholder}>
-            <Text style={styles.mapPlaceholderText}>Map unavailable (dev client required)</Text>
-          </View>
-        )}
-      </View>
+      {publishImmersiveMap ? (
+        <View
+          style={[styles.publishBottomChrome, { paddingBottom: Math.max(insets.bottom, 10) + 8 }]}
+          pointerEvents="box-none"
+        >
+          {selectedLabel ? (
+            <View style={styles.publishAddressCard}>
+              <Ionicons name="location-outline" size={20} color={COLORS.primary} style={styles.publishAddressCardIcon} />
+              <Text style={styles.publishAddressCardText} numberOfLines={2}>
+                {selectedLabel}
+              </Text>
+              <TouchableOpacity onPress={clearPublishSelection} style={styles.publishAddressClear} hitSlop={8}>
+                <Text style={styles.changeBtnText}>Clear</Text>
+              </TouchableOpacity>
+            </View>
+          ) : null}
+          {nearbyPlacesList.length > 0 ? (
+            <View style={styles.nearbySectionBottom}>
+              <Text style={styles.nearbySectionTitleBottom}>Nearby</Text>
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                keyboardShouldPersistTaps="handled"
+                contentContainerStyle={styles.nearbyChipsRow}
+              >
+                {nearbyPlacesList.map((p) => (
+                  <TouchableOpacity
+                    key={p.placeId}
+                    style={styles.nearbyChip}
+                    onPress={() => selectNearbyPlace(p)}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.nearbyChipText} numberOfLines={1}>
+                      {p.name}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+          ) : null}
+          {mapExploring && nearbyPlacesList.length === 0 && searchQuery.trim().length >= 3 ? (
+            <View style={styles.exploringRowBottom}>
+              <ActivityIndicator size="small" color={COLORS.primary} />
+              <Text style={styles.exploringText}>Finding area on map…</Text>
+            </View>
+          ) : null}
+          <Text style={styles.publishMapMicroHint}>
+            Drag the map to fine-tune. The address updates after you stop.
+          </Text>
+        </View>
       ) : null}
     </SafeAreaView>
   );
@@ -1043,18 +1318,200 @@ const styles = StyleSheet.create({
   containerSearchRides: {
     backgroundColor: '#fff',
   },
+  containerPublishMap: {
+    backgroundColor: '#e8eef2',
+  },
+  publishMapLayer: {
+    zIndex: 0,
+    backgroundColor: '#dfe8ec',
+  },
+  publishTopChrome: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 40,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingBottom: 8,
+    backgroundColor: 'rgba(255,255,255,0.94)',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: COLORS.borderLight,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.08,
+        shadowRadius: 3,
+      },
+      android: { elevation: 3 },
+    }),
+  },
+  publishTopIconBtn: {
+    paddingVertical: 8,
+    paddingHorizontal: 8,
+  },
+  publishTopTitleBlock: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 8,
+  },
+  publishTopFieldTag: {
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 1.2,
+    color: COLORS.textMuted,
+  },
+  publishTopDonePill: {
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 20,
+    backgroundColor: COLORS.primary,
+  },
+  publishTopDoneText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#fff',
+  },
+  publishBottomChrome: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 25,
+    paddingHorizontal: 14,
+    paddingTop: 10,
+    backgroundColor: 'rgba(255,255,255,0.96)',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: COLORS.borderLight,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: -2 },
+        shadowOpacity: 0.06,
+        shadowRadius: 4,
+      },
+      android: { elevation: 8 },
+    }),
+  },
+  publishAddressCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    marginBottom: 8,
+    backgroundColor: COLORS.background,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  publishAddressCardIcon: {
+    flexShrink: 0,
+  },
+  publishAddressCardText: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: 15,
+    fontWeight: '600',
+    color: COLORS.text,
+    lineHeight: 20,
+  },
+  publishAddressClear: {
+    flexShrink: 0,
+    paddingVertical: 4,
+    paddingLeft: 8,
+  },
+  nearbySectionBottom: {
+    marginBottom: 6,
+  },
+  nearbySectionTitleBottom: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: COLORS.textMuted,
+    marginBottom: 6,
+    letterSpacing: 0.3,
+  },
+  exploringRowBottom: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 6,
+    paddingHorizontal: 2,
+  },
+  publishMapMicroHint: {
+    fontSize: 11,
+    lineHeight: 15,
+    color: COLORS.textMuted,
+    textAlign: 'center',
+    marginTop: 4,
+    paddingHorizontal: 8,
+  },
+  searchSectionOnMap: {
+    position: 'absolute',
+    left: 12,
+    right: 12,
+    zIndex: 35,
+    paddingHorizontal: 0,
+    paddingTop: 0,
+    paddingBottom: 6,
+    backgroundColor: 'transparent',
+    borderBottomWidth: 0,
+    overflow: 'hidden',
+  },
+  searchInputRowOnMap: {
+    backgroundColor: '#fff',
+    borderColor: 'rgba(226,232,240,0.95)',
+    borderRadius: 14,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.12,
+        shadowRadius: 6,
+      },
+      android: { elevation: 4 },
+    }),
+  },
+  suggestionsListOnMap: {
+    maxHeight: SCREEN_HEIGHT * 0.32,
+    marginTop: 8,
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.borderLight,
+    overflow: 'hidden',
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.1,
+        shadowRadius: 5,
+      },
+      android: { elevation: 3 },
+    }),
+  },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: COLORS.border,
     backgroundColor: COLORS.background,
   },
+  headerBackBtn: {
+    paddingVertical: 8,
+    paddingHorizontal: 8,
+  },
+  headerTitleSpacer: {
+    flex: 1,
+  },
   doneBtn: {
     paddingVertical: 8,
-    paddingRight: 16,
+    paddingHorizontal: 12,
   },
   doneText: {
     fontSize: 17,
@@ -1098,19 +1555,22 @@ const styles = StyleSheet.create({
   searchSectionFlex: {
     flex: 1,
   },
-  chooseMapRow: {
+  publishMapHintBanner: {
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingVertical: 14,
-    paddingHorizontal: 4,
-    marginTop: 4,
+    alignItems: 'flex-start',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: 'rgba(41, 190, 139, 0.1)',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: COLORS.borderLight,
   },
-  chooseMapText: {
+  publishMapHintBannerText: {
     flex: 1,
-    fontSize: 16,
-    fontWeight: '600',
-    color: COLORS.primary,
+    fontSize: 13,
+    lineHeight: 18,
+    color: COLORS.textSecondary,
+    fontWeight: '500',
   },
   searchInputRow: {
     flexDirection: 'row',
@@ -1300,7 +1760,28 @@ const styles = StyleSheet.create({
   mapWrapper: {
     flex: 1,
     width: SCREEN_WIDTH,
-    minHeight: 300,
+    minHeight: 280,
+    position: 'relative',
+    flexDirection: 'column',
+  },
+  mapArea: {
+    flex: 1,
+    position: 'relative',
+    minHeight: 220,
+  },
+  centerPinOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  /** Pin tip ~at map center: icon sits above center. */
+  centerPinIcon: {
+    marginBottom: 22,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.28,
+    shadowRadius: 3,
+    elevation: 5,
   },
   map: {
     width: '100%',
@@ -1321,7 +1802,15 @@ const styles = StyleSheet.create({
   mapOverlayText: {
     marginTop: 8,
     fontSize: 14,
+    fontWeight: '600',
     color: COLORS.textSecondary,
+  },
+  mapOverlaySubtext: {
+    marginTop: 4,
+    fontSize: 12,
+    color: COLORS.textMuted,
+    textAlign: 'center',
+    paddingHorizontal: 24,
   },
   mapPlaceholder: {
     flex: 1,

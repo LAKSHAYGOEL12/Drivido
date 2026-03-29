@@ -12,12 +12,33 @@ export function threadKey(rideId: string, userId1: string, userId2: string): str
   return [...a].sort().join('|');
 }
 
+/** Compare ride ids from API / storage (string vs occasional number in JSON). */
+export function normalizeChatRideId(rideId: unknown): string {
+  if (rideId == null) return '';
+  return String(rideId).trim();
+}
+
+/** Local-only participant id; must match across inbox, chat, and merge logic. */
+export function nameParticipantId(displayName: string | undefined): string {
+  return `name-${(displayName ?? '').trim() || 'User'}`;
+}
+
+export function resolveOtherParticipantId(
+  otherUserId: string | undefined,
+  otherUserName: string | undefined
+): string {
+  const oid = (otherUserId ?? '').trim();
+  if (oid) return oid;
+  return nameParticipantId(otherUserName);
+}
+
 export interface StoredMessage {
   id: string;
   text: string;
   sentAt: number;
   senderUserId: string;
-  status: 'sending' | 'sent' | 'delivered' | 'read';
+  /** `pending` = not yet confirmed; `sent` = on server / delivered to thread. */
+  status: 'pending' | 'sent';
 }
 
 export interface StoredThread {

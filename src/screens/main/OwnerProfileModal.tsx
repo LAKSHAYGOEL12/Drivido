@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import UserAvatar from '../../components/common/UserAvatar';
 import { Ionicons } from '@expo/vector-icons';
@@ -38,6 +38,9 @@ export default function OwnerProfileModal(): React.JSX.Element {
   const [totalRatings, setTotalRatings] = useState(0);
   /** Signed-in users without ride-embedded stats: show "—" instead of a misleading 0. */
   const [ratingKnown, setRatingKnown] = useState(false);
+  const ratingsFetchSeqRef = useRef(0);
+  /** Only prime UI from ride params when the snapshot is new — not on every blur→focus (same params would re-apply stale ride stats). */
+  const lastEmbeddedKeyRef = useRef<string>('');
 
   useFocusEffect(
     useCallback(() => {
@@ -94,6 +97,7 @@ export default function OwnerProfileModal(): React.JSX.Element {
       }
 
       let cancelled = false;
+      const runId = ++ratingsFetchSeqRef.current;
       setLoading(true);
 
       const applyPublisherParams = (): boolean => {
@@ -110,49 +114,45 @@ export default function OwnerProfileModal(): React.JSX.Element {
         return true;
       };
 
+      /**
+       * Ride detail passes publisher avg/count for a fast first paint. Re-applying those params on every
+       * focus (e.g. back from ratings) resets the UI to stale ride snapshot numbers before GET /ratings/:id
+       * finishes — only apply when this exact snapshot is new (first open or new params from navigation).
+       */
+      const embeddedKey = `${targetUserId}|${paramPublisherAvg ?? ''}|${paramPublisherCount ?? ''}`;
+      const isNewEmbeddedSnapshot = embeddedKey !== lastEmbeddedKeyRef.current;
+      if (isNewEmbeddedSnapshot) {
+        lastEmbeddedKeyRef.current = embeddedKey;
+      }
+      const hadEmbeddedFromRide = isNewEmbeddedSnapshot && !isGuest && applyPublisherParams();
+      if (hadEmbeddedFromRide) {
+        setLoading(false);
+      }
+
       const fetchSummary = async () => {
         try {
           const summary = await getUserRatingsSummary(targetUserId);
-          if (cancelled) return;
+          if (cancelled || runId !== ratingsFetchSeqRef.current) return;
           setAvgRating(summary.avgRating ?? 0);
           setTotalRatings(summary.totalRatings ?? 0);
           setRatingKnown(true);
         } catch {
-          if (cancelled) return;
-          setAvgRating(0);
-          setTotalRatings(0);
+          if (cancelled || runId !== ratingsFetchSeqRef.current) return;
+          if (!hadEmbeddedFromRide) {
+            setAvgRating(0);
+            setTotalRatings(0);
+          }
           setRatingKnown(true);
         } finally {
-          if (!cancelled) setLoading(false);
+          if (!cancelled && runId === ratingsFetchSeqRef.current) setLoading(false);
         }
       };
-
-      if (!isGuest) {
-        if (applyPublisherParams()) {
-          setLoading(false);
-          return () => {
-            cancelled = true;
-          };
-        }
-        if (isSelf) {
-          void fetchSummary();
-          return () => {
-            cancelled = true;
-          };
-        }
-        setAvgRating(0);
-        setTotalRatings(0);
-        setRatingKnown(false);
-        setLoading(false);
-        return () => {
-          cancelled = true;
-        };
-      }
 
       void fetchSummary();
 
       return () => {
         cancelled = true;
+        ratingsFetchSeqRef.current += 1;
       };
     }, [targetUserId, isGuest, isSelf, paramPublisherAvg, paramPublisherCount])
   );

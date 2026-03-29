@@ -373,7 +373,7 @@ export async function nearbyPlaces(
   }
 }
 
-function decodePolyline(encoded: string): { latitude: number; longitude: number }[] {
+function decodePolylineInternal(encoded: string): { latitude: number; longitude: number }[] {
   const points: { latitude: number; longitude: number }[] = [];
   let index = 0;
   let lat = 0;
@@ -411,21 +411,24 @@ function decodePolyline(encoded: string): { latitude: number; longitude: number 
 }
 
 /**
- * Google Directions alternatives for pickup -> destination.
+ * Google Directions for pickup -> destination.
  * Requires Directions API enabled on same Maps key.
+ * @param options.alternatives - When false, returns the default single route (no `alternatives=true`).
  */
 export async function getDirectionsAlternatives(
   origin: PlaceCoords,
-  destination: PlaceCoords
+  destination: PlaceCoords,
+  options?: { alternatives?: boolean }
 ): Promise<DirectionAlternative[]> {
   if (!API_KEY) return [];
+  const useAlternatives = options?.alternatives !== false;
   try {
     const url =
       `https://maps.googleapis.com/maps/api/directions/json` +
       `?origin=${origin.latitude},${origin.longitude}` +
       `&destination=${destination.latitude},${destination.longitude}` +
       `&mode=driving` +
-      `&alternatives=true` +
+      `&alternatives=${useAlternatives ? 'true' : 'false'}` +
       `&departure_time=now` +
       `&key=${API_KEY}`;
     const res = await fetch(url);
@@ -437,8 +440,9 @@ export async function getDirectionsAlternatives(
         const leg = r?.legs?.[0];
         const poly = r?.overview_polyline?.points;
         if (!leg || !poly) return null;
+        const enc = String(poly);
         return {
-          overviewPolyline: decodePolyline(String(poly)),
+          overviewPolyline: decodePolylineInternal(enc),
           distanceMeters: Number(leg?.distance?.value ?? 0),
           durationSeconds: Number(leg?.duration?.value ?? 0),
           summary: String(r?.summary ?? ''),

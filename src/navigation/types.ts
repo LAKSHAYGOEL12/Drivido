@@ -62,6 +62,15 @@ export type SearchStackParamList = {
     toLongitude?: number;
   };
   RideDetail: { ride: RideListItem; passengerSearch?: PassengerSearchParams };
+  /** Map + directions for the publisher’s pickup → drop-off (from stored coordinates). */
+  PublishedRideRouteMap: {
+    pickupLabel: string;
+    destinationLabel: string;
+    pickupLatitude: number;
+    pickupLongitude: number;
+    destinationLatitude: number;
+    destinationLongitude: number;
+  };
   /** Open another user's profile from ride details without switching bottom tab. */
   OwnerProfileModal: {
     userId: string;
@@ -159,6 +168,14 @@ export type RidesStackParamList = {
     selectedFrom?: string;
     selectedTo?: string;
   };
+  PublishedRideRouteMap: {
+    pickupLabel: string;
+    destinationLabel: string;
+    pickupLatitude: number;
+    pickupLongitude: number;
+    destinationLatitude: number;
+    destinationLongitude: number;
+  };
   /** Open another user's profile from ride details without switching bottom tab. */
   OwnerProfileModal: {
     userId: string;
@@ -191,12 +208,22 @@ export type RidesStackParamList = {
 };
 
 /**
- * Inbox tab: stack (InboxList → Chat). Back from Chat returns to InboxList.
+ * Inbox tab: InboxList → Chat → RideDetail, plus routes RideDetail may push (same as Rides / Search stacks).
  */
 export type InboxStackParamList = {
   InboxList: undefined;
   Chat: { ride: RideListItem; otherUserName: string; otherUserId?: string; otherUserAvatarUrl?: string };
-};
+  /** Same screen as other tabs — open the ride this chat belongs to (e.g. from inbox-only stack). */
+  RideDetail: { ride: RideListItem; passengerSearch?: PassengerSearchParams };
+} & Pick<
+  RidesStackParamList,
+  | 'PublishedRideRouteMap'
+  | 'LocationPicker'
+  | 'EditRide'
+  | 'BookPassengerDetail'
+  | 'OwnerProfileModal'
+  | 'OwnerRatingsModal'
+>;
 
 /**
  * Profile tab: stack (ProfileHome -> Ratings)

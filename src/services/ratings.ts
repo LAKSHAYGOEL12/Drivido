@@ -45,32 +45,43 @@ function extractRatingsArray(raw: unknown): unknown[] {
   return [];
 }
 
+function parseRatedFlag(obj: Record<string, unknown> | null | undefined): boolean | undefined {
+  if (!obj) return undefined;
+  const keys = ['rated', 'hasRated', 'has_rated', 'alreadyRated', 'already_rated', 'exists'] as const;
+  for (const k of keys) {
+    const v = obj[k];
+    if (typeof v === 'boolean') return v;
+  }
+  return undefined;
+}
+
 export async function hasCurrentUserRatedRide(
   rideId: string,
   fromUserId: string,
   toUserId?: string
 ): Promise<boolean> {
   // Preferred API contract: GET /ratings/check?rideId&fromUserId[&toUserId] -> { rated: boolean }
-  // Fallback parsing keeps compatibility if backend returns wrapped data.
+  // Pass `toUserId` whenever known (passenger→driver or owner→passenger); backends often require it for an accurate row match.
   try {
     const qs =
       `rideId=${encodeURIComponent(rideId)}` +
       `&fromUserId=${encodeURIComponent(fromUserId)}` +
       (toUserId ? `&toUserId=${encodeURIComponent(toUserId)}` : '');
-    const res = await api.get<unknown>(`${API.endpoints.ratings.check}?${qs}`);
+    const url = `${API.endpoints.ratings.check}?${qs}&_=${encodeURIComponent(String(Date.now()))}`;
+    const res = await api.get<unknown>(url, {
+      headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' },
+    });
 
     if (res && typeof res === 'object') {
       const obj = res as Record<string, unknown>;
-      if (typeof obj.rated === 'boolean') return obj.rated;
-      if (
-        obj.data &&
-        typeof obj.data === 'object' &&
-        typeof (obj.data as Record<string, unknown>).rated === 'boolean'
-      ) {
-        return Boolean((obj.data as Record<string, unknown>).rated);
-      }
+      const top = parseRatedFlag(obj);
+      if (top !== undefined) return top;
+      const data = obj.data && typeof obj.data === 'object' ? (obj.data as Record<string, unknown>) : null;
+      const nested = parseRatedFlag(data);
+      if (nested !== undefined) return nested;
     }
 
+    // Last resort: some backends return only a ratings array for this query.
     return extractRatingsArray(res).length > 0;
   } catch {
     return false;
@@ -99,6 +110,38 @@ function asString(value: unknown): string {
   } catch {
     return '';
   }
+}
+
+/** Stable key for deduping rating rows from mixed API shapes. */
+function ratingRecordKey(item: unknown): string {
+  const obj = asObject(item) ?? {};
+  const id = asString(obj._id ?? obj.id).trim();
+  if (id) return id;
+  const fromUserObj = asObject(obj.fromUser) ?? asObject(obj.from) ?? {};
+  const from = asString(
+    obj.fromUserId ?? fromUserObj._id ?? fromUserObj.id ?? (fromUserObj as Record<string, unknown>)?.userId
+  ).trim();
+  const created = asString(obj.createdAt ?? obj.updatedAt ?? obj.date ?? '');
+  const r = asNumber(
+    obj.rating ?? obj.stars ?? obj.starCount ?? obj.score ?? obj.value ?? obj.ratingValue ?? obj.rating_value
+  );
+  return `${from}|${created}|${r}`;
+}
+
+/**
+ * Dedupe rows from multiple API arrays by `ratingRecordKey`.
+ * `getUserRatingsSummary` passes **snapshot first**, then **full list** (`recentItems`, `ratingItems`).
+ * Iteration order: snapshot rows are inserted first; full-list rows overwrite the same key in the Map,
+ * so stale snapshot duplicates lose to the updated full list.
+ */
+function mergeRatingSourceLists(...lists: unknown[][]): unknown[] {
+  const merged = new Map<string, unknown>();
+  for (const list of lists) {
+    for (const item of list) {
+      merged.set(ratingRecordKey(item), item);
+    }
+  }
+  return [...merged.values()];
 }
 
 function avatarWhenRecordMatchesUser(record: Record<string, unknown> | null, expectedUserId: string): string | undefined {
@@ -163,7 +206,12 @@ async function probePublicUserAvatar(userId: string): Promise<string | undefined
 }
 
 export async function getUserRatingsSummary(userId: string): Promise<UserRatingsSummary> {
-  const raw = await api.get<unknown>(`${API.endpoints.ratings.list}/${encodeURIComponent(userId)}`);
+  /** Avoid stale responses from HTTP caches / intermediaries after a new rating is submitted. */
+  const path = `${API.endpoints.ratings.list}/${encodeURIComponent(userId)}`;
+  const url = `${path}?_=${encodeURIComponent(String(Date.now()))}`;
+  const raw = await api.get<unknown>(url, {
+    headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' },
+  });
   const root = asObject(raw);
   const data = asObject(root?.data) ?? root ?? {};
   const userObj = asObject(data.user) ?? {};
@@ -184,20 +232,26 @@ export async function getUserRatingsSummary(userId: string): Promise<UserRatings
       )
     )
   );
+  /**
+   * Explicit **snapshot** fields only (`recentReviews` / `recent_reviews` on `data` and nested `user`).
+   * Do **not** chain `data.reviews` or `userObj.reviews` here — those belong on the full-list path below.
+   * Otherwise a stale `recentReviews` plus a fresh `reviews` array could bind the wrong branch and hide new rows.
+   */
   const recentReviewsRaw =
-    data.recentReviews ??
-    data.recent_reviews ??
-    data.reviews ??
-    userObj.recentReviews ??
-    userObj.recent_reviews ??
-    userObj.reviews;
+    data.recentReviews ?? data.recent_reviews ?? userObj.recentReviews ?? userObj.recent_reviews;
+  /**
+   * **Full-list** fields: each side’s `ratings` / `ratingList` / `rating_list` first, then that side’s `reviews`
+   * (`data.reviews` / `userObj.reviews` are not used in `recentReviewsRaw` above).
+   */
   const ratingsRaw =
     data.ratings ??
     data.ratingList ??
     data.rating_list ??
+    data.reviews ??
     userObj.ratings ??
     userObj.ratingList ??
-    userObj.rating_list;
+    userObj.rating_list ??
+    userObj.reviews;
 
   const extractArray = (value: unknown, depth = 3): unknown[] => {
     if (Array.isArray(value)) return value;
@@ -225,7 +279,8 @@ export async function getUserRatingsSummary(userId: string): Promise<UserRatings
   const recentItems = extractArray(recentReviewsRaw);
   const ratingItems = extractArray(ratingsRaw);
 
-  const safeList = recentItems.length > 0 ? recentItems : ratingItems;
+  // Snapshot first, full list second — see `mergeRatingSourceLists`.
+  const safeList = mergeRatingSourceLists(recentItems, ratingItems);
 
   // (dev logs removed)
 
@@ -311,7 +366,14 @@ export async function getUserRatingsSummary(userId: string): Promise<UserRatings
 
   // IMPORTANT: keep rating entries even when review text is empty.
   // The UI's star breakdown counts depend on rating values, not review text.
-  const reviews: UserRatingReview[] = mappedAll;
+  const reviews: UserRatingReview[] = [...mappedAll].sort((a, b) => {
+    const ta = new Date(a.createdAt).getTime();
+    const tb = new Date(b.createdAt).getTime();
+    if (Number.isNaN(ta) && Number.isNaN(tb)) return 0;
+    if (Number.isNaN(ta)) return 1;
+    if (Number.isNaN(tb)) return -1;
+    return tb - ta;
+  });
 
   // If backend avgRating parsing fails (we fall back to 0) but we still have
   // ratings in the items, compute avg from items so star counts match breakdown.

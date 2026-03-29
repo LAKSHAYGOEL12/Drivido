@@ -107,6 +107,7 @@ export default function BottomTabs(): React.JSX.Element {
             name === 'RideDetail' ||
             name === 'RideDetailScreen' ||
             name === 'LocationPicker' ||
+            name === 'PublishedRideRouteMap' ||
             name === 'BookPassengerDetail' ||
             name === 'Chat' ||
             name === 'OwnerProfileModal' ||
@@ -179,6 +180,7 @@ export default function BottomTabs(): React.JSX.Element {
             name === 'RideDetail' ||
             name === 'RideDetailScreen' ||
             name === 'BookPassengerDetail' ||
+            name === 'PublishedRideRouteMap' ||
             name === 'Chat' ||
             name === 'OwnerProfileModal' ||
             name === 'OwnerRatingsModal';
@@ -196,17 +198,65 @@ export default function BottomTabs(): React.JSX.Element {
       <Tab.Screen
         name="Inbox"
         component={InboxStack}
-        listeners={({ navigation }) => ({
+        listeners={({ navigation, route }) => ({
           tabPress: (e) => {
             if (!isAuthenticated) {
               e.preventDefault();
               navigateToGuestLogin(navigation, { reason: 'tab' });
+              return;
             }
+            /**
+             * Tapping the Inbox tab must open the **all chats** screen (`InboxList`), not a stale Chat / RideDetail.
+             * `navigate(..., merge: false)` can still flash the old stack — reset nested state like Profile tab.
+             */
+            const currentRoute = getFocusedRouteNameFromRoute(route) ?? 'InboxList';
+            if (currentRoute === 'InboxList') {
+              return;
+            }
+            e.preventDefault();
+            const mainTabs = findMainTabNavigator(navigation);
+            if (!mainTabs?.dispatch || !mainTabs?.getState) {
+              navigation.navigate({
+                name: 'Inbox',
+                params: { screen: 'InboxList' as const },
+                merge: false,
+              } as never);
+              return;
+            }
+            const tabState = mainTabs.getState();
+            const routes = (tabState?.routes ?? []) as any[];
+            const inboxIndex = routes.findIndex((r: { name?: string }) => r?.name === 'Inbox');
+            if (inboxIndex < 0) return;
+            const nextRoutes = routes.map((r: any) => {
+              if (r?.name !== 'Inbox') return r;
+              return {
+                ...r,
+                state: {
+                  routes: [{ name: 'InboxList' as const }],
+                  index: 0,
+                },
+              };
+            });
+            mainTabs.dispatch(
+              CommonActions.reset({
+                index: inboxIndex,
+                routes: nextRoutes,
+              } as never)
+            );
           },
         })}
         options={({ route }) => {
           const name = getFocusedRouteNameFromRoute(route) ?? 'InboxList';
-          const hideTabs = name === 'RideDetail' || name === 'Chat';
+          const hideTabs =
+            name === 'RideDetail' ||
+            name === 'RideDetailScreen' ||
+            name === 'BookPassengerDetail' ||
+            name === 'PublishedRideRouteMap' ||
+            name === 'LocationPicker' ||
+            name === 'EditRide' ||
+            name === 'Chat' ||
+            name === 'OwnerProfileModal' ||
+            name === 'OwnerRatingsModal';
           return {
             headerShown: false,
             title: 'Inbox',
