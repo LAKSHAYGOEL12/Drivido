@@ -255,7 +255,6 @@ export default function RideListCard({
               backgroundColor={COLORS.primary}
               fallbackTextColor={COLORS.white}
             />
-            <View style={styles.statusDot} />
           </View>
         ) : null}
         <View style={styles.driverText}>
@@ -513,17 +512,6 @@ const styles = StyleSheet.create({
   avatarWrap: {
     position: 'relative',
     marginRight: 8,
-  },
-  statusDot: {
-    position: 'absolute',
-    right: -1,
-    bottom: -1,
-    width: 9,
-    height: 9,
-    borderRadius: 5,
-    backgroundColor: COLORS.warning,
-    borderWidth: 2,
-    borderColor: COLORS.background,
   },
   driverText: {
     flex: 1,

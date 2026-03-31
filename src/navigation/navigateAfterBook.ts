@@ -17,6 +17,64 @@ function findMainTabNavigator(navigation: NavigationProp<ParamListBase>): Naviga
   return null;
 }
 
+function mainTabRoutesResetToSearchRides(token: number) {
+  return [
+    {
+      name: 'SearchStack' as const,
+      state: {
+        routes: [{ name: 'SearchRides' as const, params: { _tabResetToken: token } }],
+        index: 0,
+      },
+    },
+    {
+      name: 'PublishStack' as const,
+      state: { routes: [{ name: 'PublishRide' as const }], index: 0 },
+    },
+    {
+      name: 'YourRides' as const,
+      state: { routes: [{ name: 'YourRidesList' as const }], index: 0 },
+    },
+    {
+      name: 'Inbox' as const,
+      state: { routes: [{ name: 'InboxList' as const }], index: 0 },
+    },
+    { name: 'Profile' as const },
+  ];
+}
+
+/**
+ * After logout: land on Search home (not Profile / deep stacks). Resets root stack to `Main` with fresh tab state.
+ */
+export function resetMainTabsToSearchFromRoot(): void {
+  const token = Date.now();
+  let tries = 0;
+  const maxTries = 40;
+
+  const run = () => {
+    tries += 1;
+    if (!rootNavigationRef.isReady()) {
+      if (tries < maxTries) setTimeout(run, 50);
+      return;
+    }
+    rootNavigationRef.dispatch(
+      CommonActions.reset({
+        index: 0,
+        routes: [
+          {
+            name: 'Main',
+            state: {
+              routes: mainTabRoutesResetToSearchRides(token),
+              index: 0,
+            },
+          },
+        ],
+      })
+    );
+  };
+
+  run();
+}
+
 function buildResetToYourRidesAction(afterBookRefreshToken?: number) {
   const token = afterBookRefreshToken ?? Date.now();
   const yourRidesListParams =

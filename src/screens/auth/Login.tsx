@@ -90,15 +90,40 @@ export default function Login(): React.JSX.Element {
     setErrors({});
     try {
       await signInWithEmailPassword(phoneOrEmail.trim().toLowerCase(), password);
-      for (let i = 0; i < 200; i++) {
-        await new Promise((r) => setTimeout(r, 50));
-        if (!authGateRef.current.isAwaitingBackendSession) break;
+      const deadline = Date.now() + 20000;
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 80));
+        const firebaseUser = getFirebaseAuth()?.currentUser;
+        const { needsEmailVerification: nev, isAuthenticated: authed } = authGateRef.current;
+        if (firebaseUser && hasAuthAccessToken() && !nev) {
+          setOverlaySuccess(true);
+          setTimeout(() => {
+            void requestForegroundLocationAfterAuth();
+            navigation.goBack();
+            setSigningIn(false);
+            setOverlaySuccess(false);
+          }, 450);
+          return;
+        }
+        if (nev) {
+          setSigningIn(false);
+          return;
+        }
+        if (authed && !nev) {
+          setOverlaySuccess(true);
+          setTimeout(() => {
+            void requestForegroundLocationAfterAuth();
+            navigation.goBack();
+            setSigningIn(false);
+            setOverlaySuccess(false);
+          }, 450);
+          return;
+        }
       }
-      // Refs lag one frame behind AuthContext — avoid false "sign in failed" when session is already OK.
-      await new Promise((r) => setTimeout(r, 120));
-      const { needsEmailVerification: nev, isAuthenticated: authed } = authGateRef.current;
-      const firebaseUser = getFirebaseAuth()?.currentUser;
-      if (firebaseUser && hasAuthAccessToken() && !nev) {
+      await new Promise((r) => setTimeout(r, 150));
+      const { needsEmailVerification: nevFinal, isAuthenticated: authedFinal } = authGateRef.current;
+      const firebaseUserFinal = getFirebaseAuth()?.currentUser;
+      if (firebaseUserFinal && hasAuthAccessToken() && !nevFinal) {
         setOverlaySuccess(true);
         setTimeout(() => {
           void requestForegroundLocationAfterAuth();
@@ -108,11 +133,11 @@ export default function Login(): React.JSX.Element {
         }, 450);
         return;
       }
-      if (nev) {
+      if (nevFinal) {
         setSigningIn(false);
         return;
       }
-      if (authed) {
+      if (authedFinal) {
         setOverlaySuccess(true);
         setTimeout(() => {
           void requestForegroundLocationAfterAuth();

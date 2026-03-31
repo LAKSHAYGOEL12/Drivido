@@ -129,6 +129,7 @@ export default function LoginBottomSheet({
   const finishGuestSuccess = useCallback(() => {
     setSigningIn(true);
     setOverlaySuccess(true);
+    const SUCCESS_MS = 420;
     setTimeout(() => {
       void requestForegroundLocationAfterAuth();
       setSigningIn(false);
@@ -137,8 +138,11 @@ export default function LoginBottomSheet({
       setPassword('');
       setErrors({});
       onClose();
-      onLoggedIn?.();
-    }, 700);
+      // Let the modal fade/slide finish before booking alert / parent work — avoids stacked flashes.
+      InteractionManager.runAfterInteractions(() => {
+        requestAnimationFrame(() => onLoggedIn?.());
+      });
+    }, SUCCESS_MS);
   }, [onClose, onLoggedIn]);
 
   const isEmail = validation.email(phoneOrEmail);
@@ -165,23 +169,43 @@ export default function LoginBottomSheet({
     setErrors({});
     try {
       await signInWithEmailPassword(phoneOrEmail.trim().toLowerCase(), password);
-      for (let i = 0; i < 200; i++) {
-        await new Promise((r) => setTimeout(r, 50));
-        if (!authGateRef.current.isAwaitingBackendSession) break;
+      /**
+       * Wait for POST /auth/firebase + JWT (onAuthStateChanged). Do **not** break early when
+       * `!isAwaitingBackendSession` — that flag can still be false for the first ticks before the
+       * listener runs, which caused false "Sign in failed" while the user was actually signing in.
+       */
+      const deadline = Date.now() + 20000;
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 80));
+        const firebaseUser = getFirebaseAuth()?.currentUser;
+        const { needsEmailVerification: nev, isAuthenticated: authed } = authGateRef.current;
+        if (firebaseUser && hasAuthAccessToken() && !nev) {
+          finishGuestSuccess();
+          return;
+        }
+        if (nev) {
+          setSigningIn(false);
+          onClose();
+          return;
+        }
+        if (authed && !nev) {
+          finishGuestSuccess();
+          return;
+        }
       }
-      await new Promise((r) => setTimeout(r, 120));
-      const { needsEmailVerification: nev, isAuthenticated: authed } = authGateRef.current;
-      const firebaseUser = getFirebaseAuth()?.currentUser;
-      if (firebaseUser && hasAuthAccessToken() && !nev) {
+      await new Promise((r) => setTimeout(r, 150));
+      const firebaseUserFinal = getFirebaseAuth()?.currentUser;
+      const { needsEmailVerification: nevFinal, isAuthenticated: authedFinal } = authGateRef.current;
+      if (firebaseUserFinal && hasAuthAccessToken() && !nevFinal) {
         finishGuestSuccess();
         return;
       }
-      if (nev) {
+      if (nevFinal) {
         setSigningIn(false);
         onClose();
         return;
       }
-      if (authed) {
+      if (authedFinal) {
         finishGuestSuccess();
         return;
       }

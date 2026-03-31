@@ -74,6 +74,17 @@ const initialState: AuthState = {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
+/**
+ * Backend Mongo `user.id`, cleared when logged out. Updated **synchronously** whenever session
+ * user is set (before React re-renders). Used by guest-login callbacks that may run before
+ * screen refs/context receive the new user — e.g. when a nav overlay would otherwise unmount.
+ */
+export const authBackendUserIdRef = { current: '' as string };
+
+function syncAuthBackendUserIdRef(user: User | null): void {
+  authBackendUserIdRef.current = user ? String(user.id ?? '').trim() : '';
+}
+
 function strField(v: unknown): string {
   if (v == null) return '';
   if (typeof v === 'string') return v.trim();
@@ -139,6 +150,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
       clearAuth();
       clearStoredTokens();
       clearLocationDeniedFlags();
+      syncAuthBackendUserIdRef(null);
       setState({
         user: null,
         token: null,
@@ -158,6 +170,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
     if (refreshTokenValue?.trim()) {
       void setStoredTokens(accessToken, refreshTokenValue.trim());
     }
+    syncAuthBackendUserIdRef(user);
     setState({
       user,
       token: accessToken,
@@ -223,6 +236,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
       setAuthToken(exchanged.token);
       setRefreshToken(exchanged.refreshToken);
       const user = buildSessionUser(fbUser, exchanged.user);
+      syncAuthBackendUserIdRef(user);
       setState({
         user,
         token: exchanged.token,
@@ -258,6 +272,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
           '[Auth] Firebase env missing — set EXPO_PUBLIC_FIREBASE_* in .env (see .env.example).'
         );
       }
+      syncAuthBackendUserIdRef(null);
       setState((s) => ({
         ...s,
         isLoading: false,
@@ -273,6 +288,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
 
     const auth = getFirebaseAuth();
     if (!auth) {
+      syncAuthBackendUserIdRef(null);
       setState((s) => ({
         ...s,
         isLoading: false,
@@ -288,6 +304,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
       if (!fbUser) {
         clearAuth();
         clearRideDetailCache();
+        syncAuthBackendUserIdRef(null);
         setState({
           user: null,
           token: null,
@@ -311,6 +328,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
         setRefreshToken(exchanged.refreshToken);
 
         const user = buildSessionUser(fbUser, exchanged.user);
+        syncAuthBackendUserIdRef(user);
         setState({
           user,
           token: exchanged.token,
@@ -327,6 +345,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
           }
           clearAuth();
           await clearStoredTokens();
+          syncAuthBackendUserIdRef(null);
           setState({
             user: null,
             token: null,
@@ -348,6 +367,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
         clearAuth();
         await clearStoredTokens();
         await firebaseSignOutSafe();
+        syncAuthBackendUserIdRef(null);
         setState({
           user: null,
           token: null,

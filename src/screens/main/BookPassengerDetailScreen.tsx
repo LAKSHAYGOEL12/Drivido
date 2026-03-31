@@ -78,6 +78,15 @@ export default function BookPassengerDetailScreen(): React.JSX.Element {
   const passengerName = bookingPassengerDisplayName(booking);
   const passengerId = booking.userId ?? '';
   const { pickup, drop } = bookingPickupDrop(ride, booking);
+  /** Owner ride detail uses published stops; match that on confirmed passenger detail. */
+  const publishedPickupStr = useMemo(
+    () => ride.pickupLocationName?.trim() || ride.from?.trim() || 'Pickup',
+    [ride.pickupLocationName, ride.from]
+  );
+  const publishedDestStr = useMemo(
+    () => ride.destinationLocationName?.trim() || ride.to?.trim() || 'Destination',
+    [ride.destinationLocationName, ride.to]
+  );
   const priceParts = formatRidePriceParts(ride);
   const isRequestDetail = Boolean(requestMode) || String(booking.status ?? '').trim().toLowerCase() === 'pending';
   const [requestScreenLoading, setRequestScreenLoading] = useState(isRequestDetail);
@@ -245,7 +254,7 @@ export default function BookPassengerDetailScreen(): React.JSX.Element {
             <View style={styles.requestRouteCard}>
               <Text style={styles.requestRouteLabel}>PICKUP</Text>
               <Text style={styles.requestRouteValue}>{pickup}</Text>
-              <Text style={[styles.requestRouteLabel, styles.requestRouteLabelGap]}>DESTINATION</Text>
+              <Text style={[styles.requestRouteLabel, styles.requestRouteLabelGap]}>DROP-OFF</Text>
               <Text style={styles.requestRouteValue}>{drop}</Text>
             </View>
 
@@ -337,14 +346,18 @@ export default function BookPassengerDetailScreen(): React.JSX.Element {
 
         <View style={styles.divider} />
 
+        <View style={styles.requestRouteCard}>
+          <Text style={styles.requestRouteLabel}>PICKUP</Text>
+          <Text style={styles.requestRouteValue}>{publishedPickupStr}</Text>
+          <Text style={[styles.requestRouteLabel, styles.requestRouteLabelGap]}>DROP-OFF</Text>
+          <Text style={styles.requestRouteValue}>{publishedDestStr}</Text>
+        </View>
+
         <View style={styles.routeCard}>
           <View style={styles.routeCardInner}>
             <View style={styles.routeCardLeft}>
-              <Text style={styles.routeSeatBold}>
+              <Text style={[styles.routeSeatBold, styles.routeSeatBoldNoPath]}>
                 {booking.seats} seat{booking.seats !== 1 ? 's' : ''}
-              </Text>
-              <Text style={styles.routePathText}>
-                {pickup} → {drop}
               </Text>
             </View>
             <View style={styles.routeCardRight}>
@@ -630,9 +643,9 @@ const styles = StyleSheet.create({
   routeCardInner: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 18,
+    paddingVertical: 14,
     paddingHorizontal: 16,
-    minHeight: 88,
+    minHeight: 64,
   },
   routeCardLeft: {
     flex: 1,
@@ -645,11 +658,8 @@ const styles = StyleSheet.create({
     color: COLORS.text,
     marginBottom: 10,
   },
-  routePathText: {
-    fontSize: 15,
-    fontWeight: '400',
-    color: COLORS.textSecondary,
-    lineHeight: 22,
+  routeSeatBoldNoPath: {
+    marginBottom: 0,
   },
   routeCardRight: {
     flexDirection: 'row',

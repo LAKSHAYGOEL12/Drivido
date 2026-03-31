@@ -62,6 +62,38 @@ function findMainTabNavigator(navigation: any) {
   return null;
 }
 
+/** Nested screen name at top of Inbox stack (InboxList, Chat, RideDetail, …). */
+function getInboxStackFocusedName(navigation: { getState?: () => { routes?: { name?: string }[]; index?: number } }): string | undefined {
+  const st = navigation?.getState?.();
+  const routes = st?.routes;
+  if (!routes?.length) return undefined;
+  const idx = typeof st?.index === 'number' ? st.index : routes.length - 1;
+  return routes[idx]?.name;
+}
+
+function resetInboxTabToInboxList(mainTabs: { dispatch: (a: unknown) => void; getState: () => { routes?: any[]; index?: number } }): void {
+  const tabState = mainTabs.getState();
+  const routes = (tabState?.routes ?? []) as any[];
+  const inboxIndex = routes.findIndex((r: { name?: string }) => r?.name === 'Inbox');
+  if (inboxIndex < 0) return;
+  const nextRoutes = routes.map((r: any) => {
+    if (r?.name !== 'Inbox') return r;
+    return {
+      ...r,
+      state: {
+        routes: [{ name: 'InboxList' as const }],
+        index: 0,
+      },
+    };
+  });
+  mainTabs.dispatch(
+    CommonActions.reset({
+      index: inboxIndex,
+      routes: nextRoutes,
+    } as never)
+  );
+}
+
 export default function BottomTabs(): React.JSX.Element {
   const { hasUnread } = useInbox();
   const { user, isAuthenticated } = useAuth();
@@ -198,19 +230,29 @@ export default function BottomTabs(): React.JSX.Element {
       <Tab.Screen
         name="Inbox"
         component={InboxStack}
-        listeners={({ navigation, route }) => ({
+        listeners={({ navigation }) => ({
+          /**
+           * When switching from another tab (e.g. Search) back to Inbox, `route` can be stale:
+           * `getFocusedRouteNameFromRoute(route)` may wrongly default to InboxList while Chat is still
+           * on the nested stack — so we read the **live** Inbox stack via `navigation.getState()`.
+           */
+          focus: () => {
+            if (!isAuthenticated) return;
+            const mainTabs = findMainTabNavigator(navigation);
+            if (!mainTabs?.dispatch || !mainTabs?.getState) return;
+            const focused = getInboxStackFocusedName(navigation);
+            if (focused && focused !== 'InboxList') {
+              resetInboxTabToInboxList(mainTabs);
+            }
+          },
           tabPress: (e) => {
             if (!isAuthenticated) {
               e.preventDefault();
               navigateToGuestLogin(navigation, { reason: 'tab' });
               return;
             }
-            /**
-             * Tapping the Inbox tab must open the **all chats** screen (`InboxList`), not a stale Chat / RideDetail.
-             * `navigate(..., merge: false)` can still flash the old stack — reset nested state like Profile tab.
-             */
-            const currentRoute = getFocusedRouteNameFromRoute(route) ?? 'InboxList';
-            if (currentRoute === 'InboxList') {
+            const focused = getInboxStackFocusedName(navigation);
+            if (focused === undefined || focused === 'InboxList') {
               return;
             }
             e.preventDefault();
@@ -223,26 +265,7 @@ export default function BottomTabs(): React.JSX.Element {
               } as never);
               return;
             }
-            const tabState = mainTabs.getState();
-            const routes = (tabState?.routes ?? []) as any[];
-            const inboxIndex = routes.findIndex((r: { name?: string }) => r?.name === 'Inbox');
-            if (inboxIndex < 0) return;
-            const nextRoutes = routes.map((r: any) => {
-              if (r?.name !== 'Inbox') return r;
-              return {
-                ...r,
-                state: {
-                  routes: [{ name: 'InboxList' as const }],
-                  index: 0,
-                },
-              };
-            });
-            mainTabs.dispatch(
-              CommonActions.reset({
-                index: inboxIndex,
-                routes: nextRoutes,
-              } as never)
-            );
+            resetInboxTabToInboxList(mainTabs);
           },
         })}
         options={({ route }) => {

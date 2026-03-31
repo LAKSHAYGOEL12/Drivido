@@ -22,7 +22,7 @@ import { useImagePicker } from '../../hooks/useImagePicker';
 import { uploadUserAvatar, deleteUserAvatar } from '../../services/userAvatar';
 
 export default function Profile(): React.JSX.Element {
-  const { user, logout, refreshUser, patchUser } = useAuth();
+  const { user, logout, refreshUser, patchUser, isAuthenticated } = useAuth();
   const { pickFromGallery, takePhoto } = useImagePicker();
   const navigation = useNavigation<NativeStackNavigationProp<ProfileStackParamList>>();
   const route = useRoute<RouteProp<ProfileStackParamList, 'ProfileHome' | 'ProfileEntry'>>();
@@ -149,6 +149,11 @@ export default function Profile(): React.JSX.Element {
     }, [targetUserId, targetDisplayName, isProfileEntryScreen, isSelf, refreshUser])
   );
 
+  /** During logout, RootNavigator shows the single “Shutting down” overlay — avoid a second full-screen spinner here. */
+  if (!isAuthenticated) {
+    return <View style={styles.guestPlaceholder} />;
+  }
+
   if (loading) {
     return (
       <View style={styles.loaderWrap}>
@@ -219,7 +224,6 @@ export default function Profile(): React.JSX.Element {
                 <Ionicons name="camera" size={17} color={COLORS.primary} />
               </Pressable>
             ) : null}
-            <View style={[styles.onlineDot, isSelf && styles.onlineDotSelf]} />
           </View>
         </View>
         <Text style={styles.name}>{displayName}</Text>
@@ -471,6 +475,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  guestPlaceholder: {
+    flex: 1,
+    backgroundColor: COLORS.backgroundSecondary,
+  },
   content: {
     padding: 16,
     paddingBottom: 30,
@@ -580,22 +588,6 @@ const styles = StyleSheet.create({
   },
   avatarFabDisabled: {
     opacity: 0.55,
-  },
-  onlineDot: {
-    position: 'absolute',
-    right: 3,
-    bottom: 4,
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    backgroundColor: COLORS.error,
-    borderWidth: 2,
-    borderColor: COLORS.white,
-  },
-  onlineDotSelf: {
-    right: undefined,
-    left: 0,
-    bottom: 4,
   },
   photoMenuRoot: {
     flex: 1,

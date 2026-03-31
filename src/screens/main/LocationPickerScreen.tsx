@@ -1101,6 +1101,22 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
             autoCapitalize="none"
             autoCorrect={false}
           />
+          {searchQuery.trim().length > 0 && (
+            <TouchableOpacity
+              style={styles.clearButton}
+              onPress={() => {
+                setSearchQuery('');
+                setSelectedCoords(null);
+                setShowNameOnSelectedMarker(true);
+                setSuggestions([]);
+                setNearbyPlacesList([]);
+                setSelectedLabel(null);
+              }}
+              activeOpacity={0.6}
+            >
+              <Ionicons name="close-circle" size={20} color={COLORS.textMuted} />
+            </TouchableOpacity>
+          )}
         </View>
 
           {canShowUseCurrentLocation && !isPublishFlow && (
@@ -1602,6 +1618,12 @@ const styles = StyleSheet.create({
     borderWidth: 0,
     borderRadius: 0,
     paddingLeft: 8,
+  },
+  clearButton: {
+    padding: 8,
+    marginRight: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   suggestionsList: {
     maxHeight: 180,

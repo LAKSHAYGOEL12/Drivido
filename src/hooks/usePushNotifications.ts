@@ -3,7 +3,10 @@ import * as Device from 'expo-device';
 import * as Notifications from 'expo-notifications';
 import type { NavigationContainerRef } from '@react-navigation/native';
 import type { RootStackParamList } from '../navigation/types';
-import { navigateFromNotificationPayload } from '../navigation/handleNotificationNavigation';
+import {
+  navigateFromNotificationPayload,
+  triggerChatRefreshFromPayload,
+} from '../navigation/handleNotificationNavigation';
 import {
   registerCurrentDevicePushToken,
   resetPushPermissionDeniedAlertFlag,
@@ -67,11 +70,17 @@ export function usePushNotifications(
   useEffect(() => {
     if (!shouldRegister || !userId || !navigationReady) return;
 
+    const onReceive = (notification: Notifications.Notification) => {
+      const data = notification.request.content.data as Record<string, unknown>;
+      void triggerChatRefreshFromPayload(data);
+    };
+
     const onResponse = (response: Notifications.NotificationResponse) => {
       const data = response.notification.request.content.data as Record<string, unknown>;
       void navigateFromNotificationPayload(navigationRef, data, userId);
     };
 
+    const recvSub = Notifications.addNotificationReceivedListener(onReceive);
     const sub = Notifications.addNotificationResponseReceivedListener(onResponse);
 
     if (!coldStartHandledRef.current) {
@@ -83,6 +92,9 @@ export function usePushNotifications(
       });
     }
 
-    return () => sub.remove();
+    return () => {
+      recvSub.remove();
+      sub.remove();
+    };
   }, [shouldRegister, userId, navigationReady, navigationRef]);
 }

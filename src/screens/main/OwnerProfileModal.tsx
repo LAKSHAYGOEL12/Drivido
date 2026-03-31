@@ -188,7 +188,6 @@ export default function OwnerProfileModal(): React.JSX.Element {
 
           <View style={styles.avatarWrap}>
             <UserAvatar uri={headerPhotoUri} name={targetDisplayName} size={72} />
-            <View style={styles.onlineDot} />
           </View>
 
           <Text style={styles.name}>{targetDisplayName}</Text>
@@ -308,17 +307,6 @@ const styles = StyleSheet.create({
     position: 'relative',
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  onlineDot: {
-    position: 'absolute',
-    right: 3,
-    bottom: 4,
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    backgroundColor: COLORS.error,
-    borderWidth: 2,
-    borderColor: COLORS.white,
   },
 
   name: { fontSize: 26, fontWeight: '800', color: COLORS.text, textAlign: 'center' },

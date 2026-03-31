@@ -36,14 +36,13 @@ function formatConversationTime(ts: number): string {
 
 export default function Inbox(): React.JSX.Element {
   const navigation = useNavigation<NativeStackNavigationProp<InboxStackParamList>>();
-  const { conversations, markAllAsRead, markConversationAsRead, refreshConversations } = useInbox();
+  const { conversations, markConversationAsRead, refreshConversations } = useInbox();
   const [search, setSearch] = useState('');
 
   useFocusEffect(
     React.useCallback(() => {
-      markAllAsRead();
       void refreshConversations();
-    }, [markAllAsRead, refreshConversations])
+    }, [refreshConversations])
   );
 
   const searchFiltered = conversations.filter((c) => {

@@ -24,10 +24,17 @@ import { resolveOtherParticipantId, normalizeChatRideId } from '../../services/c
 import { fetchRideDetailRaw } from '../../services/rideDetailCache';
 import { unwrapRideFromDetailResponse } from '../../utils/unwrapRideDetail';
 import { isRideCompletedForChat } from '../../utils/rideChat';
+import {
+  setChatRefreshCallback,
+  pickNotificationMessageId,
+  pickNotificationMessageText,
+  pickNotificationSenderId,
+  type ChatNotificationPayload,
+} from '../../navigation/handleNotificationNavigation';
 import UserAvatar from '../../components/common/UserAvatar';
 
 /** Poll thread while this screen is focused so new messages from the other person appear without leaving. */
-const CHAT_THREAD_POLL_MS = 8000;
+const CHAT_THREAD_POLL_MS = 3000; // Legacy - no longer used with WebSocket
 
 const ROUTE_LABEL_MAX = 15;
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -127,6 +134,8 @@ export default function ChatScreen(): React.JSX.Element {
     reconcileOutboundMessage,
     updateMessageStatus,
     loadThreadMessages,
+    ingestIncomingMessage,
+    markConversationAsRead,
   } = useInbox();
   const peerAvatarUrl = useMemo(
     () => resolvePeerAvatarUrl(routePeerAvatar, ride, otherUserId, otherUserName, conversations),
@@ -138,14 +147,21 @@ export default function ChatScreen(): React.JSX.Element {
   );
   const { user } = useAuth();
   const [message, setMessage] = useState('');
-  const messages = getMessages(rideForInbox, otherUserName, otherUserId);
+  const messages = useMemo(
+    () => getMessages(rideForInbox, otherUserName, otherUserId),
+    [getMessages, rideForInbox, otherUserName, otherUserId, conversations]
+  );
   /**
    * `inverted` FlatList draws index 0 at the **bottom** (above the input). `getMessages` is oldest → newest,
    * so we reverse to newest → first so latest messages sit at the bottom like typical chat apps.
    */
   const messagesNewestFirst = useMemo(() => [...messages].reverse(), [messages]);
-  /** Stable signal for inverted FlatList to repaint when content changes. */
-  const chatListExtraData = messages.map((m) => `${m.id}:${m.sentAt}:${m.text.length}`).join('|');
+  /** FlatList needs more than length (e.g. same count, updated text). */
+  const chatListExtraData = useMemo(() => {
+    if (messages.length === 0) return '0';
+    const last = messages[messages.length - 1];
+    return `${messages.length}:${last?.id ?? ''}:${last?.sentAt ?? 0}:${last?.text?.length ?? 0}`;
+  }, [messages]);
   const [inputFocused, setInputFocused] = useState(false);
   const [keyboardVisible, setKeyboardVisible] = useState(false);
   const [layoutKey, setLayoutKey] = useState(0);
@@ -213,27 +229,91 @@ export default function ChatScreen(): React.JSX.Element {
     addOrUpdateConversation(rideForInbox, otherUserName, otherUserId, undefined, peerAvatarOpts);
   }, [rideForInbox, otherUserName, otherUserId, addOrUpdateConversation, peerAvatarOpts]);
 
-  // While chat is focused: initial fetch + periodic refresh (no WebSocket — polling picks up peer messages).
+  const markThisConversationRead = useCallback(() => {
+    markConversationAsRead(rideIdForChat, otherUserId, otherUserName);
+  }, [markConversationAsRead, rideIdForChat, otherUserId, otherUserName]);
+
+  // Load fresh messages when chat screen opens (ensures we have latest data from API)
   useFocusEffect(
     useCallback(() => {
       const oid = otherUserId?.trim();
       const oname = otherUserName?.trim() || 'User';
       if (!oid && !oname) return undefined;
+
       let cancelled = false;
-      const run = () => {
-        loadThreadMessages(rideIdForChat, oid ?? '', oname, rideForInbox, {
-          cancelled: () => cancelled,
-          force: true,
-        }).catch(() => {});
-      };
-      run();
-      const intervalId = setInterval(run, CHAT_THREAD_POLL_MS);
+
+      /** Opening chat = read (inbox row tap does this; notification deep-link does not — clear badge here). */
+      markThisConversationRead();
+
+      void loadThreadMessages(rideIdForChat, oid ?? '', oname, rideForInbox, {
+        cancelled: () => cancelled,
+        force: true,  // Always load fresh data to ensure we have correct senderUserId
+      })
+        .then(() => {
+          if (!cancelled) markThisConversationRead();
+        })
+        .catch(() => {
+          console.error('[Chat] Failed to load initial messages');
+        });
+
       return () => {
         cancelled = true;
-        clearInterval(intervalId);
       };
-    }, [rideIdForChat, otherUserId, otherUserName, loadThreadMessages, rideForInbox])
+    }, [rideIdForChat, otherUserId, otherUserName, loadThreadMessages, rideForInbox, markThisConversationRead])
   );
+
+  /** Session may hydrate after first focus (killed app → notification). `loadThreadMessages` no-ops without user id. */
+  useEffect(() => {
+    if (!currentUserId) return;
+    const oid = otherUserId?.trim();
+    const oname = otherUserName?.trim() || 'User';
+    if (!oid && !oname) return;
+    void loadThreadMessages(rideIdForChat, oid ?? '', oname, rideForInbox, { force: true })
+      .then(() => markThisConversationRead())
+      .catch(() => {});
+  }, [currentUserId, rideIdForChat, otherUserId, otherUserName, loadThreadMessages, rideForInbox, markThisConversationRead]);
+
+  /** Register callback for immediate refresh when a chat notification arrives while this screen is open. */
+  useEffect(() => {
+    setChatRefreshCallback(async (payload: ChatNotificationPayload) => {
+      const sameRide = normalizeChatRideId(payload.rideId) === rideIdForChat;
+      if (!sameRide) return false;
+      const routePeer = resolveOtherParticipantId(otherUserId, otherUserName);
+      const payloadPeer = resolveOtherParticipantId(payload.otherUserId, payload.otherUserName);
+      const samePeer =
+        routePeer === payloadPeer ||
+        (otherUserId ?? '').trim() === (payload.otherUserId ?? '').trim();
+      const sender = pickNotificationSenderId(payload.raw);
+      const senderMatchesPeer = Boolean(sender && routePeer === resolveOtherParticipantId(sender, otherUserName));
+      if (!samePeer && !senderMatchesPeer) return false;
+
+      const mid = pickNotificationMessageId(payload.raw);
+      const text = pickNotificationMessageText(payload.raw);
+      const senderId = pickNotificationSenderId(payload.raw) ?? payload.otherUserId;
+      if (mid && text && senderId) {
+        ingestIncomingMessage(rideForInbox, otherUserName, otherUserId, {
+          id: mid,
+          text,
+          sentAt: Date.now(),
+          senderUserId: senderId,
+        });
+      }
+      void loadThreadMessages(rideIdForChat, payload.otherUserId, payload.otherUserName, rideForInbox, {
+        force: true,
+      });
+      return true;
+    });
+    return () => {
+      setChatRefreshCallback(null);
+    };
+  }, [
+    rideIdForChat,
+    otherUserId,
+    otherUserName,
+    rideForInbox,
+    loadThreadMessages,
+    ingestIncomingMessage,
+  ]);
 
   useEffect(() => {
     const show = Keyboard.addListener(
@@ -446,7 +526,7 @@ export default function ChatScreen(): React.JSX.Element {
 
         {/* Inverted list + newest-first data → latest bubbles sit above the input */}
         <FlatList
-          key={`chat-thread-${ride.id}-${otherStoredId}`}
+          key={`chat-${messages.length}`}
           data={messagesNewestFirst}
           inverted
           keyExtractor={(m) => m.id}

@@ -24,8 +24,9 @@ function isRewritableBackendHost(hostname: string): boolean {
 }
 
 /**
- * Use the same host:port as API calls so images load when the DB has another LAN IP embedded.
- * (e.g. server wrote http://192.168.1.77/... but the phone uses http://192.168.31.198:3000)
+ * Use the same host:port as API calls so images load when the DB has another LAN IP embedded
+ * or when the server stored a full URL from a different deployment than EXPO_PUBLIC_API_URL
+ * (e.g. production hostname in DB while the app points at LAN — uploads exist only on the API host).
  */
 function alignAbsoluteUrlWithApiBase(absoluteUrl: string): string {
   const apiOrigin = parseHttpOrigin(getApiBaseUrl());
@@ -36,7 +37,6 @@ function alignAbsoluteUrlWithApiBase(absoluteUrl: string): string {
   } catch {
     return absoluteUrl;
   }
-  if (!isRewritableBackendHost(img.hostname)) return absoluteUrl;
   const p = img.pathname.toLowerCase();
   const looksLikeAppStatic =
     p.includes('/uploads/') ||
@@ -45,6 +45,13 @@ function alignAbsoluteUrlWithApiBase(absoluteUrl: string): string {
     p.includes('/files/');
   if (!looksLikeAppStatic) return absoluteUrl;
   if (img.origin === apiOrigin.origin) return absoluteUrl;
+
+  // Prefer aligning /uploads/... to API origin whenever it differs (covers LAN mismatch + wrong env URL).
+  if (p.includes('/uploads/')) {
+    return `${apiOrigin.origin}${img.pathname}${img.search}`;
+  }
+
+  if (!isRewritableBackendHost(img.hostname)) return absoluteUrl;
   return `${apiOrigin.origin}${img.pathname}${img.search}`;
 }
 
