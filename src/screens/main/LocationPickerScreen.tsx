@@ -98,7 +98,8 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
   const currentFromLon = (route.params as { currentFromLongitude?: number })?.currentFromLongitude;
   const currentToLat = (route.params as { currentToLatitude?: number })?.currentToLatitude;
   const currentToLon = (route.params as { currentToLongitude?: number })?.currentToLongitude;
-  const returnScreen = (route.params as { returnScreen?: 'SearchRides' | 'PublishRide' })?.returnScreen ?? 'SearchRides';
+  const returnScreen = (route.params as { returnScreen?: 'SearchRides' | 'PublishRide' | 'PublishRecentEdit' })
+    ?.returnScreen ?? 'SearchRides';
   const publishRestoreKey = (route.params as { publishRestoreKey?: string })?.publishRestoreKey;
   const mapRef = useRef<any>(null);
   const {
@@ -138,7 +139,7 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
   const skipPublishGeocodeUntilRef = useRef(0);
   const lastPublishGeocodedRef = useRef<{ latitude: number; longitude: number } | null>(null);
 
-  const isPublishFlow = returnScreen === 'PublishRide';
+  const isPublishFlow = returnScreen === 'PublishRide' || returnScreen === 'PublishRecentEdit';
   const publishSearchOnly = isPublishFlow && !publishMapVisible;
   /** Full-screen map + floating controls (Publish). */
   const publishImmersiveMap = isPublishFlow && publishMapVisible;
@@ -160,15 +161,15 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
   }, []);
 
   useEffect(() => {
-    if (returnScreen === 'SearchRides' || returnScreen === 'PublishRide') {
+    if (returnScreen === 'SearchRides' || isPublishFlow) {
       setIsFocused(true);
       void loadRecentsForField();
       placesSessionTokenRef.current = newPlacesSessionToken();
     }
-  }, [returnScreen, loadRecentsForField]);
+  }, [returnScreen, isPublishFlow, loadRecentsForField]);
 
   useEffect(() => {
-    if (returnScreen !== 'PublishRide') return;
+    if (!isPublishFlow) return;
     setSuggestions([]);
     setNearbyPlacesList([]);
     setMapExploring(false);
@@ -214,6 +215,7 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
     currentDestLon,
     hasValidCoord,
     bumpSkipPublishGeocode,
+    isPublishFlow,
   ]);
 
   useEffect(() => {
@@ -227,15 +229,15 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
   useFocusEffect(
     useCallback(() => {
       didAutoCenterUserRef.current = false;
-      if (returnScreen !== 'PublishRide') {
+      if (!isPublishFlow) {
         prefetchLocation();
       }
-    }, [prefetchLocation, returnScreen])
+    }, [prefetchLocation, isPublishFlow])
   );
 
   const mapInitialRegion = useMemo(() => {
     const has = (n: unknown): n is number => typeof n === 'number' && !Number.isNaN(n);
-    if (returnScreen === 'PublishRide') {
+    if (isPublishFlow) {
       if (selectedCoords && has(selectedCoords.latitude) && has(selectedCoords.longitude)) {
         return centerRegion(selectedCoords.latitude, selectedCoords.longitude);
       }
@@ -261,6 +263,7 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
     }
     return DEFAULT_REGION;
   }, [
+    isPublishFlow,
     returnScreen,
     field,
     currentPickupLat,
@@ -280,7 +283,7 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
   }, []);
 
   useEffect(() => {
-    if (returnScreen === 'PublishRide' || !location) return;
+    if (isPublishFlow || !location) return;
     const t = setTimeout(() => {
       if (!didAutoCenterUserRef.current && mapRef.current) {
         animateToUserLocation(location.latitude, location.longitude);
@@ -288,7 +291,7 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
       }
     }, 380);
     return () => clearTimeout(t);
-  }, [returnScreen, location?.latitude, location?.longitude, animateToUserLocation]);
+  }, [isPublishFlow, location?.latitude, location?.longitude, animateToUserLocation]);
 
   const focusPublishMapOnCoords = useCallback(
     (coords: { latitude: number; longitude: number }) => {
@@ -304,7 +307,7 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
   );
 
   const onMapReady = useCallback(() => {
-    if (returnScreen === 'PublishRide') {
+    if (isPublishFlow) {
       if (publishMapVisible && selectedCoords) {
         focusPublishMapOnCoords(selectedCoords);
       }
@@ -315,7 +318,7 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
       didAutoCenterUserRef.current = true;
     }
   }, [
-    returnScreen,
+    isPublishFlow,
     publishMapVisible,
     selectedCoords,
     focusPublishMapOnCoords,
@@ -351,6 +354,39 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
           navigation.goBack();
           return;
         }
+      }
+      if (returnScreen === 'PublishRecentEdit') {
+        if (coords) {
+          if (field === 'from') {
+            params.pickupLatitude = coords.latitude;
+            params.pickupLongitude = coords.longitude;
+            params.destinationLatitude = currentDestLat;
+            params.destinationLongitude = currentDestLon;
+          } else {
+            params.destinationLatitude = coords.latitude;
+            params.destinationLongitude = coords.longitude;
+            params.pickupLatitude = currentPickupLat;
+            params.pickupLongitude = currentPickupLon;
+          }
+        } else {
+          params.pickupLatitude = currentPickupLat;
+          params.pickupLongitude = currentPickupLon;
+          params.destinationLatitude = currentDestLat;
+          params.destinationLongitude = currentDestLon;
+        }
+        (params as Record<string, unknown>).clearRouteFare = true;
+        const statePe = navigation.getState();
+        const previousPe = statePe.routes[statePe.index - 1];
+        if (previousPe?.key) {
+          navigation.dispatch({
+            ...CommonActions.setParams(params),
+            source: previousPe.key,
+          });
+          navigation.goBack();
+          return;
+        }
+        navigation.goBack();
+        return;
       }
       if (returnScreen === 'PublishRide') {
         if (coords) {
@@ -443,7 +479,73 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
   );
 
   const handleUseCurrentLocation = useCallback(async () => {
-    if (returnScreen === 'PublishRide') return;
+    /** Publish pickup: center map on GPS, reverse-geocode label, fine-tune on map — same as picking a recent. */
+    if (isPublishFlow && field === 'from') {
+      setUseCurrentLoading(true);
+      try {
+        const coords = await requestLocation();
+        if (!coords) {
+          Alert.alert(
+            'Location',
+            locationError || 'Could not get your location. Check permissions and try again.'
+          );
+          return;
+        }
+        Keyboard.dismiss();
+        setSuggestions([]);
+        skipAutocompleteRef.current = true;
+        suppressMapExploreRef.current = true;
+        placesSessionTokenRef.current = null;
+
+        let label: string;
+        try {
+          const Location = await import('expo-location');
+          const results = await Location.reverseGeocodeAsync({
+            latitude: coords.latitude,
+            longitude: coords.longitude,
+          });
+          if (results?.length > 0) {
+            const addr = results[0];
+            const parts = [addr.street, addr.streetNumber, addr.city, addr.region, addr.country].filter(Boolean);
+            label =
+              parts.length > 0 ? parts.join(', ') : `${coords.latitude.toFixed(4)}, ${coords.longitude.toFixed(4)}`;
+          } else {
+            label = `${coords.latitude.toFixed(4)}, ${coords.longitude.toFixed(4)}`;
+          }
+        } catch {
+          label = `${coords.latitude.toFixed(4)}, ${coords.longitude.toFixed(4)}`;
+        }
+
+        setPublishMapVisible(true);
+        setSelectedCoords(coords);
+        setSelectedLabel(label);
+        setSearchQuery(label);
+        setShowNameOnSelectedMarker(true);
+        lastPublishGeocodedRef.current = { latitude: coords.latitude, longitude: coords.longitude };
+        focusPublishMapOnCoords(coords);
+        void upsertPlaceRecent(
+          {
+            placeId: `gps_${coords.latitude.toFixed(5)}_${coords.longitude.toFixed(5)}`,
+            title: label.split(',')[0]?.trim() || 'Current location',
+            formattedAddress: label,
+            latitude: coords.latitude,
+            longitude: coords.longitude,
+            fieldType: placeFieldType,
+            lastUsedAt: Date.now(),
+          },
+          recentUserKey
+        )
+          .then(setRecentPlaces)
+          .catch(() => {});
+        void nearbyPlaces(coords.latitude, coords.longitude, 1400)
+          .then(setNearbyPlacesList)
+          .catch(() => setNearbyPlacesList([]));
+      } finally {
+        setUseCurrentLoading(false);
+      }
+      return;
+    }
+
     setUseCurrentLoading(true);
     try {
       const coords = await requestLocation();
@@ -484,15 +586,27 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
     } finally {
       setUseCurrentLoading(false);
     }
-  }, [requestLocation, locationError, navigateBackWithValue, returnScreen]);
+  }, [
+    requestLocation,
+    locationError,
+    navigateBackWithValue,
+    returnScreen,
+    isPublishFlow,
+    field,
+    focusPublishMapOnCoords,
+    placeFieldType,
+    recentUserKey,
+  ]);
 
   const handleDone = () => {
     const label = selectedLabel || searchQuery || undefined;
-    if (returnScreen === 'PublishRide' || returnScreen === 'SearchRides') {
-      if (returnScreen === 'PublishRide' && !publishMapVisible) {
+    if (isPublishFlow || returnScreen === 'SearchRides') {
+      if (isPublishFlow && !publishMapVisible) {
         Alert.alert(
           'Set location',
-          'Pick a place from search results or recent searches first. The map opens on that spot so you can fine-tune the pin, then tap Done.'
+          field === 'from'
+            ? 'Search for a place, pick a recent search, or tap Use current location to open the map and adjust the pin, then tap Done.'
+            : 'Pick a place from search results or recent searches first. The map opens on that spot so you can fine-tune the pin, then tap Done.'
         );
         return;
       }
@@ -552,7 +666,7 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
       setMapExploring(false);
       return;
     }
-    if (returnScreen === 'PublishRide') {
+    if (isPublishFlow) {
       setNearbyPlacesList([]);
       setMapExploring(false);
       return;
@@ -595,14 +709,14 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
       clearTimeout(timer);
       mapExploreSeq.current += 1;
     };
-  }, [searchQuery, returnScreen, publishMapVisible]);
+  }, [searchQuery, isPublishFlow, publishMapVisible]);
 
   const handleSelectSuggestion = useCallback(
     async (item: PlacePrediction) => {
       Keyboard.dismiss();
       setSuggestions([]);
       setNearbyPlacesList([]);
-      if (returnScreen === 'PublishRide' || returnScreen === 'SearchRides') {
+      if (isPublishFlow || returnScreen === 'SearchRides') {
         // User selected a Google suggestion: do not re-trigger autocomplete / map exploration.
         const sessionToken = placesSessionTokenRef.current ?? undefined;
         skipAutocompleteRef.current = true;
@@ -631,7 +745,7 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
             setSelectedCoords(null);
             Alert.alert(
               'Location',
-              returnScreen === 'SearchRides' || returnScreen === 'PublishRide'
+              returnScreen === 'SearchRides' || isPublishFlow
                 ? 'Could not get coordinates for this place. Try another suggestion.'
                 : 'Could not get coordinates for this place. Tap on the map to set the exact location, then tap Done.'
             );
@@ -659,7 +773,7 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
             navigateBackWithValue(backLabel, coords);
             return;
           }
-          if (returnScreen === 'PublishRide') {
+          if (isPublishFlow) {
             setPublishMapVisible(true);
             setSuggestions([]);
             lastPublishGeocodedRef.current = { latitude: coords.latitude, longitude: coords.longitude };
@@ -684,7 +798,7 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
           setSelectedCoords(null);
           Alert.alert(
             'Location',
-            returnScreen === 'SearchRides' || returnScreen === 'PublishRide'
+            returnScreen === 'SearchRides' || isPublishFlow
               ? 'Could not select this place right now. Try another suggestion.'
               : 'Tap on the map to set the exact location for this place, then tap Done.'
           );
@@ -695,7 +809,7 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
         navigateBackWithValue(item.description);
       }
     },
-    [returnScreen, focusPublishMapOnCoords, navigateBackWithValue, placeFieldType, recentUserKey]
+    [returnScreen, isPublishFlow, focusPublishMapOnCoords, navigateBackWithValue, placeFieldType, recentUserKey]
   );
 
   const handleSelectRecent = useCallback(
@@ -708,7 +822,7 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
       suppressMapExploreRef.current = true;
       placesSessionTokenRef.current = null;
 
-      if (returnScreen === 'PublishRide' || returnScreen === 'SearchRides') {
+      if (isPublishFlow || returnScreen === 'SearchRides') {
         const coords = { latitude: item.latitude, longitude: item.longitude };
         const backLabel = item.formattedAddress || item.title;
 
@@ -747,7 +861,7 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
         longitude: item.longitude,
       });
     },
-    [navigateBackWithValue, recentUserKey, returnScreen, focusPublishMapOnCoords]
+    [navigateBackWithValue, recentUserKey, returnScreen, isPublishFlow, focusPublishMapOnCoords]
   );
 
   const handleMapPress = useCallback(
@@ -1119,23 +1233,24 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
           )}
         </View>
 
-          {canShowUseCurrentLocation && !isPublishFlow && (
-            <TouchableOpacity
-              style={styles.useCurrentLocationRow}
-              onPress={handleUseCurrentLocation}
-              disabled={locationLoading || useCurrentLoading}
-              activeOpacity={0.7}
-            >
-              {locationLoading || useCurrentLoading ? (
-                <ActivityIndicator size="small" color={COLORS.primary} />
-              ) : (
-                <View style={styles.greenDot} />
-              )}
-              <Text style={styles.useCurrentLocationText}>
-                {useCurrentLoading ? 'Getting location…' : 'Use current location'}
-              </Text>
-            </TouchableOpacity>
-          )}
+          {canShowUseCurrentLocation &&
+            (returnScreen === 'SearchRides' || (isPublishFlow && field === 'from')) && (
+              <TouchableOpacity
+                style={styles.useCurrentLocationRow}
+                onPress={handleUseCurrentLocation}
+                disabled={locationLoading || useCurrentLoading}
+                activeOpacity={0.7}
+              >
+                {locationLoading || useCurrentLoading ? (
+                  <ActivityIndicator size="small" color={COLORS.primary} />
+                ) : (
+                  <View style={styles.greenDot} />
+                )}
+                <Text style={styles.useCurrentLocationText}>
+                  {useCurrentLoading ? 'Getting location…' : 'Use current location'}
+                </Text>
+              </TouchableOpacity>
+            )}
 
           {isFocused && searchQuery.trim().length < 3 && recentPlaces.length > 0 && (
             <View

@@ -6,6 +6,7 @@ import BottomTabs from './BottomTabs';
 import Login from '../screens/auth/Login';
 import Register from '../screens/auth/Register';
 import VerifyEmail from '../screens/auth/VerifyEmail';
+import CompleteProfile from '../screens/auth/CompleteProfile';
 import ForgotPassword from '../screens/auth/ForgotPassword';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -46,6 +47,15 @@ export default function RootStack(): React.JSX.Element {
         options={{
           presentation: 'modal',
           animation: 'slide_from_bottom',
+          gestureEnabled: false,
+        }}
+      />
+      <Stack.Screen
+        name="CompleteProfile"
+        component={CompleteProfile}
+        options={{
+          presentation: 'modal',
+          animation: 'slide_from_right',
           gestureEnabled: false,
         }}
       />

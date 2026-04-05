@@ -8,19 +8,21 @@ import {
   Alert,
   ActivityIndicator,
   InteractionManager,
+  Linking,
 } from 'react-native';
 import { useFocusEffect, useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import type { RidesStackParamList, SearchStackParamList } from '../../navigation/types';
 import { COLORS } from '../../constants/colors';
-import { formatRidePriceParts } from '../../utils/rideDisplay';
+import { formatRidePriceParts, pickPassengerPhoneFromBooking } from '../../utils/rideDisplay';
 import { bookingPickupDrop } from '../../utils/bookingRoutePreview';
 import { bookingPassengerDisplayName } from '../../utils/displayNames';
 import api from '../../services/api';
 import { API } from '../../constants/API';
 import { getUserRatingsSummary } from '../../services/ratings';
 import UserAvatar from '../../components/common/UserAvatar';
+import { calculateAge } from '../../utils/calculateAge';
 
 type BookPassengerRouteProp =
   | RouteProp<RidesStackParamList, 'BookPassengerDetail'>
@@ -36,13 +38,23 @@ function findMainTabNavigator(navigation: any) {
   return null;
 }
 
+function formatBookingHistoryLineWhen(iso: string): string {
+  const t = iso.trim();
+  if (!t) return '';
+  const d = new Date(t);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
 export default function BookPassengerDetailScreen(): React.JSX.Element {
   const navigation = useNavigation();
   const route = useRoute<BookPassengerRouteProp>();
   const { ride, booking, requestMode } = route.params;
+
   const [avgRating, setAvgRating] = useState<number | null>(null);
   const [ratingCount, setRatingCount] = useState(0);
   const [ratingLoading, setRatingLoading] = useState(false);
+  const [passengerPhoneFromApi, setPassengerPhoneFromApi] = useState('');
   const [requestActionLoading, setRequestActionLoading] = useState<'approve' | 'reject' | null>(null);
 
   useFocusEffect(
@@ -77,6 +89,7 @@ export default function BookPassengerDetailScreen(): React.JSX.Element {
 
   const passengerName = bookingPassengerDisplayName(booking);
   const passengerId = booking.userId ?? '';
+  const passengerAge = calculateAge(booking.dateOfBirth);
   const { pickup, drop } = bookingPickupDrop(ride, booking);
   /** Owner ride detail uses published stops; match that on confirmed passenger detail. */
   const publishedPickupStr = useMemo(
@@ -121,16 +134,19 @@ export default function BookPassengerDetailScreen(): React.JSX.Element {
     if (!uid) return;
     let cancelled = false;
     setRatingLoading(true);
+    setPassengerPhoneFromApi('');
     void (async () => {
       try {
         const summary = await getUserRatingsSummary(uid);
         if (cancelled) return;
         setAvgRating(summary.avgRating > 0 ? Number(summary.avgRating.toFixed(1)) : null);
         setRatingCount(summary.totalRatings);
+        setPassengerPhoneFromApi((summary.subjectContactPhone ?? '').trim());
       } catch {
         if (!cancelled) {
           setAvgRating(null);
           setRatingCount(0);
+          setPassengerPhoneFromApi('');
         }
       } finally {
         if (!cancelled) setRatingLoading(false);
@@ -142,17 +158,46 @@ export default function BookPassengerDetailScreen(): React.JSX.Element {
   }, [passengerId]);
 
   const openChat = () => {
+    const rideId = String(ride?.id ?? '').trim();
+    if (!rideId) {
+      Alert.alert('Chat', 'Ride information is missing. Go back and open this passenger again.');
+      return;
+    }
+    if (!passengerId.trim()) {
+      Alert.alert('Chat', 'Passenger information is missing.');
+      return;
+    }
     (navigation as { navigate: (n: string, p: Record<string, unknown>) => void }).navigate('Chat', {
-      ride,
-      otherUserName: passengerName,
-      otherUserId: passengerId || undefined,
+      rideId,
+      ...(ride ? { ride } : {}),
+      otherUserName: passengerName || 'Passenger',
+      otherUserId: passengerId,
       ...(passengerAvatarUrl ? { otherUserAvatarUrl: passengerAvatarUrl } : {}),
     });
   };
 
-  const openCall = () => {
-    Alert.alert('Call', 'Phone number is not available for this rider yet.');
-  };
+  const dialPhone =
+    pickPassengerPhoneFromBooking(booking) || passengerPhoneFromApi.trim();
+
+  const openCall = useCallback(async () => {
+    const cleaned = dialPhone.replace(/[^\d+]/g, '');
+    if (!cleaned) {
+      Alert.alert(
+        'No phone number',
+        "This passenger's phone is not available yet. It may appear after your backend includes it on the booking or profile for ride owners."
+      );
+      return;
+    }
+    const url = `tel:${cleaned}`;
+    try {
+      await Linking.openURL(url);
+    } catch {
+      Alert.alert(
+        'Cannot open dialer',
+        'Try on a physical phone. Simulators and some tablets do not support phone calls.'
+      );
+    }
+  }, [dialPhone]);
 
   const openPassengerRatings = () => {
     const targetUserId = passengerId.trim();
@@ -235,6 +280,11 @@ export default function BookPassengerDetailScreen(): React.JSX.Element {
                   backgroundColor={COLORS.primary}
                   fallbackTextColor={COLORS.white}
                 />
+                {passengerAge !== null ? (
+                  <View style={styles.ageBadge}>
+                    <Text style={styles.ageBadgeText}>{passengerAge}y</Text>
+                  </View>
+                ) : null}
               </View>
               <View style={styles.requestProfileTextCol}>
                 <Text style={styles.requestProfileName}>{passengerName}</Text>
@@ -301,6 +351,17 @@ export default function BookPassengerDetailScreen(): React.JSX.Element {
                 )}
               </TouchableOpacity>
             </View>
+
+            <TouchableOpacity
+              style={styles.requestChatBtn}
+              onPress={openChat}
+              activeOpacity={0.7}
+              accessibilityRole="button"
+              accessibilityLabel="Chat with passenger"
+            >
+              <Ionicons name="chatbubble-ellipses-outline" size={22} color={COLORS.primary} />
+              <Text style={styles.requestChatBtnText}>Chat</Text>
+            </TouchableOpacity>
           </>
         ) : (
           <>
@@ -313,9 +374,11 @@ export default function BookPassengerDetailScreen(): React.JSX.Element {
               backgroundColor={COLORS.primary}
               fallbackTextColor={COLORS.white}
             />
-            <View style={styles.verifiedBadge}>
-              <Ionicons name="shield-checkmark" size={14} color={COLORS.white} />
-            </View>
+            {passengerAge !== null ? (
+              <View style={styles.ageBadge}>
+                <Text style={styles.ageBadgeText}>{passengerAge}y</Text>
+              </View>
+            ) : null}
           </View>
           <View style={styles.profileTextCol}>
             <Text style={styles.profileName}>{passengerName}</Text>
@@ -339,7 +402,21 @@ export default function BookPassengerDetailScreen(): React.JSX.Element {
             <Ionicons name="calendar-outline" size={22} color={COLORS.textSecondary} />
             <View style={styles.trustTextCol}>
               <Text style={styles.trustTitle}>Booking history</Text>
-              <Text style={styles.trustSub}>Cancellation rate shown here when available</Text>
+              {booking.bookingHistory && booking.bookingHistory.length > 0 ? (
+                <View style={styles.bookingHistoryList}>
+                  {booking.bookingHistory.map((h, idx) => {
+                    const when = formatBookingHistoryLineWhen(h.bookedAt ?? '');
+                    return (
+                      <Text key={idx} style={styles.bookingHistoryLine} numberOfLines={2}>
+                        {h.seats} seat{h.seats !== 1 ? 's' : ''} · {String(h.status ?? '').trim()}
+                        {when ? ` · ${when}` : ''}
+                      </Text>
+                    );
+                  })}
+                </View>
+              ) : (
+                <Text style={styles.trustSub}>No booking history yet</Text>
+              )}
             </View>
           </View>
         </View>
@@ -375,12 +452,18 @@ export default function BookPassengerDetailScreen(): React.JSX.Element {
 
         <View style={styles.divider} />
 
-        <TouchableOpacity style={styles.actionRow} onPress={openChat} activeOpacity={0.7}>
-          <Ionicons name="chatbubble-outline" size={22} color={COLORS.text} />
-          <Text style={styles.actionRowText}>Message on Drivido</Text>
+        <TouchableOpacity
+          style={styles.actionRow}
+          onPress={openChat}
+          activeOpacity={0.7}
+          accessibilityRole="button"
+          accessibilityLabel="Chat with passenger"
+        >
+          <Ionicons name="chatbubble-ellipses-outline" size={22} color={COLORS.primary} />
+          <Text style={styles.actionRowText}>Chat</Text>
         </TouchableOpacity>
         <TouchableOpacity style={styles.actionRow} onPress={openCall} activeOpacity={0.7}>
-          <Ionicons name="call-outline" size={22} color={COLORS.text} />
+          <Ionicons name="call-outline" size={22} color={COLORS.primary} />
           <Text style={styles.actionRowText}>Call</Text>
         </TouchableOpacity>
           </>
@@ -562,6 +645,23 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: COLORS.white,
   },
+  requestChatBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.primary,
+    backgroundColor: 'rgba(0, 150, 135, 0.08)',
+    paddingVertical: 12,
+    marginTop: 12,
+  },
+  requestChatBtnText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: COLORS.primary,
+  },
   profileRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -570,19 +670,34 @@ const styles = StyleSheet.create({
   avatarWrap: {
     position: 'relative',
     marginRight: 14,
+    borderRadius: 36,
+    borderWidth: 3,
+    borderColor: COLORS.white,
+    backgroundColor: COLORS.white,
+    padding: 2,
   },
-  verifiedBadge: {
+  ageBadge: {
     position: 'absolute',
-    right: -2,
-    bottom: -2,
-    width: 26,
-    height: 26,
-    borderRadius: 13,
-    backgroundColor: COLORS.primary,
+    right: -22,
+    bottom: 4,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 12,
+    backgroundColor: COLORS.white,
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 2,
-    borderColor: COLORS.background,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  ageBadgeText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: COLORS.text,
   },
   profileTextCol: {
     flex: 1,
@@ -598,6 +713,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 6,
     marginTop: 6,
+    marginLeft: 10,
   },
   ratingText: {
     fontSize: 14,
@@ -627,6 +743,16 @@ const styles = StyleSheet.create({
     color: COLORS.textSecondary,
     marginTop: 2,
     lineHeight: 18,
+  },
+  bookingHistoryList: {
+    marginTop: 6,
+  },
+  bookingHistoryLine: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: COLORS.textSecondary,
+    marginBottom: 4,
+    lineHeight: 16,
   },
   divider: {
     height: StyleSheet.hairlineWidth,

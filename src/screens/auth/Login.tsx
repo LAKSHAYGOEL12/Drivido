@@ -28,24 +28,57 @@ import Input from '../../components/common/Input';
 import { COLORS } from '../../constants/colors';
 import { requestForegroundLocationAfterAuth } from '../../services/location-permission-auth';
 import { useAuth } from '../../contexts/AuthContext';
+import { resetNavigationToCompleteProfile } from '../../navigation/navigateToCompleteProfile';
+import { rootNavigationRef } from '../../navigation/rootNavigationRef';
 
 type Props = RootStackScreenProps<'Login'>;
 
 export default function Login(): React.JSX.Element {
   const navigation = useNavigation<Props['navigation']>();
-  const { isAwaitingBackendSession, needsEmailVerification, isAuthenticated } = useAuth();
+  const postSignInNavTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const { isAwaitingBackendSession, needsEmailVerification, isAuthenticated, needsProfileCompletion } = useAuth();
   const authGateRef = useRef({
     isAwaitingBackendSession,
     needsEmailVerification,
     isAuthenticated,
+    needsProfileCompletion,
   });
   useEffect(() => {
     authGateRef.current = {
       isAwaitingBackendSession,
       needsEmailVerification,
       isAuthenticated,
+      needsProfileCompletion,
     };
-  }, [isAwaitingBackendSession, needsEmailVerification, isAuthenticated]);
+  }, [isAwaitingBackendSession, needsEmailVerification, isAuthenticated, needsProfileCompletion]);
+
+  useEffect(
+    () => () => {
+      if (postSignInNavTimeoutRef.current) {
+        clearTimeout(postSignInNavTimeoutRef.current);
+        postSignInNavTimeoutRef.current = null;
+      }
+    },
+    []
+  );
+
+  const schedulePostSignInNavigation = () => {
+    if (postSignInNavTimeoutRef.current) clearTimeout(postSignInNavTimeoutRef.current);
+    postSignInNavTimeoutRef.current = setTimeout(() => {
+      postSignInNavTimeoutRef.current = null;
+      void requestForegroundLocationAfterAuth();
+      const snap = authGateRef.current;
+      if (snap.needsProfileCompletion) {
+        resetNavigationToCompleteProfile();
+      } else if (navigation.canGoBack()) {
+        navigation.goBack();
+      } else if (rootNavigationRef.isReady()) {
+        rootNavigationRef.reset({ index: 0, routes: [{ name: 'Main' }] });
+      }
+      setSigningIn(false);
+      setOverlaySuccess(false);
+    }, 450);
+  };
 
   const [phoneOrEmail, setPhoneOrEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -97,12 +130,7 @@ export default function Login(): React.JSX.Element {
         const { needsEmailVerification: nev, isAuthenticated: authed } = authGateRef.current;
         if (firebaseUser && hasAuthAccessToken() && !nev) {
           setOverlaySuccess(true);
-          setTimeout(() => {
-            void requestForegroundLocationAfterAuth();
-            navigation.goBack();
-            setSigningIn(false);
-            setOverlaySuccess(false);
-          }, 450);
+          schedulePostSignInNavigation();
           return;
         }
         if (nev) {
@@ -111,12 +139,7 @@ export default function Login(): React.JSX.Element {
         }
         if (authed && !nev) {
           setOverlaySuccess(true);
-          setTimeout(() => {
-            void requestForegroundLocationAfterAuth();
-            navigation.goBack();
-            setSigningIn(false);
-            setOverlaySuccess(false);
-          }, 450);
+          schedulePostSignInNavigation();
           return;
         }
       }
@@ -125,12 +148,7 @@ export default function Login(): React.JSX.Element {
       const firebaseUserFinal = getFirebaseAuth()?.currentUser;
       if (firebaseUserFinal && hasAuthAccessToken() && !nevFinal) {
         setOverlaySuccess(true);
-        setTimeout(() => {
-          void requestForegroundLocationAfterAuth();
-          navigation.goBack();
-          setSigningIn(false);
-          setOverlaySuccess(false);
-        }, 450);
+        schedulePostSignInNavigation();
         return;
       }
       if (nevFinal) {
@@ -139,12 +157,7 @@ export default function Login(): React.JSX.Element {
       }
       if (authedFinal) {
         setOverlaySuccess(true);
-        setTimeout(() => {
-          void requestForegroundLocationAfterAuth();
-          navigation.goBack();
-          setSigningIn(false);
-          setOverlaySuccess(false);
-        }, 450);
+        schedulePostSignInNavigation();
         return;
       }
       setSigningIn(false);

@@ -37,6 +37,17 @@ export type BackendAuthUser = {
   created_at?: string;
   avatarUrl?: string | null;
   avatar_url?: string | null;
+  vehicleModel?: string;
+  vehicle_name?: string;
+  vehicle_model?: string;
+  licensePlate?: string;
+  license_plate?: string;
+  vehicleNumber?: string;
+  vehicle_number?: string;
+  vehicleColor?: string;
+  vehicle_color?: string;
+  /** Up to 2 vehicles; same shape as GET /user/vehicles. */
+  vehicles?: unknown[];
 };
 
 export type BackendAuthExchangeResult = {
@@ -91,12 +102,18 @@ export function parseAuthMePayload(raw: unknown): BackendAuthUser | null {
 /**
  * POST `/api/auth/firebase` — body JSON:
  * - `idToken` (required): Firebase ID token
- * - `dateOfBirth` (optional): `YYYY-MM-DD` — sent on first exchange after Register
+ * - `dateOfBirth` (optional): `YYYY-MM-DD` — legacy; Register no longer sets pending patch (use Complete Profile / PATCH).
  * - `gender` (optional): e.g. `male`, `female`, `non_binary`, `prefer_not_to_say`
  *
- * **Backend (MongoDB):** On create/upsert user, save `dateOfBirth` and `gender` on the User document
- * (e.g. `dateOfBirth` + `gender`, or `date_of_birth` if you prefer snake_case — the app reads both).
- * Include those fields on the `user` object in this response and on `GET /api/auth/me`.
+ * **Backend (MongoDB):** Save profile fields from `PATCH /user/update` (Complete Profile) and/or this exchange.
+ * Include `dateOfBirth`, `gender`, `phone` on `user` in responses and on `GET /api/auth/me`.
+ *
+ * **Deferring a “real” user row until Complete Profile (server-side only):** This app always exchanges
+ * after Firebase sign-in so it can call authenticated `PATCH /user/update`. To avoid committing a full
+ * user until DOB/gender/phone exist, the API can (for example) create a **provisional** user on this
+ * endpoint, mark `profileComplete: false`, and only promote or unlock features after the first
+ * successful profile PATCH — or return JWT tied to Firebase uid while persisting the Mongo user on
+ * that PATCH. The mobile client cannot skip this exchange without losing an access token for PATCH.
  */
 export async function exchangeFirebaseIdTokenForBackendSession(
   idToken: string

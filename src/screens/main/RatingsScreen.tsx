@@ -1,5 +1,7 @@
 import React, { useCallback, useMemo, useRef, useState } from 'react';
+import type { DimensionValue } from 'react-native';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import UserAvatar from '../../components/common/UserAvatar';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect, useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
@@ -8,13 +10,16 @@ import { useAuth } from '../../contexts/AuthContext';
 import { COLORS } from '../../constants/colors';
 import { getUserRatingsSummary, type UserRatingReview } from '../../services/ratings';
 import type { ProfileStackParamList } from '../../navigation/types';
+import { calculateAge } from '../../utils/calculateAge';
 
 export default function RatingsScreen(): React.JSX.Element {
-  const navigation = useNavigation();
+  const navigation = useNavigation<NativeStackNavigationProp<ProfileStackParamList>>();
   const { user } = useAuth();
   const route = useRoute<RouteProp<ProfileStackParamList, 'Ratings'>>();
   const targetUserId = (route.params?.userId ?? user?.id ?? '').trim();
   const targetDisplayName = route.params?.displayName?.trim() || user?.name?.trim() || 'Drivido User';
+  const targetDateOfBirth = (route.params as any)?.dateOfBirth;
+  const targetAge = calculateAge(targetDateOfBirth);
   const displayName = targetDisplayName;
   const isViewingSelf = Boolean(user?.id?.trim() && targetUserId === user.id.trim());
   const [subjectAvatarUrl, setSubjectAvatarUrl] = useState<string | undefined>();
@@ -175,6 +180,11 @@ export default function RatingsScreen(): React.JSX.Element {
               backgroundColor="#dbeafe"
               fallbackTextColor="#1e40af"
             />
+            {targetAge !== null ? (
+              <View style={styles.topAgeBadge}>
+                <Text style={styles.topAgeBadgeText}>{targetAge}y</Text>
+              </View>
+            ) : null}
           </View>
           <View style={styles.topTitleWrap}>
             <Text style={styles.topTitle}>Ratings</Text>
@@ -216,7 +226,7 @@ export default function RatingsScreen(): React.JSX.Element {
           <Text style={styles.sectionTitle}>RATING BREAKDOWN</Text>
           <View style={styles.breakdownCard}>
             {breakdown.map((row) => {
-              const width = `${Math.max(2, Math.round((row.count / row.total) * 100))}%`;
+              const width: DimensionValue = `${Math.max(2, Math.round((row.count / row.total) * 100))}%`;
               return (
                 <View key={row.stars} style={styles.breakdownRow}>
                   <Text style={styles.breakdownLabel}>
@@ -260,7 +270,7 @@ export default function RatingsScreen(): React.JSX.Element {
                     ...(review.fromUserAvatarUrl?.trim()
                       ? { avatarUrl: review.fromUserAvatarUrl.trim() }
                       : {}),
-                  } as any);
+                  });
                 }}
               >
                 <View style={styles.reviewHead}>
@@ -351,6 +361,25 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     alignItems: 'center',
     justifyContent: 'center',
+    position: 'relative',
+  },
+  topAgeBadge: {
+    position: 'absolute',
+    right: -6,
+    bottom: -6,
+    paddingVertical: 2,
+    paddingHorizontal: 4,
+    borderRadius: 8,
+    backgroundColor: COLORS.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1.5,
+    borderColor: COLORS.background,
+  },
+  topAgeBadgeText: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: COLORS.white,
   },
   topTitle: {
     fontSize: 24,

@@ -11,8 +11,8 @@ import {
   firebaseAuthErrorToMessage,
   resendEmailVerificationForCurrentUser,
 } from '../../services/firebaseAuthBridge';
-import { requestForegroundLocationAfterAuth } from '../../services/location-permission-auth';
 import { rootNavigationRef } from '../../navigation/rootNavigationRef';
+import { resetNavigationToCompleteProfile } from '../../navigation/navigateToCompleteProfile';
 
 type Props = RootStackScreenProps<'VerifyEmail'>;
 
@@ -26,16 +26,8 @@ export default function VerifyEmail(): React.JSX.Element {
   const [resending, setResending] = useState(false);
   const [continuing, setContinuing] = useState(false);
 
-  const goMainAfterSuccess = () => {
-    void requestForegroundLocationAfterAuth();
-    if (rootNavigationRef.isReady()) {
-      rootNavigationRef.reset({
-        index: 0,
-        routes: [{ name: 'Main' }],
-      });
-    } else {
-      navigation.reset({ index: 0, routes: [{ name: 'Main' }] });
-    }
+  const goToCompleteProfileAfterSuccess = () => {
+    resetNavigationToCompleteProfile();
   };
 
   const handleResend = async () => {
@@ -55,7 +47,7 @@ export default function VerifyEmail(): React.JSX.Element {
     try {
       const result = await retrySessionAfterEmailVerified();
       if (result.ok) {
-        goMainAfterSuccess();
+        goToCompleteProfileAfterSuccess();
         return;
       }
       Alert.alert('Not verified yet', result.message ?? 'Try again after opening the email link.');

@@ -9,9 +9,9 @@ export function useAuth() {
   const ctx = useAuthContext();
 
   const requireAuth = useCallback((): User | null => {
-    if (!ctx.isAuthenticated || !ctx.user) return null;
+    if (!ctx.isAuthenticated || !ctx.user || ctx.needsProfileCompletion) return null;
     return ctx.user;
-  }, [ctx.isAuthenticated, ctx.user]);
+  }, [ctx.isAuthenticated, ctx.needsProfileCompletion, ctx.user]);
 
   return {
     ...ctx,

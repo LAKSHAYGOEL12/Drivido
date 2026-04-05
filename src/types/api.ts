@@ -127,6 +127,27 @@ export interface CreateRidePayload {
   instantBooking?: boolean;
   /** Google Directions (or fallback) travel time in seconds — used for arrival time on cards. */
   estimatedDurationSeconds?: number;
+  /** Copied from user profile when publishing; backend may store on ride. */
+  vehicleModel?: string;
+  licensePlate?: string;
+  vehicleColor?: string;
+  /** Stable id from GET /user/vehicles — for ride traceability when backend supports it. */
+  vehicleId?: string;
+}
+
+/** Owner-only timeline from GET /api/rides/:id (ride-level `bookingHistory` in API). */
+export interface RideBookingHistoryEvent {
+  id: string;
+  eventType: string;
+  seatsBefore: number;
+  seatsChanged: number;
+  seatsAfter: number;
+  createdAt: string;
+}
+
+export interface RideBookingHistoryUserGroup {
+  userId: string;
+  events: RideBookingHistoryEvent[];
 }
 
 /** Single ride in GET /rides response. For UI labels use ridePublisherDisplayName (name over username). */
@@ -180,16 +201,23 @@ export interface RideListItem {
   price?: string;
   /** Publisher/driver profile image when API provides it (list or detail). */
   publisherAvatarUrl?: string;
+  /** Publisher/driver date of birth when API provides it. */
+  publisherDateOfBirth?: string;
   /**
    * Optional aggregates for the publisher (driver), from GET /rides list/detail when backend embeds them.
    * Passed into Owner profile when a signed-in user opens Details (no ratings fetch on ride detail).
    */
   publisherAvgRating?: number;
   publisherRatingCount?: number;
+  /** When API exposes driver contact on ride list/detail (see `pickPublisherPhoneFromRide`). */
+  publisherPhone?: string;
   /** Optional; show under driver name on ride detail when API returns them. */
   vehicleModel?: string;
   licensePlate?: string;
   vehicleNumber?: string;
+  vehicleColor?: string;
+  /** When ride was published with a profile vehicle id (GET /rides detail may return it). */
+  vehicleId?: string;
   /**
    * When the ride (or trip) is completed — used to close chat after a grace period.
    * Prefer ISO 8601 from GET /rides or ride detail.
@@ -206,6 +234,11 @@ export interface RideListItem {
    * (e.g. cancelled) for list filters and badges.
    */
   myBookingStatus?: string;
+  /**
+   * When GET /api/rides/:id (or wrapped payload) includes copy because the viewer already has
+   * an active booking on this ride. Backend-owned string; app shows it once as a toast on detail.
+   */
+  viewerBookingNotice?: string;
   /** When present (e.g. from ride detail), list of passengers who booked. */
   bookings?: Array<{
     id: string;
@@ -221,7 +254,32 @@ export interface RideListItem {
     /** Embedded passenger profile when API includes it on booking / nested user. */
     avgRating?: number;
     ratingCount?: number;
+    /** Passenger date of birth when API provides it. */
+    dateOfBirth?: string;
+    /** Passenger phone when API includes it for ride owner (see `pickPassengerPhoneFromBooking`). */
+    phone?: string;
+    passengerPhone?: string;
+    /**
+     * Optional timeline for this passenger (partial seat cancels, etc.) when backend
+     * keeps one active booking row but still returns past seat snapshots.
+     */
+    bookingHistory?: Array<{
+      id?: string;
+      seats: number;
+      status?: string;
+      bookedAt?: string;
+    }>;
+    /**
+     * When true, `cancelled_by_owner` row still holds seats (partial removal). Omit/false = full removal
+     * even if `seats` is non-zero for display.
+     */
+    ownerPartialSeatRemoval?: boolean;
   }>;
+  /**
+   * Populated from ride detail: `bookingHistory` array grouped by `userId` (owner view).
+   * Distinct from per-booking `bookings[].bookingHistory` snapshots.
+   */
+  rideBookingHistory?: RideBookingHistoryUserGroup[];
 }
 
 export interface CreateRideResponse {
@@ -272,6 +330,8 @@ export interface RideDetailResponse {
     avatarUrl?: string;
     avgRating?: number;
     ratingCount?: number;
+    phone?: string;
+    passengerPhone?: string;
   }>;
 }
 

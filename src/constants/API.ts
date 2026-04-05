@@ -31,6 +31,13 @@ export const API = {
       cancel: (id: string) => `/rides/${id}/cancel`,
       // Legacy alias; prefer myPublished when the backend supports it.
       mine: '/rides/mine',
+      /**
+       * GET — public trip stats for profile (`completed`, `cancelled`, `totalTrips`, `lastTripAt`, etc.).
+       * Client also probes `/trips/summary/:userId` when this 404s.
+       */
+      userTripsSummary: (userId: string) => `/users/${encodeURIComponent(userId)}/trips-summary`,
+      /** Alternate shape some backends use (try after `userTripsSummary`). */
+      tripsSummaryByUserId: (userId: string) => `/rides/trips-summary/${encodeURIComponent(userId)}`,
     },
     bookings: {
       create: '/bookings',
@@ -39,11 +46,23 @@ export const API = {
       reject: (bookingId: string) => `/bookings/${bookingId}/reject`,
       /** DELETE — cancel passenger's own booking (body optional per backend). */
       cancel: (bookingId: string) => `/bookings/${bookingId}`,
+      /**
+       * POST — ride owner removes a confirmed passenger. Backend should set booking status to
+       * `cancelled_by_owner` (or equivalent), block new bookings for that user+ride, and push-notify the passenger.
+       */
+      removePassenger: (bookingId: string) => `/bookings/${bookingId}/remove-passenger`,
     },
     user: {
       profile: '/user/profile',
       update: '/user/update',
       avatar: '/user/avatar',
+      /** CRUD for profile vehicles (max 2). Also returned on GET /auth/me. */
+      vehicles: {
+        list: '/user/vehicles',
+        create: '/user/vehicles',
+        update: (vehicleId: string) => `/user/vehicles/${encodeURIComponent(vehicleId)}`,
+        delete: (vehicleId: string) => `/user/vehicles/${encodeURIComponent(vehicleId)}`,
+      },
       /**
        * POST — register Expo push token `{ expoPushToken, platform }`.
        * DELETE — remove tokens for current user (logout); optional if backend only upserts.
@@ -77,6 +96,13 @@ export const API = {
       remove: (id: string) => `/recent-searches/${id}`,
       /** DELETE - clear current user's recent searches */
       clear: '/recent-searches',
+    },
+    /** Same contract pattern as recentSearches — sync across devices when logged in. */
+    recentPublished: {
+      list: '/recent-published',
+      upsert: '/recent-published',
+      remove: (id: string) => `/recent-published/${id}`,
+      clear: '/recent-published',
     },
     recentPlaces: {
       /** GET - list current user's recent places */

@@ -26,6 +26,7 @@ import type { RootStackParamList } from '../../navigation/types';
 import { hasAuthAccessToken } from '../../services/api';
 import { getFirebaseAuth } from '../../config/firebase';
 import { useAuth } from '../../contexts/AuthContext';
+import { resetNavigationToCompleteProfile } from '../../navigation/navigateToCompleteProfile';
 import { requestForegroundLocationAfterAuth } from '../../services/location-permission-auth';
 import {
   firebaseAuthErrorToMessage,
@@ -47,19 +48,21 @@ export default function LoginBottomSheet({
   navigation,
 }: LoginBottomSheetProps): React.JSX.Element {
   const insets = useSafeAreaInsets();
-  const { isAwaitingBackendSession, needsEmailVerification, isAuthenticated } = useAuth();
+  const { isAwaitingBackendSession, needsEmailVerification, isAuthenticated, needsProfileCompletion } = useAuth();
   const authGateRef = useRef({
     isAwaitingBackendSession,
     needsEmailVerification,
     isAuthenticated,
+    needsProfileCompletion,
   });
   useEffect(() => {
     authGateRef.current = {
       isAwaitingBackendSession,
       needsEmailVerification,
       isAuthenticated,
+      needsProfileCompletion,
     };
-  }, [isAwaitingBackendSession, needsEmailVerification, isAuthenticated]);
+  }, [isAwaitingBackendSession, needsEmailVerification, isAuthenticated, needsProfileCompletion]);
 
   const [phoneOrEmail, setPhoneOrEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -126,24 +129,32 @@ export default function LoginBottomSheet({
     });
   }, [onClose, signingIn]);
 
-  const finishGuestSuccess = useCallback(() => {
-    setSigningIn(true);
-    setOverlaySuccess(true);
-    const SUCCESS_MS = 420;
-    setTimeout(() => {
-      void requestForegroundLocationAfterAuth();
-      setSigningIn(false);
-      setOverlaySuccess(false);
-      setPhoneOrEmail('');
-      setPassword('');
-      setErrors({});
-      onClose();
-      // Let the modal fade/slide finish before booking alert / parent work — avoids stacked flashes.
-      InteractionManager.runAfterInteractions(() => {
-        requestAnimationFrame(() => onLoggedIn?.());
-      });
-    }, SUCCESS_MS);
-  }, [onClose, onLoggedIn]);
+  const finishGuestSuccess = useCallback(
+    (opts?: { profileIncomplete?: boolean }) => {
+      const profileIncomplete = opts?.profileIncomplete ?? false;
+      setSigningIn(true);
+      setOverlaySuccess(true);
+      const SUCCESS_MS = 420;
+      setTimeout(() => {
+        void requestForegroundLocationAfterAuth();
+        if (profileIncomplete) {
+          resetNavigationToCompleteProfile();
+        }
+        setSigningIn(false);
+        setOverlaySuccess(false);
+        setPhoneOrEmail('');
+        setPassword('');
+        setErrors({});
+        onClose();
+        InteractionManager.runAfterInteractions(() => {
+          requestAnimationFrame(() => {
+            if (!profileIncomplete) onLoggedIn?.();
+          });
+        });
+      }, SUCCESS_MS);
+    },
+    [onClose, onLoggedIn]
+  );
 
   const isEmail = validation.email(phoneOrEmail);
 
@@ -178,9 +189,10 @@ export default function LoginBottomSheet({
       while (Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 80));
         const firebaseUser = getFirebaseAuth()?.currentUser;
-        const { needsEmailVerification: nev, isAuthenticated: authed } = authGateRef.current;
+        const { needsEmailVerification: nev, isAuthenticated: authed, needsProfileCompletion: npc } =
+          authGateRef.current;
         if (firebaseUser && hasAuthAccessToken() && !nev) {
-          finishGuestSuccess();
+          finishGuestSuccess({ profileIncomplete: npc });
           return;
         }
         if (nev) {
@@ -189,15 +201,19 @@ export default function LoginBottomSheet({
           return;
         }
         if (authed && !nev) {
-          finishGuestSuccess();
+          finishGuestSuccess({ profileIncomplete: npc });
           return;
         }
       }
       await new Promise((r) => setTimeout(r, 150));
       const firebaseUserFinal = getFirebaseAuth()?.currentUser;
-      const { needsEmailVerification: nevFinal, isAuthenticated: authedFinal } = authGateRef.current;
+      const {
+        needsEmailVerification: nevFinal,
+        isAuthenticated: authedFinal,
+        needsProfileCompletion: npcFinal,
+      } = authGateRef.current;
       if (firebaseUserFinal && hasAuthAccessToken() && !nevFinal) {
-        finishGuestSuccess();
+        finishGuestSuccess({ profileIncomplete: npcFinal });
         return;
       }
       if (nevFinal) {
@@ -206,7 +222,7 @@ export default function LoginBottomSheet({
         return;
       }
       if (authedFinal) {
-        finishGuestSuccess();
+        finishGuestSuccess({ profileIncomplete: npcFinal });
         return;
       }
       setSigningIn(false);

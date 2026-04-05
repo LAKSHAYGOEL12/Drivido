@@ -47,6 +47,7 @@ export default function PublishPriceScreen(): React.JSX.Element {
     selectedDurationSeconds: durationFromRoute,
     publishRestoreKey,
     initialPricePerSeat,
+    publishRecentEditEntry,
   } = route.params;
 
   const distanceKmForReco = useMemo(
@@ -166,6 +167,40 @@ export default function PublishPriceScreen(): React.JSX.Element {
           : fallbackSeconds,
     };
     if (publishRestoreKey) params._publishRestoreKey = publishRestoreKey;
+
+    if (publishRecentEditEntry) {
+      navigation.dispatch(
+        CommonActions.reset({
+          index: 0,
+          routes: [
+            {
+              name: 'PublishRecentEdit',
+              params: {
+                entry: publishRecentEditEntry,
+                selectedFrom,
+                selectedTo,
+                pickupLatitude,
+                pickupLongitude,
+                destinationLatitude,
+                destinationLongitude,
+                selectedRate: String(finalPrice),
+                initialPricePerSeat: finalPrice,
+                selectedDistanceKm: distanceKmForReco,
+                selectedDurationSeconds:
+                  typeof durationFromRoute === 'number' && !Number.isNaN(durationFromRoute)
+                    ? durationFromRoute
+                    : fallbackSeconds,
+                ...(selectedDateIso ? { selectedDateIso } : {}),
+                ...(typeof selectedTimeHour === 'number' ? { selectedTimeHour } : {}),
+                ...(typeof selectedTimeMinute === 'number' ? { selectedTimeMinute } : {}),
+              },
+            },
+          ],
+        })
+      );
+      return;
+    }
+
     navigation.dispatch(
       CommonActions.reset({
         index: 0,

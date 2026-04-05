@@ -63,19 +63,29 @@ const config = {
       },
     },
     // iOS bundle identifier (required for prebuild with dynamic config)
-    ios: {
-      ...(appJson.expo.ios || {}),
-      bundleIdentifier: appJson.expo.ios?.bundleIdentifier || 'com.drivido.app',
-      /** Allow HTTP to LAN (e.g. EXPO_PUBLIC_API_URL=http://192.168.x.x:3000) — needed for avatar upload on device. */
-      infoPlist: {
-        ...(appJson.expo.ios?.infoPlist && typeof appJson.expo.ios.infoPlist === 'object'
+    ios: (() => {
+      const basePlist =
+        appJson.expo.ios?.infoPlist && typeof appJson.expo.ios.infoPlist === 'object'
           ? appJson.expo.ios.infoPlist
-          : {}),
-        NSAppTransportSecurity: {
-          NSAllowsLocalNetworking: true,
+          : {};
+      const existingSchemes = Array.isArray(basePlist.LSApplicationQueriesSchemes)
+        ? basePlist.LSApplicationQueriesSchemes
+        : [];
+      const telSchemes = [...new Set([...existingSchemes, 'tel', 'telprompt'])];
+      return {
+        ...(appJson.expo.ios || {}),
+        bundleIdentifier: appJson.expo.ios?.bundleIdentifier || 'com.drivido.app',
+        /** Allow HTTP to LAN (e.g. EXPO_PUBLIC_API_URL=http://192.168.x.x:3000) — needed for avatar upload on device. */
+        infoPlist: {
+          ...basePlist,
+          NSAppTransportSecurity: {
+            NSAllowsLocalNetworking: true,
+          },
+          /** Lets iOS treat `tel:` as allowed for `canOpenURL`; Phone / FaceTime still opened via `openURL`. */
+          LSApplicationQueriesSchemes: telSchemes,
         },
-      },
-    },
+      };
+    })(),
   },
 };
 

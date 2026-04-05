@@ -52,6 +52,10 @@ export default function SearchStack(): React.JSX.Element {
         name="RideDetail"
         component={RideDetailScreen}
         options={{ headerShown: false }}
+        getId={({ params }) => {
+          const id = (params as { ride?: { id?: string } } | undefined)?.ride?.id?.trim();
+          return id ? `ride-${id}` : undefined;
+        }}
       />
       <Stack.Screen
         name="PublishedRideRouteMap"

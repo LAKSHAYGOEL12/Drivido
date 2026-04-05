@@ -1,8 +1,7 @@
 import React from 'react';
 import { StyleSheet, View } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { CommonActions } from '@react-navigation/native';
-import { getFocusedRouteNameFromRoute } from '@react-navigation/native';
+import { CommonActions, getFocusedRouteNameFromRoute } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import type { MainTabParamList } from './types';
 import UserAvatar from '../components/common/UserAvatar';
@@ -15,8 +14,32 @@ import { useInbox } from '../contexts/InboxContext';
 import { useAuth } from '../contexts/AuthContext';
 import { COLORS } from '../constants/colors';
 import { navigateToGuestLogin } from './navigateToGuestLogin';
+import { findMainTabNavigator } from './findMainTabNavigator';
 
 const Tab = createBottomTabNavigator<MainTabParamList>();
+
+/** Slightly enlarges the focused tab icon vs inactive tabs. */
+const TAB_ICON_FOCUS_SCALE = 1.14;
+
+function ScaledTabIcon({
+  focused,
+  children,
+}: {
+  focused: boolean;
+  children: React.ReactNode;
+}): React.JSX.Element {
+  return (
+    <View
+      style={{
+        alignItems: 'center',
+        justifyContent: 'center',
+        transform: [{ scale: focused ? TAB_ICON_FOCUS_SCALE : 1 }],
+      }}
+    >
+      {children}
+    </View>
+  );
+}
 
 function ProfileTabBarIcon({
   focused,
@@ -50,16 +73,6 @@ function ProfileTabBarIcon({
       />
     </View>
   );
-}
-
-function findMainTabNavigator(navigation: any) {
-  let current = navigation?.getParent?.() as any | undefined;
-  for (let i = 0; i < 5 && current; i += 1) {
-    const names: string[] | undefined = current?.getState?.()?.routeNames;
-    if (names?.includes('SearchStack') && names?.includes('YourRides')) return current;
-    current = current.getParent?.();
-  }
-  return null;
 }
 
 /** Nested screen name at top of Inbox stack (InboxList, Chat, RideDetail, …). */
@@ -96,7 +109,8 @@ function resetInboxTabToInboxList(mainTabs: { dispatch: (a: unknown) => void; ge
 
 export default function BottomTabs(): React.JSX.Element {
   const { hasUnread } = useInbox();
-  const { user, isAuthenticated } = useAuth();
+  const { user, isAuthenticated, needsProfileCompletion } = useAuth();
+  const sessionReady = isAuthenticated && !needsProfileCompletion;
 
   return (
     <Tab.Navigator
@@ -146,11 +160,13 @@ export default function BottomTabs(): React.JSX.Element {
             name === 'OwnerRatingsModal';
           return {
             headerShown: false,
-            title: 'Search',
-            tabBarLabel: 'Search',
+            title: 'Find',
+            tabBarLabel: 'Find',
             tabBarStyle: hideTabs ? { display: 'none' } : undefined,
             tabBarIcon: ({ focused, color, size }: { focused: boolean; color: string; size: number }) => (
-              <Ionicons name={focused ? 'search' : 'search-outline'} size={size} color={color} />
+              <ScaledTabIcon focused={focused}>
+                <Ionicons name={focused ? 'search' : 'search-outline'} size={size} color={color} />
+              </ScaledTabIcon>
             ),
           };
         }}
@@ -160,10 +176,20 @@ export default function BottomTabs(): React.JSX.Element {
         component={PublishStack}
         listeners={({ navigation }) => ({
           tabPress: (e) => {
-            if (!isAuthenticated) {
+            if (!sessionReady) {
               e.preventDefault();
               navigateToGuestLogin(navigation, { reason: 'tab' });
+              return;
             }
+            e.preventDefault();
+            (navigation as { navigate: (config: Record<string, unknown>) => void }).navigate({
+              name: 'PublishStack',
+              params: {
+                screen: 'PublishRide',
+                params: {},
+              },
+              merge: false,
+            });
           },
         })}
         options={({ route }) => {
@@ -173,14 +199,17 @@ export default function BottomTabs(): React.JSX.Element {
             name === 'Chat' ||
             name === 'LocationPicker' ||
             name === 'PublishRoutePreview' ||
-            name === 'PublishPrice';
+            name === 'PublishPrice' ||
+            name === 'PublishRecentEdit';
           return {
             headerShown: false,
             title: 'Publish a Ride',
             tabBarLabel: 'Publish',
             tabBarStyle: hideTabs ? { display: 'none' } : undefined,
             tabBarIcon: ({ focused, color, size }: { focused: boolean; color: string; size: number }) => (
-              <Ionicons name={focused ? 'add-circle' : 'add-circle-outline'} size={size} color={color} />
+              <ScaledTabIcon focused={focused}>
+                <Ionicons name={focused ? 'add-circle' : 'add-circle-outline'} size={size} color={color} />
+              </ScaledTabIcon>
             ),
           };
         }}
@@ -190,7 +219,7 @@ export default function BottomTabs(): React.JSX.Element {
         component={RidesStack}
         listeners={({ navigation, route }) => ({
           tabPress: (e) => {
-            if (!isAuthenticated) {
+            if (!sessionReady) {
               e.preventDefault();
               navigateToGuestLogin(navigation, { reason: 'tab' });
               return;
@@ -222,7 +251,9 @@ export default function BottomTabs(): React.JSX.Element {
             tabBarLabel: 'Rides',
             tabBarStyle: hideTabs ? { display: 'none' } : undefined,
             tabBarIcon: ({ focused, color, size }: { focused: boolean; color: string; size: number }) => (
-              <Ionicons name={focused ? 'car' : 'car-outline'} size={size} color={color} />
+              <ScaledTabIcon focused={focused}>
+                <Ionicons name={focused ? 'car' : 'car-outline'} size={size} color={color} />
+              </ScaledTabIcon>
             ),
           };
         }}
@@ -237,7 +268,7 @@ export default function BottomTabs(): React.JSX.Element {
            * on the nested stack — so we read the **live** Inbox stack via `navigation.getState()`.
            */
           focus: () => {
-            if (!isAuthenticated) return;
+            if (!sessionReady) return;
             const mainTabs = findMainTabNavigator(navigation);
             if (!mainTabs?.dispatch || !mainTabs?.getState) return;
             const focused = getInboxStackFocusedName(navigation);
@@ -246,7 +277,7 @@ export default function BottomTabs(): React.JSX.Element {
             }
           },
           tabPress: (e) => {
-            if (!isAuthenticated) {
+            if (!sessionReady) {
               e.preventDefault();
               navigateToGuestLogin(navigation, { reason: 'tab' });
               return;
@@ -282,12 +313,14 @@ export default function BottomTabs(): React.JSX.Element {
             name === 'OwnerRatingsModal';
           return {
             headerShown: false,
-            title: 'Inbox',
-            tabBarLabel: 'Inbox',
+            title: 'Chats',
+            tabBarLabel: 'Chats',
             tabBarBadge: hasUnread ? 1 : undefined,
             tabBarStyle: hideTabs ? { display: 'none' } : undefined,
             tabBarIcon: ({ focused, color, size }) => (
-              <Ionicons name={focused ? 'chatbubbles' : 'chatbubbles-outline'} size={size} color={color} />
+              <ScaledTabIcon focused={focused}>
+                <Ionicons name={focused ? 'chatbubbles' : 'chatbubbles-outline'} size={size} color={color} />
+              </ScaledTabIcon>
             ),
           };
         }}
@@ -296,101 +329,33 @@ export default function BottomTabs(): React.JSX.Element {
         name="Profile"
         component={ProfileStack}
         listeners={({ navigation }) => ({
-          focus: () => {
-            // If the Profile tab becomes focused (even indirectly), always show *my* profile.
-            // This prevents "other user profile" sticking in the tab history.
-            const uid = user?.id?.trim();
-            if (!uid) return;
-
-            const mainTabs = findMainTabNavigator(navigation);
-            if (!mainTabs?.dispatch || !mainTabs?.getState) return;
-            const tabState = mainTabs.getState();
-            const routes = (tabState?.routes ?? []) as any[];
-            const profileIndex = routes.findIndex((r) => r?.name === 'Profile');
-
-            const nextProfileParams = {
-              userId: uid,
-              displayName: user?.name,
-              ...(user?.avatarUrl?.trim() ? { avatarUrl: user.avatarUrl.trim() } : {}),
-            };
-            // Always overwrite the Profile tab nested stack to ProfileHome.
-            const nextRoutes = routes.map((r) => {
-              if (r?.name !== 'Profile') return r;
-              return {
-                ...r,
-                state: {
-                  routes: [{ name: 'ProfileHome', params: nextProfileParams }],
-                  index: 0,
-                },
-              };
-            });
-
-            mainTabs.dispatch(
-              CommonActions.reset({
-                index: profileIndex >= 0 ? profileIndex : tabState?.index ?? 4,
-                routes: nextRoutes,
-              })
-            );
-          },
+          /**
+           * Match Find / Publish: tab bar tap replaces nested stack in one action (`merge: false`).
+           * Avoid `focus` + `CommonActions.reset` — that ran after the first paint and briefly showed
+           * stale screens (e.g. someone else’s Trips left on the Profile stack).
+           */
           tabPress: (e) => {
-            if (!isAuthenticated) {
+            if (!sessionReady) {
               e.preventDefault();
               navigateToGuestLogin(navigation, { reason: 'tab' });
               return;
             }
-            // Always return to *my* profile when the user taps Profile tab.
             e.preventDefault();
             const uid = user?.id?.trim();
-
-            const mainTabs = findMainTabNavigator(navigation);
-            if (mainTabs?.dispatch && mainTabs?.getState) {
-              const tabState = mainTabs.getState?.();
-              const routes = (tabState?.routes ?? []) as any[];
-              const profileIndex = routes.findIndex((r) => r?.name === 'Profile');
-              const nextProfileParams = uid
-                ? {
-                    userId: uid,
-                    displayName: user?.name,
-                    ...(user?.avatarUrl?.trim() ? { avatarUrl: user.avatarUrl.trim() } : {}),
-                  }
-                : undefined;
-
-              const nextRoutes = routes.map((r) => {
-                if (r?.name !== 'Profile') return r;
-                return {
-                  ...r,
-                  state: {
-                    routes: [
-                      {
-                        name: 'ProfileHome',
-                        params: nextProfileParams,
-                      },
-                    ],
-                    index: 0,
-                  },
-                };
-              });
-
-              mainTabs.dispatch(
-                CommonActions.reset({
-                  index: profileIndex >= 0 ? profileIndex : tabState?.index ?? 4,
-                  routes: nextRoutes,
-                })
-              );
-              return;
-            }
-
-            // Fallback: if we can’t find parent state, just navigate.
-            navigation.navigate('Profile', {
-              screen: 'ProfileHome',
-              params: uid
-                ? {
-                    userId: uid,
-                    displayName: user?.name,
-                    ...(user?.avatarUrl?.trim() ? { avatarUrl: user.avatarUrl.trim() } : {}),
-                  }
-                : undefined,
-            } as any);
+            navigation.navigate({
+              name: 'Profile',
+              params: {
+                screen: 'ProfileHome',
+                params: uid
+                  ? {
+                      userId: uid,
+                      displayName: user?.name,
+                      ...(user?.avatarUrl?.trim() ? { avatarUrl: user.avatarUrl.trim() } : {}),
+                    }
+                  : undefined,
+              },
+              merge: false,
+            } as never);
           },
         })}
         options={({ route }) => {
@@ -398,6 +363,8 @@ export default function BottomTabs(): React.JSX.Element {
           // Show tabs on your main Profile screen, hide only for nested views.
           const hideTabs =
             name === 'ProfileEntry' ||
+            name === 'EditProfile' ||
+            name === 'Trips' ||
             name === 'Ratings' ||
             name === 'RatingsScreen';
           return {
@@ -406,13 +373,15 @@ export default function BottomTabs(): React.JSX.Element {
             tabBarLabel: 'Profile',
             tabBarStyle: hideTabs ? { display: 'none' } : undefined,
             tabBarIcon: ({ focused, color, size }) => (
-              <ProfileTabBarIcon
-                focused={focused}
-                color={color}
-                size={size}
-                avatarUrl={user?.avatarUrl}
-                displayName={user?.name ?? 'You'}
-              />
+              <ScaledTabIcon focused={focused}>
+                <ProfileTabBarIcon
+                  focused={focused}
+                  color={color}
+                  size={size}
+                  avatarUrl={user?.avatarUrl}
+                  displayName={user?.name ?? 'You'}
+                />
+              </ScaledTabIcon>
             ),
           };
         }}

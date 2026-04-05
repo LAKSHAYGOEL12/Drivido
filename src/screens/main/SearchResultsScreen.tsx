@@ -201,6 +201,7 @@ function normalizeRideItem(raw: Record<string, unknown>): RideListItem {
     vehicleModel: toStr(r.vehicleModel ?? r.vehicle_model),
     licensePlate: toStr(r.licensePlate ?? r.license_plate),
     vehicleNumber: toStr(r.vehicleNumber ?? r.vehicle_number),
+    vehicleColor: toStr(r.vehicleColor ?? r.vehicle_color),
     status: (() => {
       const st = toStr(r.status ?? r.ride_status);
       if (st) return st;
@@ -564,7 +565,8 @@ type RidesResponse = { rides?: unknown[] } | unknown[];
 export default function SearchResultsScreen(): React.JSX.Element {
   const navigation = useNavigation();
   const route = useRoute<SearchResultsRouteProp>();
-  const { user, isAuthenticated } = useAuth();
+  const { user, isAuthenticated, needsProfileCompletion } = useAuth();
+  const sessionReady = isAuthenticated && !needsProfileCompletion;
   const recentUserKey = (user?.id ?? user?.phone ?? '').trim();
   const {
     from,
@@ -772,7 +774,7 @@ export default function SearchResultsScreen(): React.JSX.Element {
   /** Only persist after results load successfully — not when tapping Search on the previous screen. */
   const recentSavedSigRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!isAuthenticated || loading || error) return;
+    if (!sessionReady || loading || error) return;
     const sig = `${searchFrom}|${searchTo}|${searchDate}|${passengersForRecent}|${searchFromLat ?? ''}|${searchFromLon ?? ''}|${searchToLat ?? ''}|${searchToLon ?? ''}`;
     if (recentSavedSigRef.current === sig) return;
     recentSavedSigRef.current = sig;
@@ -792,7 +794,7 @@ export default function SearchResultsScreen(): React.JSX.Element {
       recentUserKey
     );
   }, [
-    isAuthenticated,
+    sessionReady,
     loading,
     error,
     searchFrom,
@@ -1212,7 +1214,7 @@ export default function SearchResultsScreen(): React.JSX.Element {
                       style={[styles.editTextInput, !draftTo.trim() && styles.editTextPlaceholder]}
                       numberOfLines={1}
                     >
-                      {draftTo || 'Where to?'}
+                      {draftTo || 'Add destination'}
                     </Text>
                   </TouchableOpacity>
                 </View>

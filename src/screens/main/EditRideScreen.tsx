@@ -23,6 +23,7 @@ import DatePickerModal from '../../components/common/DatePickerModal';
 import PassengersPickerModal from '../../components/common/PassengersPickerModal';
 import { showToast } from '../../utils/toast';
 import { bookingIsCancelled } from '../../utils/bookingStatus';
+import { formatPublishStyleDateLabel } from '../../utils/rideDisplay';
 
 const MIN_LEAD_MINUTES = 30;
 const CLOCK_SIZE = 232;
@@ -123,6 +124,17 @@ export default function EditRideScreen(): React.JSX.Element {
     return new Date(y, (m ?? 1) - 1, d ?? 1);
   }, [dateValue]);
 
+  /** Same wording as Publish ride (Today/Tomorrow/weekday + month + day). */
+  const dateDisplayLabel = useMemo(() => {
+    const t = dateValue.trim();
+    if (!t) return '';
+    const [y, m, d] = t.split('-').map(Number);
+    if ([y, m, d].some((n) => Number.isNaN(n)) || m < 1 || m > 12 || d < 1 || d > 31) {
+      return t;
+    }
+    return formatPublishStyleDateLabel(new Date(y, m - 1, d));
+  }, [dateValue]);
+
   const timeLabel = `${String(timeHour).padStart(2, '0')}:${String(timeMinute).padStart(2, '0')}`;
   const PRICE_STEP = 5;
 
@@ -197,7 +209,7 @@ export default function EditRideScreen(): React.JSX.Element {
         touched = true;
       }
       if (!touched) return;
-      (navigation as { setParams: (params: Record<string, unknown>) => void }).setParams({
+      (navigation as unknown as { setParams: (params: Record<string, unknown>) => void }).setParams({
         selectedFrom: undefined,
         selectedTo: undefined,
         preservedDate: undefined,
@@ -349,7 +361,7 @@ export default function EditRideScreen(): React.JSX.Element {
               <View style={styles.redPin} />
             </View>
             <View style={styles.pickTextWrap}>
-              <Text style={styles.pickMainText} numberOfLines={1}>{dropLocation || 'Where to?'}</Text>
+              <Text style={styles.pickMainText} numberOfLines={1}>{dropLocation || 'Add destination'}</Text>
               <Text style={styles.pickSubText}>DESTINATION</Text>
             </View>
             <Ionicons name={majorFieldLocked ? 'lock-closed-outline' : 'chevron-forward'} size={20} color={COLORS.textMuted} />
@@ -362,11 +374,11 @@ export default function EditRideScreen(): React.JSX.Element {
             activeOpacity={majorFieldLocked ? 1 : 0.75}
           >
             <View style={styles.fieldLeft}>
-              <Ionicons name="calendar-outline" size={22} color={COLORS.textSecondary} />
+              <Ionicons name="calendar-outline" size={24} color={COLORS.textSecondary} />
             </View>
             <View style={styles.fieldInputWrap}>
-              <Text style={styles.fieldValue}>{dateValue || 'Select date'}</Text>
-              <Text style={styles.fieldLabel}>DEPARTURE DATE</Text>
+              <Text style={styles.fieldValue}>{dateDisplayLabel || 'Select date'}</Text>
+              <Text style={styles.fieldLabel}>DATE</Text>
             </View>
             <Ionicons name={majorFieldLocked ? 'lock-closed-outline' : 'chevron-forward'} size={22} color={COLORS.textMuted} />
           </TouchableOpacity>
@@ -379,12 +391,12 @@ export default function EditRideScreen(): React.JSX.Element {
           >
             <View style={styles.fieldLeft}>
               <View style={styles.timeIconCircle}>
-                <Ionicons name="time-outline" size={20} color={COLORS.success} />
+                <Ionicons name="time-outline" size={22} color="#6366f1" />
               </View>
             </View>
             <View style={styles.fieldInputWrap}>
               <Text style={[styles.fieldValue, styles.timeValue]}>{timeLabel}</Text>
-              <Text style={styles.fieldLabel}>PREFERRED TIME</Text>
+              <Text style={styles.fieldLabel}>TIME</Text>
             </View>
             <Ionicons name={majorFieldLocked ? 'lock-closed-outline' : 'chevron-forward'} size={22} color={COLORS.textMuted} />
           </TouchableOpacity>
@@ -397,7 +409,7 @@ export default function EditRideScreen(): React.JSX.Element {
           >
             <View style={styles.fieldLeft}>
               <View style={styles.fareIconCircle}>
-                <Ionicons name="wallet-outline" size={20} color={COLORS.success} />
+                <Ionicons name="wallet-outline" size={22} color="#6366f1" />
               </View>
             </View>
             <View style={styles.fieldInputWrap}>
@@ -832,13 +844,13 @@ const styles = StyleSheet.create({
     opacity: 0.75,
   },
   fieldLeft: {
-    width: 28,
+    width: 32,
     alignItems: 'center',
     justifyContent: 'center',
   },
   fieldInputWrap: {
     flex: 1,
-    marginLeft: 10,
+    marginLeft: 14,
   },
   fieldValue: {
     fontSize: 16,
@@ -846,33 +858,33 @@ const styles = StyleSheet.create({
     color: COLORS.text,
   },
   fieldLabel: {
-    marginTop: 2,
-    fontSize: 11,
-    fontWeight: '700',
+    fontSize: 10,
+    fontWeight: '600',
     color: COLORS.textMuted,
-    letterSpacing: 0.4,
+    letterSpacing: 0.5,
+    marginBottom: 2,
   },
   timeIconCircle: {
-    width: 26,
-    height: 26,
-    borderRadius: 13,
-    backgroundColor: 'rgba(34,197,94,0.12)',
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: '#eef2ff',
     alignItems: 'center',
     justifyContent: 'center',
   },
   fareIconCircle: {
-    width: 26,
-    height: 26,
-    borderRadius: 13,
-    backgroundColor: 'rgba(34,197,94,0.12)',
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: '#eef2ff',
     alignItems: 'center',
     justifyContent: 'center',
   },
   timeValue: {
-    color: COLORS.success,
+    color: '#6366f1',
   },
   fareValue: {
-    color: COLORS.success,
+    color: '#6366f1',
   },
   label: { fontSize: 12, color: COLORS.textSecondary, marginBottom: 6, marginTop: 8, fontWeight: '600' },
   row: { flexDirection: 'row', gap: 10 },

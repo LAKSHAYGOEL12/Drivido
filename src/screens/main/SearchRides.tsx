@@ -34,6 +34,17 @@ function todayDateValue(): string {
   return `${y}-${m}-${d}`;
 }
 
+/** Check if date string (YYYY-MM-DD) is in the future; if past, return today. */
+function resolveDateForRecent(dateStr: string): string {
+  const today = todayDateValue();
+  const [ey, em, ed] = dateStr.split('-').map(Number);
+  const [ty, tm, td] = today.split('-').map(Number);
+  if (ey > ty || (ey === ty && em > tm) || (ey === ty && em === tm && ed >= td)) {
+    return dateStr;
+  }
+  return today;
+}
+
 function formatDateLabel(d: Date): string {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -55,7 +66,7 @@ function dateValueToLabel(value: string | null): string {
 
 function formatRecentSubline(dateStr: string, passengersStr: string): string {
   const label = dateValueToLabel(dateStr);
-  const n = Math.min(4, Math.max(1, parseInt(passengersStr, 10) || 1));
+  const n = Math.min(6, Math.max(1, parseInt(passengersStr, 10) || 1));
   const pax = n === 1 ? '1 pax' : `${n} pax`;
   return `${label} • ${pax}`;
 }
@@ -63,7 +74,8 @@ function formatRecentSubline(dateStr: string, passengersStr: string): string {
 export default function SearchRides(): React.JSX.Element {
   const navigation = useNavigation<any>();
   const route = useRoute<any>();
-  const { user, isAuthenticated } = useAuth();
+  const { user, isAuthenticated, needsProfileCompletion } = useAuth();
+  const sessionReady = isAuthenticated && !needsProfileCompletion;
   const recentUserKey = (user?.id ?? user?.phone ?? '').trim();
   const { error: locationError } = useLocation();
   const welcomeName =
@@ -81,7 +93,7 @@ export default function SearchRides(): React.JSX.Element {
   const [recents, setRecents] = useState<RecentSearchEntry[]>([]);
   const tabResetHandledRef = useRef<number | null>(null);
 
-  const passengersCount = Math.min(4, Math.max(1, parseInt(passengers, 10) || 1));
+  const passengersCount = Math.min(6, Math.max(1, parseInt(passengers, 10) || 1));
   const passengersLabel =
     passengersCount === 1 ? '1 passenger' : `${passengersCount} passengers`;
 
@@ -102,12 +114,12 @@ export default function SearchRides(): React.JSX.Element {
 
   useFocusEffect(
     useCallback(() => {
-      if (!isAuthenticated) {
+      if (!sessionReady) {
         setRecents([]);
         return;
       }
       void loadRecentSearches(recentUserKey).then(setRecents);
-    }, [recentUserKey, isAuthenticated])
+    }, [recentUserKey, sessionReady])
   );
 
   useFocusEffect(
@@ -234,8 +246,8 @@ export default function SearchRides(): React.JSX.Element {
   const applyRecentSearch = (e: RecentSearchEntry) => {
     setFrom(e.from);
     setTo(e.to);
-    const today = todayDateValue();
-    setDate(today);
+    const resolvedDate = resolveDateForRecent(e.date);
+    setDate(resolvedDate);
     setPassengers(e.passengers);
     setFromLat(e.fromLatitude);
     setFromLon(e.fromLongitude);
@@ -244,7 +256,7 @@ export default function SearchRides(): React.JSX.Element {
     navigation.navigate('SearchResults', {
       from: e.from.trim(),
       to: e.to.trim(),
-      date: today,
+      date: resolvedDate,
       passengers: e.passengers,
       ...(e.fromLatitude != null &&
         e.fromLongitude != null && {
@@ -277,7 +289,7 @@ export default function SearchRides(): React.JSX.Element {
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        {isAuthenticated ? (
+        {sessionReady ? (
           <Text style={styles.welcomeLine}>
             {welcomeName ? (
               <>
@@ -328,7 +340,7 @@ export default function SearchRides(): React.JSX.Element {
             </View>
             <View style={styles.inputWrap}>
               <Text style={[styles.pickupText, !to && styles.placeholder]} numberOfLines={1}>
-                {to || 'Where to?'}
+                {to || 'Add destination'}
               </Text>
               <Text style={styles.label}>Destination</Text>
             </View>
@@ -379,7 +391,7 @@ export default function SearchRides(): React.JSX.Element {
           </TouchableOpacity>
         </View>
 
-        {isAuthenticated && recents.length > 0 ? (
+        {sessionReady && recents.length > 0 ? (
           <View style={styles.recentsSection}>
             <View style={styles.recentsHeader}>
               <Text style={styles.recentsTitle}>RECENT SEARCHES</Text>

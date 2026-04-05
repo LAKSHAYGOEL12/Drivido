@@ -1,5 +1,6 @@
 import type { RideListItem } from '../types/api';
 import { pickAvatarUrlFromRecord } from './avatarUrl';
+import { bookingIsCancelledByOwner } from './bookingStatus';
 
 export type RideBookingRow = NonNullable<RideListItem['bookings']>[number];
 
@@ -16,6 +17,62 @@ function seatsFromRaw(raw: unknown): number {
     if (Number.isFinite(n) && n >= 0) return Math.floor(n);
   }
   return 1;
+}
+
+/**
+ * Map generic `cancelled` to `cancelled_by_owner` when API sends who cancelled separately.
+ */
+function normalizeBookingStatusFromRaw(raw: Record<string, unknown>, base: string): string {
+  const baseTrim = base.trim();
+  if (bookingIsCancelledByOwner(baseTrim)) return baseTrim;
+
+  const sl = baseTrim.toLowerCase();
+  if (sl !== 'cancelled' && sl !== 'canceled') return baseTrim;
+
+  const by = String(
+    raw.cancelledBy ??
+      raw.cancelled_by ??
+      raw.cancelledByType ??
+      raw.cancelled_by_type ??
+      raw.cancellationInitiator ??
+      raw.cancellation_initiator ??
+      ''
+  )
+    .trim()
+    .toLowerCase();
+  if (
+    by === 'owner' ||
+    by === 'driver' ||
+    by === 'publisher' ||
+    by === 'host' ||
+    by === 'ride_owner' ||
+    by === 'captain'
+  ) {
+    return 'cancelled_by_owner';
+  }
+
+  const reason = String(
+    raw.cancellationReason ??
+      raw.cancellation_reason ??
+      raw.cancelReason ??
+      raw.cancel_reason ??
+      ''
+  )
+    .trim()
+    .toLowerCase();
+  if (
+    reason.includes('removed_by_owner') ||
+    reason.includes('removed_by_driver') ||
+    reason.includes('owner_cancel') ||
+    (reason.includes('driver') && reason.includes('cancel'))
+  ) {
+    return 'cancelled_by_owner';
+  }
+
+  if (raw.cancelledByOwner === true || raw.cancelled_by_owner === true) return 'cancelled_by_owner';
+  if (raw.removedByOwner === true || raw.removed_by_owner === true) return 'cancelled_by_owner';
+
+  return baseTrim;
 }
 
 function numField(v: unknown): number | undefined {
@@ -158,19 +215,77 @@ export function mapRawToBookingRow(o: Record<string, unknown>): RideBookingRow |
       destinationObj?.name
   );
 
+  const rawStatus = toStr(o.status) ?? '';
+  const status = normalizeBookingStatusFromRaw(o as Record<string, unknown>, rawStatus);
+
+  const bhRaw = (o as Record<string, unknown>).bookingHistory ?? (o as Record<string, unknown>).booking_history;
+  let bookingHistory: NonNullable<RideBookingRow['bookingHistory']> | undefined;
+  if (Array.isArray(bhRaw)) {
+    const mapped = bhRaw
+      .map((item) => {
+        if (!item || typeof item !== 'object') return null;
+        const rec = item as Record<string, unknown>;
+        const hid = toStr(rec.id ?? rec._id);
+        const seatsRaw = rec.seats;
+        const seatsNum =
+          typeof seatsRaw === 'number' && Number.isFinite(seatsRaw)
+            ? Math.max(0, Math.floor(seatsRaw))
+            : seatsRaw != null && seatsRaw !== ''
+              ? Math.max(0, Math.floor(Number(seatsRaw)) || 0)
+              : 0;
+        const st = toStr(rec.status) ?? 'confirmed';
+        const bat = toStr(rec.bookedAt ?? rec.booked_at ?? rec.createdAt ?? rec.created_at) ?? '';
+        return {
+          ...(hid ? { id: hid } : {}),
+          seats: seatsNum,
+          status: st,
+          bookedAt: bat,
+        };
+      })
+      .filter((x): x is NonNullable<typeof x> => x != null);
+    if (mapped.length > 0) bookingHistory = mapped;
+  }
+
+  const partialOwnerRaw =
+    (o as Record<string, unknown>).ownerPartialSeatRemoval ??
+    (o as Record<string, unknown>).owner_partial_seat_removal;
+
   return {
     id: bookingId || `${userId || 'b'}-${toStr(o.bookedAt) ?? ''}`,
     userId,
     userName: userLabel || 'Passenger',
     ...(explicitName ? { name: explicitName } : {}),
     seats: seatsFromRaw(o.seats),
-    status: toStr(o.status) ?? '',
+    status,
     bookedAt: toStr(o.bookedAt ?? o.booked_at ?? o.createdAt ?? o.created_at) ?? '',
     ...(pickupLocationName ? { pickupLocationName } : {}),
     ...(destinationLocationName ? { destinationLocationName } : {}),
     ...(avatarUrl ? { avatarUrl } : {}),
     ...(avgRating != null ? { avgRating } : {}),
     ...(ratingCount != null && ratingCount > 0 ? { ratingCount } : {}),
+    ...(bookingHistory ? { bookingHistory } : {}),
+    ...(partialOwnerRaw === true ? { ownerPartialSeatRemoval: true } : {}),
+    // Extract dateOfBirth - check root first, then nested objects
+    ...((): { dateOfBirth?: string } => {
+      const dob = toStr(
+        o.dateOfBirth ??
+        o.date_of_birth ??
+        o.dob ??
+        nestedUser?.dateOfBirth ??
+        nestedUser?.date_of_birth ??
+        nestedUser?.dob ??
+        passenger?.dateOfBirth ??
+        passenger?.date_of_birth ??
+        passenger?.dob ??
+        bookedBy?.dateOfBirth ??
+        bookedBy?.date_of_birth ??
+        bookedBy?.dob ??
+        rider?.dateOfBirth ??
+        rider?.date_of_birth ??
+        rider?.dob
+      );
+      return dob ? { dateOfBirth: dob } : {};
+    })(),
   };
 }
 

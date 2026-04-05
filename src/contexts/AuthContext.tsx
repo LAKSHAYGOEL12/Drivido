@@ -23,6 +23,8 @@ import {
   type BackendAuthUser,
 } from '../services/backendAuthExchange';
 import { pickAvatarUrlFromRecord } from '../utils/avatarUrl';
+import { normalizeVehiclesFromRecord, type UserProfileVehicle } from '../utils/userVehicle';
+import { validation, normalizePhoneForValidation } from '../constants/validation';
 
 export type User = {
   id: string;
@@ -36,6 +38,14 @@ export type User = {
   createdAt?: string;
   /** Profile photo URL from Firebase Auth or Firestore. */
   avatarUrl?: string;
+  /** Vehicle display name / model (e.g. Toyota Innova). */
+  vehicleModel?: string;
+  /** Alias some APIs use for model name */
+  vehicleName?: string;
+  licensePlate?: string;
+  vehicleColor?: string;
+  /** From GET /auth/me — up to 2 vehicles (see POST /user/vehicles). */
+  vehicles?: UserProfileVehicle[];
 };
 
 type AuthState = {
@@ -48,6 +58,8 @@ type AuthState = {
   /** Password sign-in succeeded in Firebase but API rejected until `email_verified` is true. */
   needsEmailVerification: boolean;
   pendingVerificationEmail: string | null;
+  /** JWT is valid but required profile fields (DOB, gender, phone) are missing — block main app until Complete Profile. */
+  needsProfileCompletion: boolean;
 };
 
 type AuthContextValue = AuthState & {
@@ -70,6 +82,7 @@ const initialState: AuthState = {
   isAwaitingBackendSession: false,
   needsEmailVerification: false,
   pendingVerificationEmail: null,
+  needsProfileCompletion: false,
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -83,6 +96,22 @@ export const authBackendUserIdRef = { current: '' as string };
 
 function syncAuthBackendUserIdRef(user: User | null): void {
   authBackendUserIdRef.current = user ? String(user.id ?? '').trim() : '';
+}
+
+/** Merge GET /auth/me into local user; drop mirrored legacy vehicle fields when the API reports no vehicles. */
+function mergeUserWithMe(prev: User, next: User): User {
+  const user: User = { ...prev, ...next, id: prev.id };
+  if (Array.isArray(next.vehicles) && next.vehicles.length === 0) {
+    return {
+      ...user,
+      vehicles: [],
+      vehicleModel: undefined,
+      vehicleName: undefined,
+      licensePlate: undefined,
+      vehicleColor: undefined,
+    };
+  }
+  return user;
 }
 
 function strField(v: unknown): string {
@@ -122,7 +151,25 @@ function buildSessionUser(fbUser: FirebaseUser, backendUser: BackendAuthUser): U
   const fbPhone = phoneDigitsFromFirebasePhone(fbUser.phoneNumber);
   const fbName = fbUser.displayName?.trim() || '';
   const fbEmail = fbUser.email?.trim() || '';
-  return {
+  const beVehicleModel =
+    strField(rec.vehicleModel) ||
+    strField(rec.vehicle_name) ||
+    strField(rec.vehicle_model) ||
+    '';
+  const beLicense =
+    strField(rec.licensePlate) ||
+    strField(rec.license_plate) ||
+    strField(rec.vehicleNumber) ||
+    strField(rec.vehicle_number) ||
+    '';
+  const beVehicleColor = strField(rec.vehicleColor) || strField(rec.vehicle_color) || '';
+  const vehicleListKeyPresent =
+    Object.prototype.hasOwnProperty.call(rec, 'vehicles') ||
+    Object.prototype.hasOwnProperty.call(rec, 'userVehicles') ||
+    Object.prototype.hasOwnProperty.call(rec, 'user_vehicles');
+  const beVehicles = vehicleListKeyPresent ? normalizeVehiclesFromRecord(rec) : [];
+
+  const baseUser: User = {
     id: mongoId,
     phone: bePhone || fbPhone,
     email: beEmail || fbEmail || undefined,
@@ -133,6 +180,43 @@ function buildSessionUser(fbUser: FirebaseUser, backendUser: BackendAuthUser): U
     /** Only backend/Mongo avatar — Firebase `photoURL` was overwriting uploaded profile photos on refresh. */
     ...(beAvatar ? { avatarUrl: beAvatar } : {}),
   };
+
+  /** No `vehicles` array on payload — legacy flat fields only (do not set `vehicles`; Profile uses them). */
+  if (!vehicleListKeyPresent) {
+    if (beVehicleModel && beLicense) {
+      return {
+        ...baseUser,
+        vehicleModel: beVehicleModel,
+        licensePlate: beLicense,
+        ...(beVehicleColor ? { vehicleColor: beVehicleColor } : {}),
+      };
+    }
+    return baseUser;
+  }
+
+  const primary = beVehicles[0];
+  const withList: User = { ...baseUser, vehicles: beVehicles };
+  if (beVehicles.length === 0) {
+    return withList;
+  }
+  const legacyModel = primary?.vehicleModel || beVehicleModel;
+  const legacyLicense = primary?.licensePlate || beLicense;
+  const legacyColor = primary?.vehicleColor || beVehicleColor;
+  return {
+    ...withList,
+    ...(legacyModel ? { vehicleModel: legacyModel } : {}),
+    ...(legacyLicense ? { licensePlate: legacyLicense } : {}),
+    ...(legacyColor ? { vehicleColor: legacyColor } : {}),
+  };
+}
+
+export function isUserProfileComplete(user: User | null): boolean {
+  if (!user) return false;
+  const dob = (user.dateOfBirth ?? '').trim();
+  const g = (user.gender ?? '').trim();
+  if (!validation.dateOfBirth(dob)) return false;
+  if (!validation.gender(g)) return false;
+  return normalizePhoneForValidation(user.phone ?? '').length === 10;
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }): React.JSX.Element {
@@ -159,6 +243,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
         isAwaitingBackendSession: false,
         needsEmailVerification: false,
         pendingVerificationEmail: null,
+        needsProfileCompletion: false,
       });
     })();
   }, []);
@@ -171,6 +256,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
       void setStoredTokens(accessToken, refreshTokenValue.trim());
     }
     syncAuthBackendUserIdRef(user);
+    const profileComplete = isUserProfileComplete(user);
     setState({
       user,
       token: accessToken,
@@ -179,6 +265,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
       isAwaitingBackendSession: false,
       needsEmailVerification: false,
       pendingVerificationEmail: null,
+      needsProfileCompletion: !profileComplete,
     });
   }, []);
 
@@ -187,9 +274,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
   }, []);
 
   const patchUser = useCallback((patch: Partial<User>) => {
-    setState((prev) =>
-      prev.user ? { ...prev, user: { ...prev.user, ...patch } } : prev
-    );
+    setState((prev) => {
+      if (!prev.user) return prev;
+      const user: User = { ...prev.user, ...patch };
+      return {
+        ...prev,
+        user,
+        needsProfileCompletion: !isUserProfileComplete(user),
+      };
+    });
   }, []);
 
   const refreshUser = useCallback(async () => {
@@ -208,10 +301,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
       setState((prev) => {
         if (!prev.isAuthenticated || !prev.token || !prev.user) return prev;
         /** Merge so a just-uploaded `avatarUrl` is not wiped when GET /auth/me omits photo fields. */
-        const user: User = { ...prev.user, ...next, id: prev.user.id };
+        const user = mergeUserWithMe(prev.user, next);
         return {
           ...prev,
           user,
+          needsProfileCompletion: !isUserProfileComplete(user),
         };
       });
     } catch {
@@ -237,6 +331,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
       setRefreshToken(exchanged.refreshToken);
       const user = buildSessionUser(fbUser, exchanged.user);
       syncAuthBackendUserIdRef(user);
+      const profileComplete = isUserProfileComplete(user);
       setState({
         user,
         token: exchanged.token,
@@ -245,6 +340,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
         isAwaitingBackendSession: false,
         needsEmailVerification: false,
         pendingVerificationEmail: null,
+        needsProfileCompletion: !profileComplete,
       });
       return { ok: true };
     } catch (e) {
@@ -280,6 +376,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
         isAwaitingBackendSession: false,
         needsEmailVerification: false,
         pendingVerificationEmail: null,
+        needsProfileCompletion: false,
       }));
       return () => {
         cancelled = true;
@@ -293,6 +390,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
         ...s,
         isLoading: false,
         isAwaitingBackendSession: false,
+        needsProfileCompletion: false,
       }));
       return () => {
         cancelled = true;
@@ -313,6 +411,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
           isAwaitingBackendSession: false,
           needsEmailVerification: false,
           pendingVerificationEmail: null,
+          needsProfileCompletion: false,
         });
         return;
       }
@@ -329,6 +428,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
 
         const user = buildSessionUser(fbUser, exchanged.user);
         syncAuthBackendUserIdRef(user);
+        const profileComplete = isUserProfileComplete(user);
         setState({
           user,
           token: exchanged.token,
@@ -337,6 +437,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
           isAwaitingBackendSession: false,
           needsEmailVerification: false,
           pendingVerificationEmail: null,
+          needsProfileCompletion: !profileComplete,
         });
       } catch (e) {
         if (e instanceof AuthExchangeError && e.code === 'EMAIL_NOT_VERIFIED') {
@@ -354,6 +455,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
             isAwaitingBackendSession: false,
             needsEmailVerification: true,
             pendingVerificationEmail: fbUser.email ?? null,
+            needsProfileCompletion: false,
           });
           return;
         }
@@ -376,6 +478,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
           isAwaitingBackendSession: false,
           needsEmailVerification: false,
           pendingVerificationEmail: null,
+          needsProfileCompletion: false,
         });
       }
     });

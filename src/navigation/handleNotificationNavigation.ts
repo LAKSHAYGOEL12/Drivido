@@ -199,7 +199,12 @@ export async function navigateFromNotificationPayload(
     type === 'ride_cancelled' ||
     type === 'ride_canceled' ||
     type === 'ride_cancel' ||
-    type === 'booking_cancelled';
+    type === 'booking_cancelled' ||
+    type === 'booking_cancelled_by_owner' ||
+    type === 'passenger_removed' ||
+    type === 'passenger_removed_by_owner' ||
+    type === 'removed_by_owner' ||
+    type === 'removed_by_driver';
 
   if (!rideId) {
     if (isChat || isRideEvent) {

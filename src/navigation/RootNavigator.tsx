@@ -16,6 +16,7 @@ import { usePushNotifications } from '../hooks/usePushNotifications';
 import RootStack from './RootStack';
 import { COLORS } from '../constants/colors';
 import { resetNavigationToVerifyEmail } from './navigateToVerifyEmail';
+import { resetNavigationToCompleteProfile } from './navigateToCompleteProfile';
 import { resetMainTabsToSearchFromRoot } from './navigateAfterBook';
 import { chatWSManager } from '../services/chatWebSocketManager';
 import { resolveApiBaseOrigin } from '../config/apiBaseUrl';
@@ -27,10 +28,26 @@ import { getAccessToken } from '../services/token-storage';
  * Guests land on Main tabs (Search); Login/Register are modals from book / locked tabs.
  */
 export default function RootNavigator(): React.JSX.Element | null {
-  const { isAuthenticated, isLoading, user, needsEmailVerification, pendingVerificationEmail } = useAuth();
+  const {
+    isAuthenticated,
+    isLoading,
+    user,
+    needsEmailVerification,
+    pendingVerificationEmail,
+    needsProfileCompletion,
+  } = useAuth();
+  const sessionReady =
+    isAuthenticated && !needsEmailVerification && !needsProfileCompletion;
   const { prefetchLocation } = useLocation();
   const [navReady, setNavReady] = useState(false);
   const verifyRedirectedRef = useRef(false);
+  /** Latest auth flags for navigation `state` listener (avoid stale closures). */
+  const profileGateAuthRef = useRef({
+    needsProfileCompletion: false,
+    needsEmailVerification: false,
+    isAuthenticated: false,
+  });
+  const lastCompleteProfileResetAtRef = useRef(0);
   const [startupGateOpen, setStartupGateOpen] = useState(true);
   const startupMountedAtRef = useRef<number>(Date.now());
   const STARTUP_MIN_MS = 500;
@@ -39,63 +56,67 @@ export default function RootNavigator(): React.JSX.Element | null {
   const logoutOverlayOpacity = useRef(new Animated.Value(0)).current;
   const logoutHoldTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const wasAuthenticatedRef = useRef(false);
-  const LOGOUT_FADE_IN_MS = 200;
   const LOGOUT_HOLD_AFTER_RESET_MS = 480;
   const LOGOUT_FADE_OUT_MS = 320;
 
   usePushNotifications(
     rootNavigationRef,
     navReady,
-    isAuthenticated && !isLoading,
+    sessionReady && !isLoading,
     user?.id ?? null
   );
 
   useEffect(() => {
-    if (isAuthenticated) {
-      // Fetch location when user logs in so it's ready when they open picker
+    if (sessionReady) {
+      // Fetch location when user is fully onboarded so it's ready when they open picker
       prefetchLocation();
     }
-  }, [isAuthenticated, prefetchLocation]);
+  }, [sessionReady, prefetchLocation]);
 
-  /** Initialize WebSocket connection when authenticated */
+  const sessionUserId = (user?.id ?? '').trim();
+
+  /**
+   * Single global chat WS — connect only when session + nav are ready.
+   * Deps are primitives (no `user` object, no `isLoading`) so we do not reconnect on unrelated auth re-renders.
+   * Cleanup does not disconnect; logout / gated session uses the separate effect below.
+   */
   useEffect(() => {
-    if (isAuthenticated && user?.id && navReady && !isLoading) {
-      (async () => {
-        try {
-          const apiBaseUrl = resolveApiBaseOrigin();
-          console.log('[RootNav] API base URL:', apiBaseUrl);
-          
-          if (!apiBaseUrl) {
-            console.warn('[RootNav] ❌ No API base URL configured for WebSocket');
-            return;
-          }
+    if (!sessionReady || !sessionUserId || !navReady) {
+      return undefined;
+    }
 
-          const wsUrl = apiBaseUrl
-            .replace(/^http/, 'ws')
-            .replace(/\/$/, '');
-          const wsEndpoint = `${wsUrl}/chat/ws`;
+    let cancelled = false;
 
-          console.log('[RootNav] WebSocket endpoint:', wsEndpoint);
+    void (async () => {
+      try {
+        const apiBaseUrl = resolveApiBaseOrigin();
+        if (!apiBaseUrl || cancelled) return;
 
-          const token = await getAccessToken();
-          if (!token) {
-            console.warn('[RootNav] ❌ No access token available for WebSocket');
-            return;
-          }
-
-          console.log('[RootNav] ✅ Connecting WebSocket for user:', user.id);
-          console.log('[RootNav] Token available: yes (length:', token.length, ')');
-          
-          chatWSManager.connect(wsEndpoint, token);
-        } catch (error) {
-          console.error('[RootNav] ❌ WebSocket init error:', error);
+        const wsEndpoint = `${apiBaseUrl.replace(/^http/, 'ws').replace(/\/$/, '')}/chat/ws`;
+        const token = await getAccessToken();
+        if (!token || cancelled) {
+          if (!token && __DEV__) console.warn('[RootNav] No access token for WebSocket');
+          return;
         }
-      })();
-    } else if (!isAuthenticated && !isLoading) {
-      console.log('[RootNav] Disconnecting WebSocket');
+
+        chatWSManager.connect(wsEndpoint, token);
+      } catch (error) {
+        console.error('[RootNav] WebSocket init error:', error);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionReady, sessionUserId, navReady]);
+
+  /** Disconnect only when the user is truly out of a chat-eligible session (not on random effect churn). */
+  useEffect(() => {
+    if (isLoading) return;
+    if (!sessionReady || !sessionUserId) {
       chatWSManager.disconnect();
     }
-  }, [isAuthenticated, user?.id, navReady, isLoading]);
+  }, [sessionReady, sessionUserId, isLoading]);
 
   /** Push Verify Email when `needsEmailVerification` is true (cold start, signup, unverified login). */
   useEffect(() => {
@@ -117,51 +138,94 @@ export default function RootNavigator(): React.JSX.Element | null {
   }, [navReady, isLoading, needsEmailVerification, pendingVerificationEmail]);
 
   useEffect(() => {
+    profileGateAuthRef.current = {
+      needsProfileCompletion,
+      needsEmailVerification,
+      isAuthenticated,
+    };
+  }, [needsProfileCompletion, needsEmailVerification, isAuthenticated]);
+
+  /**
+   * Keep Complete Profile on screen whenever the session needs it.
+   * Previous `profileRedirectedRef` logic could skip re-showing after the user left the modal
+   * (e.g. Android back), or fight navigation during transitions — causing loops or stuck states.
+   */
+  useEffect(() => {
+    if (!navReady || isLoading) return undefined;
+
+    const enforceCompleteProfile = () => {
+      const g = profileGateAuthRef.current;
+      if (!g.needsProfileCompletion || g.needsEmailVerification || !g.isAuthenticated) return;
+      if (!rootNavigationRef.isReady()) return;
+      const r = rootNavigationRef.getCurrentRoute();
+      if (r?.name === 'CompleteProfile') return;
+      const now = Date.now();
+      if (now - lastCompleteProfileResetAtRef.current < 700) return;
+      lastCompleteProfileResetAtRef.current = now;
+      resetNavigationToCompleteProfile();
+    };
+
+    const run = () => requestAnimationFrame(() => enforceCompleteProfile());
+    run();
+
+    const unsub = rootNavigationRef.addListener('state', run);
+    return () => {
+      unsub();
+    };
+  }, [navReady, isLoading, needsProfileCompletion, needsEmailVerification, isAuthenticated]);
+
+  useEffect(() => {
     const loggingOut = wasAuthenticatedRef.current && !isAuthenticated && !isLoading;
     wasAuthenticatedRef.current = isAuthenticated;
 
     if (!loggingOut) return undefined;
 
     let cancelled = false;
-    logoutOverlayOpacity.setValue(0);
-    setLogoutTransitionVisible(true);
 
-    const fadeIn = Animated.timing(logoutOverlayOpacity, {
-      toValue: 1,
-      duration: LOGOUT_FADE_IN_MS,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: true,
-    });
+    /** Complete Profile shows its own full-screen "Shutting down" — avoid resetting to Main under a fading overlay (ride tabs flash). */
+    const fromCompleteProfile =
+      navReady &&
+      rootNavigationRef.isReady() &&
+      rootNavigationRef.getCurrentRoute()?.name === 'CompleteProfile';
 
-    fadeIn.start(({ finished }) => {
-      if (!finished || cancelled) return;
+    if (fromCompleteProfile) {
       InteractionManager.runAfterInteractions(() => {
         if (cancelled) return;
         resetMainTabsToSearchFromRoot();
-        if (logoutHoldTimeoutRef.current) clearTimeout(logoutHoldTimeoutRef.current);
-        logoutHoldTimeoutRef.current = setTimeout(() => {
-          if (cancelled) return;
-          Animated.timing(logoutOverlayOpacity, {
-            toValue: 0,
-            duration: LOGOUT_FADE_OUT_MS,
-            easing: Easing.in(Easing.cubic),
-            useNativeDriver: true,
-          }).start(({ finished: done }) => {
-            if (done && !cancelled) setLogoutTransitionVisible(false);
-          });
-        }, LOGOUT_HOLD_AFTER_RESET_MS);
       });
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    logoutOverlayOpacity.setValue(1);
+    setLogoutTransitionVisible(true);
+
+    InteractionManager.runAfterInteractions(() => {
+      if (cancelled) return;
+      resetMainTabsToSearchFromRoot();
+      if (logoutHoldTimeoutRef.current) clearTimeout(logoutHoldTimeoutRef.current);
+      logoutHoldTimeoutRef.current = setTimeout(() => {
+        if (cancelled) return;
+        Animated.timing(logoutOverlayOpacity, {
+          toValue: 0,
+          duration: LOGOUT_FADE_OUT_MS,
+          easing: Easing.in(Easing.cubic),
+          useNativeDriver: true,
+        }).start(({ finished: done }) => {
+          if (done && !cancelled) setLogoutTransitionVisible(false);
+        });
+      }, LOGOUT_HOLD_AFTER_RESET_MS);
     });
 
     return () => {
       cancelled = true;
-      fadeIn.stop();
       if (logoutHoldTimeoutRef.current) {
         clearTimeout(logoutHoldTimeoutRef.current);
         logoutHoldTimeoutRef.current = null;
       }
     };
-  }, [isAuthenticated, isLoading]);
+  }, [isAuthenticated, isLoading, navReady]);
 
   useEffect(() => {
     if (!startupGateOpen) return;

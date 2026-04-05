@@ -4,12 +4,12 @@ import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../../constants/colors';
 
 const MIN = 1;
-const MAX = 4;
+const MAX = 6;
 
 export type PassengersPickerModalProps = {
   visible: boolean;
   onClose: () => void;
-  /** Current value (1–4) when opening. */
+  /** Current value (1–6) when opening. */
   value: number;
   /** Called when modal closes (overlay, Close, or back) with chosen count. */
   onDone: (count: number) => void;

@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -6,32 +6,54 @@ import {
   Platform,
   Pressable,
   ScrollView,
+  StatusBar,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect, useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useAuth } from '../../contexts/AuthContext';
 import { COLORS } from '../../constants/colors';
 import type { ProfileStackParamList } from '../../navigation/types';
 import { getUserRatingsSummary } from '../../services/ratings';
+import { ProfileTripsBreakdownSheet } from '../../components/common/ProfileTripsBreakdownSheet';
+import { ProfileTripsStatCell } from '../../components/common/ProfileTripsStatCell';
+import {
+  fetchTripsForProfileSubject,
+  formatOwnProfileTripsLine,
+  tripCountsFromAggregate,
+} from '../../services/tripsAggregation';
 import UserAvatar from '../../components/common/UserAvatar';
 import { useImagePicker } from '../../hooks/useImagePicker';
 import { uploadUserAvatar, deleteUserAvatar } from '../../services/userAvatar';
+import { ratingQualitativeColor, ratingQualitativeLabel } from '../../utils/ratingQualitativeLabel';
+import { formatMemberSinceLabel } from '../../utils/formatMemberSinceLabel';
+import { vehiclesFromUser, type UserVehicleEntry } from '../../utils/userVehicle';
 
 export default function Profile(): React.JSX.Element {
-  const { user, logout, refreshUser, patchUser, isAuthenticated } = useAuth();
+  const insets = useSafeAreaInsets();
+  const { user, logout, refreshUser, patchUser, isAuthenticated, needsProfileCompletion } = useAuth();
+  const sessionReady = isAuthenticated && !needsProfileCompletion;
   const { pickFromGallery, takePhoto } = useImagePicker();
   const navigation = useNavigation<NativeStackNavigationProp<ProfileStackParamList>>();
   const route = useRoute<RouteProp<ProfileStackParamList, 'ProfileHome' | 'ProfileEntry'>>();
   const [profileName, setProfileName] = useState(user?.name?.trim() || 'Drivido User');
   const [avgRating, setAvgRating] = useState(0);
   const [totalRatings, setTotalRatings] = useState(0);
+  const [tripsLoading, setTripsLoading] = useState(true);
+  const [tripsCompleted, setTripsCompleted] = useState(0);
+  const [tripsCancelled, setTripsCancelled] = useState(0);
+  const [tripsCompletedThisMonth, setTripsCompletedThisMonth] = useState(0);
+  const [memberSinceLabel, setMemberSinceLabel] = useState('—');
   const [loading, setLoading] = useState(true);
   const [avatarUploading, setAvatarUploading] = useState(false);
   const [photoMenuVisible, setPhotoMenuVisible] = useState(false);
+  const [tripsBreakdownVisible, setTripsBreakdownVisible] = useState(false);
+  /** Avoid flashing “—” on Trips when refocusing the same profile (e.g. back from Trips screen). */
+  const prevTripsSubjectIdRef = useRef<string | null>(null);
 
   const routeUserId = route.params?.userId?.trim();
   const routeDisplayName = route.params?.displayName?.trim();
@@ -47,15 +69,8 @@ export default function Profile(): React.JSX.Element {
   const targetDisplayName = routeDisplayName || user?.name?.trim() || 'Drivido User';
   const isSelf = Boolean(user?.id?.trim() && targetUserId === user.id.trim());
 
-  const memberSince = (() => {
-    const raw = targetUserId === (user?.id ?? '').trim() ? user?.createdAt?.trim() : undefined;
-    if (!raw) return '—';
-    const dt = new Date(raw);
-    if (Number.isNaN(dt.getTime())) return '—';
-    return dt.toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
-  })();
-
   const displayName = profileName || targetDisplayName;
+  const mergedVehicles = useMemo(() => (isSelf ? vehiclesFromUser(user) : []), [isSelf, user]);
   const routeAvatarUrl = route.params?.avatarUrl?.trim();
   /** Own profile: only `user` from auth — never route params (they stay stale after remove photo). */
   const profileHeaderPhotoUri = isSelf
@@ -104,6 +119,20 @@ export default function Profile(): React.JSX.Element {
 
   const closePhotoMenu = useCallback(() => setPhotoMenuVisible(false), []);
 
+  const handleProfileHeaderBack = useCallback(() => {
+    const returnTo = route.params?._returnToRideDetail;
+    const parentNav = (navigation as { getParent?: () => { navigate?: (name: string, params?: object) => void } })
+      .getParent?.();
+    if (returnTo?.tab && returnTo.params) {
+      parentNav?.navigate?.(returnTo.tab, {
+        screen: 'RideDetail',
+        params: returnTo.params,
+      });
+      return;
+    }
+    navigation.goBack();
+  }, [navigation, route.params]);
+
   const openPhotoOptions = useCallback(() => {
     if (!isSelf) return;
     setPhotoMenuVisible(true);
@@ -114,14 +143,21 @@ export default function Profile(): React.JSX.Element {
       if (!targetUserId) {
         // Keep loader until the owner `userId` arrives (ProfileEntry).
         // For ProfileHome, we usually always have userId from BottomTabs.
+        prevTripsSubjectIdRef.current = null;
         setLoading(true);
         setAvgRating(0);
         setTotalRatings(0);
+        setTripsLoading(true);
+        setTripsCompleted(0);
+        setTripsCancelled(0);
+        setTripsCompletedThisMonth(0);
+        setMemberSinceLabel('—');
         return () => {};
       }
 
       let cancelled = false;
       setLoading(true);
+      setMemberSinceLabel(formatMemberSinceLabel(isSelf ? user?.createdAt : undefined));
       void (async () => {
         try {
           // Ratings API is fast; Firestore inside `refreshUser()` can hang — never block the profile spinner on it.
@@ -130,13 +166,52 @@ export default function Profile(): React.JSX.Element {
           setProfileName(targetDisplayName);
           setAvgRating(summary.avgRating);
           setTotalRatings(summary.totalRatings);
+          setMemberSinceLabel(
+            formatMemberSinceLabel(
+              summary.subjectCreatedAt ?? (isSelf ? user?.createdAt : undefined)
+            )
+          );
         } catch {
           if (cancelled) return;
           setProfileName(targetDisplayName);
           setAvgRating(0);
           setTotalRatings(0);
+          setMemberSinceLabel(formatMemberSinceLabel(isSelf ? user?.createdAt : undefined));
         } finally {
           if (!cancelled) setLoading(false);
+        }
+        if (!cancelled && targetUserId) {
+          const tripsSubjectChanged = prevTripsSubjectIdRef.current !== targetUserId;
+          prevTripsSubjectIdRef.current = targetUserId;
+          if (tripsSubjectChanged) {
+            setTripsLoading(true);
+          }
+          try {
+            /** When viewing yourself, always treat viewer as the subject if `user.id` is momentarily missing — otherwise we hit the public summary path and counts can stay 0. */
+            const viewerForTrips = isSelf
+              ? (user?.id?.trim() || targetUserId)
+              : user?.id?.trim();
+            const agg = await fetchTripsForProfileSubject(targetUserId, viewerForTrips || undefined);
+            if (!cancelled) {
+              const { completed, cancelled: cx } = tripCountsFromAggregate(agg);
+              setTripsCompleted(completed);
+              setTripsCancelled(cx);
+              setTripsCompletedThisMonth(Math.max(0, agg.completedThisMonth ?? 0));
+            }
+          } catch {
+            if (!cancelled) {
+              setTripsCompleted(0);
+              setTripsCancelled(0);
+              setTripsCompletedThisMonth(0);
+            }
+          } finally {
+            if (!cancelled) setTripsLoading(false);
+          }
+        } else if (!cancelled) {
+          setTripsCompleted(0);
+          setTripsCancelled(0);
+          setTripsCompletedThisMonth(0);
+          setTripsLoading(false);
         }
         if (!cancelled && isSelf) {
           void refreshUser();
@@ -146,18 +221,27 @@ export default function Profile(): React.JSX.Element {
       return () => {
         cancelled = true;
       };
-    }, [targetUserId, targetDisplayName, isProfileEntryScreen, isSelf, refreshUser])
+    }, [targetUserId, targetDisplayName, isProfileEntryScreen, isSelf, refreshUser, user?.id, user?.createdAt])
   );
 
   /** During logout, RootNavigator shows the single “Shutting down” overlay — avoid a second full-screen spinner here. */
-  if (!isAuthenticated) {
-    return <View style={styles.guestPlaceholder} />;
+  if (!sessionReady) {
+    return (
+      <View style={styles.rootFill}>
+        <View style={[styles.statusBarFill, { height: insets.top }]} />
+        <View style={[styles.guestPlaceholder, styles.rootBelowStatus]} />
+      </View>
+    );
   }
 
   if (loading) {
     return (
-      <View style={styles.loaderWrap}>
-        <ActivityIndicator size="large" color={COLORS.primary} />
+      <View style={styles.rootFill}>
+        <StatusBar barStyle="dark-content" backgroundColor={COLORS.white} />
+        <View style={[styles.statusBarFill, { height: insets.top }]} />
+        <View style={[styles.loaderWrap, styles.rootBelowStatus]}>
+          <ActivityIndicator size="large" color={COLORS.primary} />
+        </View>
       </View>
     );
   }
@@ -166,7 +250,16 @@ export default function Profile(): React.JSX.Element {
 
   return (
     <>
-    <ScrollView style={styles.screen} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+    <View style={styles.rootFill}>
+      <StatusBar barStyle="dark-content" backgroundColor={COLORS.white} />
+      {/** Fixed white strip under status bar (battery / network) — scroll content stays below so icons stay legible. */}
+      <View style={[styles.statusBarFill, { height: insets.top }]} />
+      <ScrollView
+        style={styles.screen}
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+        contentInsetAdjustmentBehavior={Platform.OS === 'ios' ? 'never' : undefined}
+      >
       <View style={styles.headerCard}>
         <View style={styles.headerTopRow}>
           {isSelf ? (
@@ -175,19 +268,7 @@ export default function Profile(): React.JSX.Element {
             <Pressable
               style={styles.circleIconButton}
               accessibilityRole="button"
-              onPress={() => {
-                const returnTo = route.params?._returnToRideDetail;
-                const parentNav = (navigation as any)?.getParent?.();
-                if (returnTo?.tab && returnTo.params) {
-                  // Back to the ride detail we came from (preserves the other tab's state).
-                  parentNav?.navigate?.(returnTo.tab, {
-                    screen: 'RideDetail',
-                    params: returnTo.params,
-                  });
-                  return;
-                }
-                navigation.goBack();
-              }}
+              onPress={handleProfileHeaderBack}
             >
               <Ionicons name="arrow-back" size={18} color={COLORS.textSecondary} />
             </Pressable>
@@ -231,10 +312,42 @@ export default function Profile(): React.JSX.Element {
       </View>
 
       <View style={styles.statsCard}>
-        <StatItem label="Trips" value="0" icon="car-outline" />
+        {isSelf ? (
+          <StatItem
+            label="Trips"
+            value={formatOwnProfileTripsLine(tripsLoading, tripsCompleted, tripsCancelled)}
+            icon="car-outline"
+            onPress={() =>
+              navigation.navigate('Trips', {
+                userId: targetUserId,
+                ...(targetDisplayName.trim() ? { displayName: targetDisplayName.trim() } : {}),
+              })
+            }
+            accessibilityHint="Opens your trip summary"
+          />
+        ) : (
+          <ProfileTripsStatCell
+            completed={tripsCompleted}
+            cancelled={tripsCancelled}
+            loading={tripsLoading}
+            onPress={tripsLoading ? undefined : () => setTripsBreakdownVisible(true)}
+            accessibilityHint="Shows completed and cancelled trip counts"
+          />
+        )}
         <StatItem label="Rating" value={avgRating > 0 ? avgRating.toFixed(1) : '0'} icon="star-outline" />
-        <StatItem label="Since" value={memberSince} icon="calendar-outline" />
+        <StatItem label="Since" value={memberSinceLabel} icon="calendar-outline" />
       </View>
+
+      {isSelf ? (
+        <Pressable
+          style={({ pressed }) => [styles.editProfileCta, pressed && styles.editProfileCtaPressed]}
+          onPress={() => navigation.navigate('EditProfile')}
+          accessibilityRole="button"
+          accessibilityLabel="Edit profile"
+        >
+          <Text style={styles.editProfileCtaText}>Edit profile</Text>
+        </Pressable>
+      ) : null}
 
       <View style={styles.performanceCard}>
         <Text style={styles.performanceLabel}>PERFORMANCE</Text>
@@ -243,7 +356,9 @@ export default function Profile(): React.JSX.Element {
             <View style={styles.ratingRow}>
               <Ionicons name="star-outline" size={16} color={COLORS.warning} />
               <Text style={styles.ratingValue}>{avgRating > 0 ? avgRating.toFixed(1) : '0.0'}</Text>
-              <Text style={styles.ratingText}>Excellent</Text>
+              <Text style={[styles.ratingText, { color: ratingQualitativeColor(avgRating) }]}>
+                {ratingQualitativeLabel(avgRating)}
+              </Text>
             </View>
             <Text style={styles.reviewText}>Based on {totalRatings} reviews</Text>
           </View>
@@ -303,9 +418,31 @@ export default function Profile(): React.JSX.Element {
             <InfoRow icon="call-outline" label="Phone" value={user?.phone?.trim() ? user.phone : 'Not provided'} />
           </Section>
 
-          <Section title="Vehicle Information">
-            <InfoRow icon="car-sport-outline" label="Vehicle" value="Add your vehicle details" />
-          </Section>
+          <View style={styles.vehicleInfoCard}>
+            <View style={styles.vehicleInfoHeader}>
+              <Ionicons name="car-outline" size={22} color={COLORS.secondary} />
+              <Text style={styles.vehicleInfoTitle}>Vehicle Information</Text>
+            </View>
+            {mergedVehicles.length === 0 ? (
+              <View style={styles.vehicleInfoBlock}>
+                <View style={styles.vehicleEmptyRow}>
+                  <View style={styles.vehicleInfoThumb}>
+                    <Ionicons name="car-outline" size={20} color={COLORS.textMuted} />
+                  </View>
+                  <Text style={styles.vehicleEmptyMuted}>No vehicle added</Text>
+                </View>
+              </View>
+            ) : (
+              mergedVehicles.map((v, index) => (
+                <View
+                  key={v.id}
+                  style={[styles.vehicleInfoBlock, index > 0 && styles.vehicleInfoBlockFollow]}
+                >
+                  <VehicleInformationRow vehicle={v} />
+                </View>
+              ))
+            )}
+          </View>
 
           <View style={styles.menuCard}>
             <MenuRow icon="settings-outline" title="Settings & Privacy" />
@@ -321,6 +458,7 @@ export default function Profile(): React.JSX.Element {
         </>
       ) : null}
     </ScrollView>
+    </View>
 
     {isSelf ? (
       <Modal
@@ -386,6 +524,17 @@ export default function Profile(): React.JSX.Element {
         </View>
       </Modal>
     ) : null}
+    {!isSelf ? (
+      <ProfileTripsBreakdownSheet
+        visible={tripsBreakdownVisible}
+        onClose={() => setTripsBreakdownVisible(false)}
+        completed={tripsCompleted}
+        cancelled={tripsCancelled}
+        loading={tripsLoading}
+        subjectName={displayName}
+        completedThisMonth={tripsCompletedThisMonth}
+      />
+    ) : null}
     </>
   );
 }
@@ -409,19 +558,39 @@ function StatItem({
   label,
   value,
   icon,
+  onPress,
+  accessibilityHint,
 }: {
   label: string;
   value: string;
   icon: keyof typeof Ionicons.glyphMap;
+  onPress?: () => void;
+  accessibilityHint?: string;
 }): React.JSX.Element {
   const iconColor = icon === 'star-outline' || icon === 'star' ? COLORS.warning : COLORS.secondary;
-  return (
-    <View style={styles.statItem}>
+  const body = (
+    <>
       <Ionicons name={icon} size={14} color={iconColor} />
-      <Text style={styles.statValue}>{value}</Text>
+      <Text style={[styles.statValue, styles.statValueCenter]} numberOfLines={2}>
+        {value}
+      </Text>
       <Text style={styles.statLabel}>{label}</Text>
-    </View>
+    </>
   );
+  if (onPress) {
+    return (
+      <Pressable
+        onPress={onPress}
+        style={({ pressed }) => [styles.statItem, pressed && { opacity: 0.72 }]}
+        accessibilityRole="button"
+        accessibilityLabel={`${label}: ${value}`}
+        accessibilityHint={accessibilityHint}
+      >
+        {body}
+      </Pressable>
+    );
+  }
+  return <View style={styles.statItem}>{body}</View>;
 }
 
 function InfoRow({
@@ -446,6 +615,40 @@ function InfoRow({
   );
 }
 
+function VehicleInformationRow({ vehicle }: { vehicle: UserVehicleEntry }): React.JSX.Element {
+  const rawPlate = vehicle.licensePlate;
+  const plate = rawPlate == null || rawPlate === '' ? '—' : rawPlate;
+  const colorStr = vehicle.vehicleColor?.trim() || '—';
+  return (
+    <View style={styles.vehicleInfoRow}>
+      <View style={styles.vehicleInfoThumb}>
+        <Ionicons name="car-outline" size={20} color={COLORS.textSecondary} />
+      </View>
+      <View style={styles.vehicleInfoBody}>
+        <Text style={styles.vehicleInfoModel} numberOfLines={1} ellipsizeMode="tail">
+          {vehicle.vehicleModel}
+        </Text>
+        <View style={styles.vehicleInfoMetaRow}>
+          <View style={styles.vehicleInfoPlateGroup}>
+            <Text style={styles.vehicleInfoMetaLabel}>Plate:</Text>
+            <View style={styles.vehiclePlateChip}>
+              <Text style={styles.vehiclePlateChipText}>{plate}</Text>
+            </View>
+          </View>
+          <View style={styles.vehicleInfoMetaVsep} />
+          <View style={styles.vehicleInfoColorInline}>
+            <Text
+              style={styles.vehicleInfoColorText}
+              numberOfLines={1}
+              ellipsizeMode="tail"
+            >{`Color: ${colorStr}`}</Text>
+          </View>
+        </View>
+      </View>
+    </View>
+  );
+}
+
 function MenuRow({
   icon,
   title,
@@ -465,34 +668,34 @@ function MenuRow({
 }
 
 const styles = StyleSheet.create({
+  rootFill: {
+    flex: 1,
+    backgroundColor: COLORS.white,
+  },
+  rootBelowStatus: {
+    flex: 1,
+  },
+  statusBarFill: {
+    width: '100%',
+    backgroundColor: COLORS.white,
+  },
   screen: {
     flex: 1,
     backgroundColor: COLORS.white,
   },
   loaderWrap: {
-    flex: 1,
     backgroundColor: COLORS.white,
     alignItems: 'center',
     justifyContent: 'center',
   },
   guestPlaceholder: {
-    flex: 1,
     backgroundColor: COLORS.backgroundSecondary,
   },
   content: {
     padding: 16,
     paddingBottom: 30,
-    paddingTop: 40,
+    paddingTop: 12,
     gap: 12,
-  },
-  headerCard: {
-    backgroundColor: COLORS.backgroundSecondary,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: COLORS.borderLight,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    alignItems: 'center',
   },
   headerTopRow: {
     width: '100%',
@@ -517,6 +720,179 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: '800',
     color: COLORS.text,
+  },
+  editProfileCta: {
+    width: '100%',
+    backgroundColor: COLORS.primary,
+    borderRadius: 12,
+    paddingVertical: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...Platform.select({
+      ios: {
+        shadowColor: COLORS.primary,
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.22,
+        shadowRadius: 6,
+      },
+      android: { elevation: 3 },
+    }),
+  },
+  editProfileCtaPressed: {
+    opacity: 0.92,
+  },
+  editProfileCtaText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: COLORS.white,
+    letterSpacing: 0.2,
+  },
+  vehicleInfoCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.borderLight,
+    paddingHorizontal: 14,
+    paddingTop: 14,
+    paddingBottom: 14,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.04,
+        shadowRadius: 3,
+      },
+      android: { elevation: 1 },
+    }),
+  },
+  vehicleInfoHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingBottom: 12,
+    marginBottom: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: COLORS.borderLight,
+  },
+  vehicleInfoTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: COLORS.text,
+    letterSpacing: -0.2,
+  },
+  /** One panel per vehicle — same layout repeated for 2nd, 3rd, etc. */
+  vehicleInfoBlock: {
+    backgroundColor: COLORS.backgroundSecondary,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.borderLight,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+  },
+  vehicleInfoBlockFollow: {
+    marginTop: 10,
+  },
+  vehicleInfoRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+  },
+  vehicleInfoThumb: {
+    width: 44,
+    height: 44,
+    borderRadius: 10,
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: COLORS.borderLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  vehicleInfoBody: {
+    flex: 1,
+    minWidth: 0,
+    justifyContent: 'center',
+  },
+  vehicleInfoModel: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: COLORS.text,
+    letterSpacing: -0.2,
+    lineHeight: 19,
+    marginBottom: 4,
+  },
+  vehicleInfoMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 4,
+    rowGap: 6,
+    minWidth: 0,
+  },
+  vehicleInfoPlateGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    flexShrink: 0,
+    maxWidth: '100%',
+  },
+  vehicleInfoColorInline: {
+    flexGrow: 1,
+    flexShrink: 1,
+    minWidth: 72,
+    justifyContent: 'center',
+  },
+  vehicleInfoColorText: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: COLORS.textSecondary,
+  },
+  vehicleInfoMetaLabel: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: COLORS.textSecondary,
+    flexShrink: 0,
+  },
+  vehicleInfoMetaVsep: {
+    width: 1,
+    height: 12,
+    backgroundColor: COLORS.border,
+    flexShrink: 0,
+  },
+  vehiclePlateChip: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: COLORS.borderLight,
+    flexShrink: 0,
+    alignSelf: 'flex-start',
+  },
+  vehiclePlateChipText: {
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.35,
+    color: COLORS.text,
+  },
+  vehicleEmptyRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 2,
+  },
+  vehicleEmptyMuted: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLORS.textMuted,
+  },
+  headerCard: {
+    backgroundColor: COLORS.backgroundSecondary,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: COLORS.borderLight,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    alignItems: 'center',
   },
   circleIconButton: {
     width: 30,
@@ -697,6 +1073,7 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: COLORS.text,
   },
+  statValueCenter: { textAlign: 'center' as const },
   statLabel: {
     fontSize: 12,
     color: COLORS.textSecondary,
@@ -737,7 +1114,6 @@ const styles = StyleSheet.create({
   ratingText: {
     fontSize: 16,
     fontWeight: '700',
-    color: COLORS.textSecondary,
   },
   reviewText: {
     fontSize: 13,

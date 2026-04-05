@@ -31,7 +31,15 @@ export default function InboxStack(): React.JSX.Element {
     >
       <Stack.Screen name="InboxList" component={Inbox} />
       <Stack.Screen name="Chat" component={ChatScreen} />
-      <Stack.Screen name="RideDetail" component={RideDetailScreen} options={{ headerShown: false }} />
+      <Stack.Screen
+        name="RideDetail"
+        component={RideDetailScreen}
+        options={{ headerShown: false }}
+        getId={({ params }) => {
+          const id = (params as { ride?: { id?: string } } | undefined)?.ride?.id?.trim();
+          return id ? `ride-${id}` : undefined;
+        }}
+      />
       <Stack.Screen
         name="PublishedRideRouteMap"
         component={PublishedRideRouteMapScreen}

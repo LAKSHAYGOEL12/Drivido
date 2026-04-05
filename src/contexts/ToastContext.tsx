@@ -15,8 +15,29 @@ import { registerToastListener, type ToastPayload, type ToastVariant } from '../
 
 const DEFAULT_MS = 3400;
 
-function variantColors(variant: ToastVariant, isDark: boolean): { bg: string; border: string; title: string; body: string; icon: keyof typeof Ionicons.glyphMap; iconColor: string } {
+function variantColors(
+  variant: ToastVariant,
+  isDark: boolean
+): {
+  bg: string;
+  border: string;
+  title: string;
+  body: string;
+  icon: keyof typeof Ionicons.glyphMap;
+  iconColor: string;
+  compactText?: boolean;
+} {
   switch (variant) {
+    case 'overlap':
+      return {
+        bg: '#CC0000',
+        border: 'rgba(255,255,255,0.35)',
+        title: COLORS.white,
+        body: COLORS.white,
+        icon: 'alert-circle',
+        iconColor: COLORS.white,
+        compactText: true,
+      };
     case 'error':
       return {
         bg: isDark ? '#3f1212' : '#fff1f2',
@@ -109,6 +130,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }): Reac
           <Animated.View
             style={[
               styles.toast,
+              v.compactText && styles.toastCompact,
               {
                 maxWidth: maxToastWidth,
                 opacity,
@@ -127,14 +149,31 @@ export function ToastProvider({ children }: { children: React.ReactNode }): Reac
               },
             ]}
           >
-            <Ionicons name={v.icon as never} size={22} color={v.iconColor} style={styles.toastIcon} />
+            <Ionicons
+              name={v.icon as never}
+              size={v.compactText ? 20 : 22}
+              color={v.iconColor}
+              style={styles.toastIcon}
+            />
             <View style={styles.toastTextCol}>
               {toast.title ? (
-                <Text style={[styles.toastTitle, { color: v.title }]} numberOfLines={2}>
+                <Text
+                  style={[
+                    v.compactText ? styles.toastTitleCompact : styles.toastTitle,
+                    { color: v.title },
+                  ]}
+                  numberOfLines={2}
+                >
                   {toast.title}
                 </Text>
               ) : null}
-              <Text style={[styles.toastBody, { color: v.body }]} numberOfLines={4}>
+              <Text
+                style={[
+                  v.compactText ? styles.toastBodyCompact : styles.toastBody,
+                  { color: v.body },
+                ]}
+                numberOfLines={4}
+              >
                 {toast.message}
               </Text>
             </View>
@@ -161,6 +200,11 @@ const styles = StyleSheet.create({
     borderLeftWidth: 4,
     marginHorizontal: 16,
   },
+  toastCompact: {
+    paddingVertical: 11,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+  },
   toastIcon: {
     marginTop: 2,
     marginRight: 12,
@@ -179,5 +223,16 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
     lineHeight: 20,
+  },
+  toastTitleCompact: {
+    fontSize: 14,
+    fontWeight: '800',
+    marginBottom: 2,
+    letterSpacing: -0.1,
+  },
+  toastBodyCompact: {
+    fontSize: 13,
+    fontWeight: '600',
+    lineHeight: 18,
   },
 });

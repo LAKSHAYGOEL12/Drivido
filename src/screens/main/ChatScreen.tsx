@@ -88,11 +88,14 @@ function resolvePeerAvatarUrl(
 
   const peerId = resolveOtherParticipantId(otherUserId, otherUserName);
   const rid = normalizeChatRideId(ride.id);
-  const matchConv = conversations.find(
-    (c) =>
-      normalizeChatRideId(c.ride.id) === rid &&
+  const matchConv = conversations.find((c) => {
+    const convRideId = c.ride?.id;
+    if (!convRideId) return false;
+    return (
+      normalizeChatRideId(convRideId) === rid &&
       resolveOtherParticipantId(c.otherUserId, c.otherUserName) === peerId
-  );
+    );
+  });
   const fromConv = (matchConv?.otherUserAvatarUrl ?? '').trim();
   if (fromConv) return fromConv;
 
@@ -117,9 +120,57 @@ function resolvePeerAvatarUrl(
 export default function ChatScreen(): React.JSX.Element {
   const navigation = useNavigation();
   const route = useRoute<ChatRouteProp>();
-  const { ride: rideParam, otherUserName, otherUserId, otherUserAvatarUrl: routePeerAvatar } = route.params;
-  const [rideSnapshot, setRideSnapshot] = useState<RideListItem>(() => rideParam);
+
+  const { ride: rideParam, rideId: rideIdParam, otherUserName, otherUserId, otherUserAvatarUrl: routePeerAvatar } =
+    route.params as {
+      ride?: RideListItem;
+      rideId?: string;
+      otherUserName: string;
+      otherUserId: string;
+      otherUserAvatarUrl?: string;
+    };
+
+  // Try to get ride - either from param or from passed rideId
+  let rideToUse = rideParam;
+  if (!rideToUse && rideIdParam) {
+    // If we only have rideId, we'll fetch the full ride
+    rideToUse = { id: rideIdParam } as any;
+  }
+  
+  const rideId = rideToUse?.id || rideIdParam;
+  
+  if (!rideId) {
+    return (
+      <SafeAreaView style={styles.safe} edges={['top']}>
+        <View style={styles.main}>
+          <View style={styles.chatErrorWrap}>
+            <Text style={styles.chatErrorText}>Ride information is missing. Go back and try again.</Text>
+          </View>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (!otherUserId) {
+    return (
+      <SafeAreaView style={styles.safe} edges={['top']}>
+        <View style={styles.main}>
+          <View style={styles.chatErrorWrap}>
+            <Text style={styles.chatErrorText}>User information is missing.</Text>
+          </View>
+        </View>
+      </SafeAreaView>
+    );
+  }
+  
+  // Create a minimal ride object with at least the ID
+  const [rideSnapshot, setRideSnapshot] = useState<RideListItem>(() => ({
+    ...(rideToUse || {}),
+    id: rideId,
+  } as RideListItem));
+  
   const ride = rideSnapshot;
+
   /** Align with persisted thread keys (`normalizeChatRideId` in InboxContext). */
   const rideIdForChat = useMemo(() => normalizeChatRideId(ride.id), [ride.id]);
   const rideForInbox = useMemo(
@@ -169,6 +220,39 @@ export default function ChatScreen(): React.JSX.Element {
   const currentUserId = (user?.id ?? user?.phone ?? '').trim();
   const otherStoredId = resolveOtherParticipantId(otherUserId, otherUserName);
   const isRideOwner = Boolean(currentUserId && (ride.userId ?? '').trim() === currentUserId);
+  /**
+   * Notification/deep-link payloads for older completed rides can miss `otherUserId`.
+   * Resolve a real peer id so thread fetch still returns existing messages.
+   */
+  const threadPeerUserId = useMemo(() => {
+    const routePeer = (otherUserId ?? '').trim();
+    if (routePeer) return routePeer;
+
+    const peerFromConversation = conversations.find((c) => {
+      if (!c.ride?.id || normalizeChatRideId(c.ride.id) !== rideIdForChat) return false;
+      const nameMatch = (c.otherUserName ?? '').trim().toLowerCase() === (otherUserName ?? '').trim().toLowerCase();
+      const id = (c.otherUserId ?? '').trim();
+      return nameMatch && id && !id.startsWith('name-');
+    });
+    const convPeerId = (peerFromConversation?.otherUserId ?? '').trim();
+    if (convPeerId) return convPeerId;
+
+    if (!isRideOwner) {
+      const ownerId = (ride.userId ?? '').trim();
+      if (ownerId) return ownerId;
+    } else if (ride.bookings?.length) {
+      const nameLo = (otherUserName ?? '').trim().toLowerCase();
+      const fromBooking = ride.bookings.find((b) => {
+        const uid = (b.userId ?? '').trim();
+        if (!uid || uid === currentUserId) return false;
+        const n = (b.name ?? b.userName ?? '').trim().toLowerCase();
+        return Boolean(nameLo) && n === nameLo;
+      });
+      const bookingPeerId = (fromBooking?.userId ?? '').trim();
+      if (bookingPeerId) return bookingPeerId;
+    }
+    return '';
+  }, [otherUserId, conversations, rideIdForChat, otherUserName, isRideOwner, ride.userId, ride.bookings, currentUserId]);
 
   const myBookingStatusCandidate = (() => {
     if (ride.bookings && currentUserId) {
@@ -188,12 +272,14 @@ export default function ChatScreen(): React.JSX.Element {
   const canSend = !chatEndedForRide;
 
   useEffect(() => {
-    setRideSnapshot(rideParam);
+    if (rideParam) {
+      setRideSnapshot((prev) => ({ ...prev, ...rideParam, id: rideParam.id || prev.id }));
+    }
   }, [rideParam]);
 
   useFocusEffect(
     useCallback(() => {
-      const id = (rideParam.id ?? '').trim();
+      const id = (rideIdParam ?? rideParam?.id ?? '').trim();
       if (!id) return;
       let cancelled = false;
       fetchRideDetailRaw(id, { force: true, viewerUserId: currentUserId })
@@ -206,7 +292,7 @@ export default function ChatScreen(): React.JSX.Element {
       return () => {
         cancelled = true;
       };
-    }, [rideParam.id, currentUserId])
+    }, [rideIdParam, rideParam?.id, currentUserId])
   );
 
   const openRideDetail = useCallback(() => {
@@ -236,7 +322,7 @@ export default function ChatScreen(): React.JSX.Element {
   // Load fresh messages when chat screen opens (ensures we have latest data from API)
   useFocusEffect(
     useCallback(() => {
-      const oid = otherUserId?.trim();
+      const oid = threadPeerUserId.trim();
       const oname = otherUserName?.trim() || 'User';
       if (!oid && !oname) return undefined;
 
@@ -259,19 +345,19 @@ export default function ChatScreen(): React.JSX.Element {
       return () => {
         cancelled = true;
       };
-    }, [rideIdForChat, otherUserId, otherUserName, loadThreadMessages, rideForInbox, markThisConversationRead])
+    }, [rideIdForChat, threadPeerUserId, otherUserName, loadThreadMessages, rideForInbox, markThisConversationRead])
   );
 
   /** Session may hydrate after first focus (killed app → notification). `loadThreadMessages` no-ops without user id. */
   useEffect(() => {
     if (!currentUserId) return;
-    const oid = otherUserId?.trim();
+    const oid = threadPeerUserId.trim();
     const oname = otherUserName?.trim() || 'User';
     if (!oid && !oname) return;
     void loadThreadMessages(rideIdForChat, oid ?? '', oname, rideForInbox, { force: true })
       .then(() => markThisConversationRead())
       .catch(() => {});
-  }, [currentUserId, rideIdForChat, otherUserId, otherUserName, loadThreadMessages, rideForInbox, markThisConversationRead]);
+  }, [currentUserId, rideIdForChat, threadPeerUserId, otherUserName, loadThreadMessages, rideForInbox, markThisConversationRead]);
 
   /** Register callback for immediate refresh when a chat notification arrives while this screen is open. */
   useEffect(() => {
@@ -417,14 +503,6 @@ export default function ChatScreen(): React.JSX.Element {
     }
   };
 
-  const renderListEmpty = useCallback(() => {
-    return (
-      <View style={styles.emptyInvertedWrap}>
-        <Text style={styles.emptyChatHint}>No messages yet</Text>
-      </View>
-    );
-  }, []);
-
   const renderMessage = useCallback(({ item: msg }: { item: PersistedChatMessage }) => {
     return (
       <View
@@ -524,25 +602,32 @@ export default function ChatScreen(): React.JSX.Element {
           </View>
         ) : null}
 
-        {/* Inverted list + newest-first data → latest bubbles sit above the input */}
-        <FlatList
-          key={`chat-${messages.length}`}
-          data={messagesNewestFirst}
-          inverted
-          keyExtractor={(m) => m.id}
-          extraData={chatListExtraData}
-          renderItem={renderMessage}
-          ListEmptyComponent={renderListEmpty}
-          keyboardShouldPersistTaps="handled"
-          showsVerticalScrollIndicator={false}
-          removeClippedSubviews={false}
-          style={styles.chatArea}
-          contentContainerStyle={[
-            styles.chatListContent,
-            messages.length === 0 && styles.chatListContentEmpty,
-            !canSend ? { paddingBottom: 26 } : null,
-          ]}
-        />
+        {/* Inverted list + newest-first data → latest bubbles sit above the input.
+            Empty hint is overlaid (not ListEmptyComponent) so inverted transform cannot flip it. */}
+        <View style={styles.chatListWrap}>
+          <FlatList
+            key={`chat-${messages.length}`}
+            data={messagesNewestFirst}
+            inverted
+            keyExtractor={(m) => m.id}
+            extraData={chatListExtraData}
+            renderItem={renderMessage}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+            removeClippedSubviews={false}
+            style={styles.chatArea}
+            contentContainerStyle={[
+              styles.chatListContent,
+              messages.length === 0 && styles.chatListContentEmpty,
+              !canSend ? { paddingBottom: 26 } : null,
+            ]}
+          />
+          {messages.length === 0 ? (
+            <View style={styles.emptyChatOverlay} pointerEvents="none">
+              <Text style={styles.emptyChatHint}>No messages yet</Text>
+            </View>
+          ) : null}
+        </View>
 
         {/* Warnings */}
         <View style={styles.warnings}>
@@ -600,6 +685,17 @@ const styles = StyleSheet.create({
   },
   main: {
     flex: 1,
+  },
+  chatErrorWrap: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 24,
+  },
+  chatErrorText: {
+    fontSize: 15,
+    color: COLORS.textSecondary,
+    textAlign: 'center',
   },
   keyboardAvoid: {
     flex: 1,
@@ -695,6 +791,10 @@ const styles = StyleSheet.create({
     color: COLORS.textSecondary,
     lineHeight: 18,
   },
+  chatListWrap: {
+    flex: 1,
+    position: 'relative',
+  },
   chatArea: {
     flex: 1,
     backgroundColor: COLORS.background,
@@ -702,9 +802,8 @@ const styles = StyleSheet.create({
   chatListContentEmpty: {
     flexGrow: 1,
   },
-  emptyInvertedWrap: {
-    flexGrow: 1,
-    transform: [{ scaleY: -1 }],
+  emptyChatOverlay: {
+    ...StyleSheet.absoluteFillObject,
     justifyContent: 'center',
     alignItems: 'center',
     padding: 16,

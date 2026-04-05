@@ -43,7 +43,11 @@ import {
   rideIdFromBookingListRow,
   type RideBookingRow,
 } from '../../utils/bookingNormalize';
-import { bookingIsCancelled, pickPreferredBookingStatus } from '../../utils/bookingStatus';
+import {
+  bookingIsCancelled,
+  bookingIsCancelledByOwner,
+  pickPreferredBookingStatus,
+} from '../../utils/bookingStatus';
 import { isRideSeatsFull } from '../../utils/rideSeats';
 import {
   buildDrivingPassengerSections,
@@ -161,6 +165,7 @@ function normalizeRideItem(raw: Record<string, unknown>): RideListItem {
     vehicleModel: toStr(r.vehicleModel ?? r.vehicle_model),
     licensePlate: toStr(r.licensePlate ?? r.license_plate),
     vehicleNumber: toStr(r.vehicleNumber ?? r.vehicle_number),
+    vehicleColor: toStr(r.vehicleColor ?? r.vehicle_color),
     status: (() => {
       const st = toStr(r.status ?? r.ride_status ?? r.state ?? r.rideState);
       if (st) return st;
@@ -381,14 +386,20 @@ function YourRidesRideCard({
         !bookingIsCancelled(String(item.myBookingStatus))
     );
   const seatFullBlocked = !isOwnerView && isRideSeatsFull(item) && !hasMyActiveBooking;
+  const removedByDriverInPast =
+    filter === 'pastRides' && isPassengerContext && bookingIsCancelledByOwner(item.myBookingStatus);
   const cancelledByYouInPast =
-    filter === 'pastRides' && isPassengerContext && bookingIsCancelled(item.myBookingStatus);
+    filter === 'pastRides' &&
+    isPassengerContext &&
+    bookingIsCancelled(item.myBookingStatus) &&
+    !bookingIsCancelledByOwner(item.myBookingStatus);
   const rejectedByYouInPast =
     filter === 'pastRides' &&
     isPassengerContext &&
     String(item.myBookingStatus ?? '').trim().toLowerCase() === 'rejected';
   const showCancelledBadgePast =
     filter === 'pastRides' &&
+    !removedByDriverInPast &&
     (bookingIsCancelled(item.myBookingStatus) ||
       (isRideCancelledByOwner(item) && (isOwnerView || bookedRideIds.has(item.id))));
   const isCompletedByBackendStatus = String(item.status ?? '').trim().toLowerCase() === 'completed';
@@ -431,6 +442,7 @@ function YourRidesRideCard({
       viewerAvatarUrl={viewerAvatarUrl}
       showCancelledBadge={showCancelledBadgePast}
       showRejectedBadge={rejectedByYouInPast}
+      showRemovedByDriverBadge={removedByDriverInPast}
       showCompletedBadge={filter === 'pastRides' && isCompletedByBackendStatus}
       seatFullUnavailable={seatFullBlocked || pastCancelledAndRideFull}
       hideSeatAvailability={filter === 'pastRides'}

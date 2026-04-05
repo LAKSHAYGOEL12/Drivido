@@ -108,7 +108,7 @@ export default function Inbox(): React.JSX.Element {
     <SafeAreaView style={styles.safe} edges={['top']}>
       <View style={styles.container}>
         <View style={styles.header}>
-          <Text style={styles.title}>Inbox</Text>
+          <Text style={styles.title}>Chats</Text>
         </View>
 
         <View style={styles.searchWrap}>

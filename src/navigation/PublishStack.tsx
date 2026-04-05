@@ -7,6 +7,7 @@ import PublishRide from '../screens/main/PublishRide';
 import LocationPickerScreen from '../screens/main/LocationPickerScreen';
 import PublishRoutePreviewScreen from '../screens/main/PublishRoutePreviewScreen';
 import PublishPriceScreen from '../screens/main/PublishPriceScreen';
+import PublishRecentEditScreen from '../screens/main/PublishRecentEditScreen';
 
 const Stack = createNativeStackNavigator<PublishStackParamList>();
 
@@ -25,6 +26,7 @@ export default function PublishStack(): React.JSX.Element {
       initialRouteName="PublishRide"
     >
       <Stack.Screen name="PublishRide" component={PublishRide} />
+      <Stack.Screen name="PublishRecentEdit" component={PublishRecentEditScreen} />
       <Stack.Screen name="LocationPicker" component={LocationPickerScreen} />
       <Stack.Screen name="PublishRoutePreview" component={PublishRoutePreviewScreen} />
       <Stack.Screen name="PublishPrice" component={PublishPriceScreen} />

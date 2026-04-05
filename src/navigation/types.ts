@@ -2,6 +2,7 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { BottomTabScreenProps } from '@react-navigation/bottom-tabs';
 import type { CompositeScreenProps, NavigatorScreenParams } from '@react-navigation/native';
 import type { RideListItem } from '../types/api';
+import type { RecentPublishedEntry } from '../services/recent-published-storage';
 
 /** Searcher's trip when opening ride detail from search (booking may differ from driver's end-to-end route). */
 export type PassengerSearchParams = {
@@ -11,6 +12,17 @@ export type PassengerSearchParams = {
   fromLongitude?: number;
   toLatitude?: number;
   toLongitude?: number;
+};
+
+/**
+ * Trips → back should reopen ride detail on Find or Your Rides (avoids landing on your Profile home).
+ */
+export type TripsReturnToRideContext = {
+  tab: 'YourRides' | 'SearchStack' | 'Inbox';
+  params: {
+    ride: RideListItem;
+    passengerSearch?: PassengerSearchParams;
+  };
 };
 
 /**
@@ -47,7 +59,7 @@ export type SearchStackParamList = {
     currentFromLongitude?: number;
     currentToLatitude?: number;
     currentToLongitude?: number;
-    returnScreen?: 'SearchRides' | 'PublishRide';
+    returnScreen?: 'SearchRides' | 'PublishRide' | 'PublishRecentEdit';
     publishRestoreKey?: string;
   } | undefined;
   SearchResults: {
@@ -79,6 +91,11 @@ export type SearchStackParamList = {
     /** From ride payload for signed-in users (backend); avoids client ratings fetch on profile. */
     publisherAvgRating?: number;
     publisherRatingCount?: number;
+    dateOfBirth?: string;
+    /** Driver contact when API includes it on the ride (or pass-through from ride detail). */
+    publisherPhone?: string;
+    /** Set from RideDetail so Trips → back returns to this ride. */
+    _returnToRide?: TripsReturnToRideContext;
   } | undefined;
   /** Ratings view for an arbitrary user opened from ride details modal. */
   OwnerRatingsModal: { userId: string; displayName?: string; avatarUrl?: string } | undefined;
@@ -88,7 +105,7 @@ export type SearchStackParamList = {
     booking: NonNullable<RideListItem['bookings']>[number];
     requestMode?: boolean;
   };
-  Chat: { ride: RideListItem; otherUserName: string; otherUserId?: string; otherUserAvatarUrl?: string };
+  Chat: { ride?: RideListItem; rideId?: string; otherUserName: string; otherUserId: string; otherUserAvatarUrl?: string };
 };
 
 /**
@@ -113,6 +130,23 @@ export type PublishStackParamList = {
     initialPricePerSeat?: number;
     _publishRestoreKey?: string;
   } | undefined;
+  PublishRecentEdit: {
+    entry: RecentPublishedEntry;
+    selectedFrom?: string;
+    selectedTo?: string;
+    pickupLatitude?: number;
+    pickupLongitude?: number;
+    destinationLatitude?: number;
+    destinationLongitude?: number;
+    clearRouteFare?: boolean;
+    selectedRate?: string;
+    selectedDurationSeconds?: number;
+    selectedDistanceKm?: number;
+    initialPricePerSeat?: number;
+    selectedDateIso?: string;
+    selectedTimeHour?: number;
+    selectedTimeMinute?: number;
+  } | undefined;
   LocationPicker: {
     field?: 'from' | 'to';
     currentFrom?: string;
@@ -121,7 +155,7 @@ export type PublishStackParamList = {
     currentPickupLongitude?: number;
     currentDestinationLatitude?: number;
     currentDestinationLongitude?: number;
-    returnScreen?: 'SearchRides' | 'PublishRide';
+    returnScreen?: 'SearchRides' | 'PublishRide' | 'PublishRecentEdit';
     /** Publish tab: restores form after stack reset */
     publishRestoreKey?: string;
   } | undefined;
@@ -153,6 +187,8 @@ export type PublishStackParamList = {
     /** Last confirmed price from Publish — keeps field when reopening fare. */
     initialPricePerSeat?: number;
     publishRestoreKey?: string;
+    /** When set, Continue resets to PublishRecentEdit instead of PublishRide. */
+    publishRecentEditEntry?: RecentPublishedEntry;
   };
 };
 
@@ -183,6 +219,9 @@ export type RidesStackParamList = {
     avatarUrl?: string;
     publisherAvgRating?: number;
     publisherRatingCount?: number;
+    dateOfBirth?: string;
+    publisherPhone?: string;
+    _returnToRide?: TripsReturnToRideContext;
   } | undefined;
   /** Ratings view for an arbitrary user opened from ride details modal. */
   OwnerRatingsModal: { userId: string; displayName?: string; avatarUrl?: string } | undefined;
@@ -204,7 +243,7 @@ export type RidesStackParamList = {
     booking: NonNullable<RideListItem['bookings']>[number];
     requestMode?: boolean;
   };
-  Chat: { ride: RideListItem; otherUserName: string; otherUserId?: string; otherUserAvatarUrl?: string };
+  Chat: { ride?: RideListItem; rideId?: string; otherUserName: string; otherUserId: string; otherUserAvatarUrl?: string };
 };
 
 /**
@@ -212,7 +251,7 @@ export type RidesStackParamList = {
  */
 export type InboxStackParamList = {
   InboxList: undefined;
-  Chat: { ride: RideListItem; otherUserName: string; otherUserId?: string; otherUserAvatarUrl?: string };
+  Chat: { ride?: RideListItem; rideId?: string; otherUserName: string; otherUserId: string; otherUserAvatarUrl?: string };
   /** Same screen as other tabs — open the ride this chat belongs to (e.g. from inbox-only stack). */
   RideDetail: { ride: RideListItem; passengerSearch?: PassengerSearchParams };
 } & Pick<
@@ -263,6 +302,17 @@ export type ProfileStackParamList = {
         };
       }
     | undefined;
+  /** Signed-in user: phone + vehicle fields only. */
+  EditProfile: undefined;
+  /** Trip stats; omit `userId` for the signed-in user. */
+  Trips:
+    | {
+        userId?: string;
+        displayName?: string;
+        /** When set (e.g. from owner modal after ride detail), back reopens that ride on Find / Your Rides / Inbox. */
+        _returnToRide?: TripsReturnToRideContext;
+      }
+    | undefined;
 };
 
 /**
@@ -305,6 +355,8 @@ export type RootStackParamList = {
   Register: undefined;
   /** After email/password signup — user must open Firebase verification link, then Continue. */
   VerifyEmail: { email?: string } | undefined;
+  /** After email is verified — DOB, gender, phone, terms (optional skip). */
+  CompleteProfile: undefined;
   ForgotPassword: undefined;
 };
 
@@ -321,8 +373,9 @@ export type RootStackScreenProps<T extends keyof RootStackParamList> = NativeSta
 >;
 
 /** Auth screens mounted on root stack (modal) — same props shape as old Auth stack. */
-export type RootAuthScreenProps<T extends 'Login' | 'Register' | 'VerifyEmail' | 'ForgotPassword'> =
-  RootStackScreenProps<T>;
+export type RootAuthScreenProps<
+  T extends 'Login' | 'Register' | 'VerifyEmail' | 'CompleteProfile' | 'ForgotPassword',
+> = RootStackScreenProps<T>;
 
 export type MainTabScreenPropsFromRoot<T extends keyof MainTabParamList> = CompositeScreenProps<
   MainTabScreenProps<T>,

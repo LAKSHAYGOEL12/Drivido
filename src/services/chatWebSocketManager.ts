@@ -16,9 +16,18 @@ class ChatWebSocketManager {
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;
   private reconnectDelay = 1000;
-  private heartbeatTimeout: NodeJS.Timeout | null = null;
+  /** Single heartbeat interval; cleared on close / reconnect / disconnect. */
+  private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
+  private heartbeatStartTimeout: ReturnType<typeof setTimeout> | null = null;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private isManualDisconnect = false;
   private connectionListeners = new Set<(connected: boolean) => void>();
+  /** Serialize subscribe frames so we do not burst N messages in one tick (some servers/RN stacks choke). */
+  private subscribeSendQueue: string[] = [];
+  private subscribeSendTimer: ReturnType<typeof setTimeout> | null = null;
+  private static readonly SUBSCRIBE_SEND_GAP_MS = 80;
+  /** Last close looked like a server/protocol fault — back off hard instead of tight reconnect loops. */
+  private lastCloseSuggestedServerBug = false;
 
   private emitConnectionState(connected: boolean) {
     this.connectionListeners.forEach((listener) => {
@@ -72,41 +81,113 @@ class ChatWebSocketManager {
     return null;
   }
 
+  private clearReconnectTimer() {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+  }
+
+  private clearSubscribeSendTimer() {
+    if (this.subscribeSendTimer) {
+      clearTimeout(this.subscribeSendTimer);
+      this.subscribeSendTimer = null;
+    }
+  }
+
+  /** One subscribe JSON frame every SUBSCRIBE_SEND_GAP_MS while queue non-empty. */
+  private scheduleSubscribeDrain() {
+    if (this.subscribeSendTimer) return;
+    const step = () => {
+      this.subscribeSendTimer = null;
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+        return;
+      }
+      const threadKey = this.subscribeSendQueue.shift();
+      if (threadKey) {
+        this.sendSubscribeNow(threadKey);
+      }
+      if (this.subscribeSendQueue.length > 0) {
+        this.subscribeSendTimer = setTimeout(step, ChatWebSocketManager.SUBSCRIBE_SEND_GAP_MS);
+      }
+    };
+    this.subscribeSendTimer = setTimeout(step, 0);
+  }
+
+  private enqueueSubscribeSend(threadKey: string) {
+    if (!this.subscribeSendQueue.includes(threadKey)) {
+      this.subscribeSendQueue.push(threadKey);
+    }
+    this.scheduleSubscribeDrain();
+  }
+
+  /**
+   * One global connection. Idempotent for same URL+token while OPEN/CONNECTING.
+   * Tears down an existing socket before opening a new one (token/URL change or recovery).
+   */
   connect(wsUrl: string, token: string) {
-    if (this.ws?.readyState === WebSocket.OPEN) {
-      console.log('[WS] Already connected');
+    /** New intentional connect (e.g. after login) overrides a prior `disconnect()`. */
+    this.isManualDisconnect = false;
+
+    const sameTarget = this.url === wsUrl && this.token === token;
+    if (sameTarget && this.ws?.readyState === WebSocket.OPEN) {
+      return;
+    }
+    if (sameTarget && this.ws?.readyState === WebSocket.CONNECTING) {
       return;
     }
 
+    this.clearReconnectTimer();
     this.url = wsUrl;
     this.token = token;
     this.isManualDisconnect = false;
+
+    if (this.ws) {
+      this.stopHeartbeat();
+      this.clearSubscribeSendTimer();
+      this.subscribeSendQueue = [];
+      try {
+        this.ws.onopen = null;
+        this.ws.onmessage = null;
+        this.ws.onerror = null;
+        this.ws.onclose = null;
+        this.ws.close();
+      } catch {
+        // ignore
+      }
+      this.ws = null;
+    }
+
     this.attemptConnect();
   }
 
   private attemptConnect() {
     if (this.isManualDisconnect) {
-      console.log('[WS] Manual disconnect in progress, skipping reconnect');
+      return;
+    }
+
+    if (this.ws?.readyState === WebSocket.CONNECTING) {
       return;
     }
 
     try {
       const wsUrl = `${this.url}?token=${this.token}`;
-      console.log('[WS] Attempting to connect to:', wsUrl.replace(this.token, '***'));
-      console.log('[WS] Full URL:', this.url);
-      console.log('[WS] Token length:', this.token.length);
-      
+      if (__DEV__) {
+        console.log('[WS] Connecting:', this.url, '(token len', this.token.length, ')');
+      }
+
       this.ws = new WebSocket(wsUrl);
 
       this.ws.onopen = () => {
-        console.log('[WS] ✅ Connected successfully');
+        if (__DEV__) console.log('[WS] Connected');
         this.reconnectAttempts = 0;
-        this.startHeartbeat();
+        this.lastCloseSuggestedServerBug = false;
+        /** After open, wait before app-level pings so subscribe burst finishes first. */
+        this.startHeartbeatDeferred();
         this.emitConnectionState(true);
 
-        // Resubscribe to all threads after reconnection
         this.subscriptions.forEach((_, threadKey) => {
-          this.sendSubscribe(threadKey);
+          this.enqueueSubscribeSend(threadKey);
         });
       };
 
@@ -142,7 +223,7 @@ class ChatWebSocketManager {
             if (msg.threadKey) {
               this.pendingSubscribeQueue = this.pendingSubscribeQueue.filter((k) => k !== msg.threadKey);
             }
-            console.log('[WS] ✅ Subscribed to thread:', msg.threadKey);
+            if (__DEV__) console.log('[WS] Subscribed:', msg.threadKey);
           }
 
           if (msg.type === 'error') {
@@ -173,17 +254,23 @@ class ChatWebSocketManager {
         }
       };
 
-      this.ws.onerror = (event: Event) => {
-        console.error('[WS] ❌ WebSocket error:', event);
-        console.error('[WS] Connection state:', this.ws?.readyState);
-        if (this.ws?.readyState === WebSocket.CLOSED) {
-          console.error('[WS] Connection was closed');
-        }
+      this.ws.onerror = () => {
+        /** Never log the Event object — RN attaches socket URL with JWT. */
+        const rs = this.ws?.readyState;
+        if (__DEV__) console.warn('[WS] Error (readyState=', rs, ')');
       };
 
       this.ws.onclose = (event: CloseEvent) => {
-        console.log('[WS] ❌ Disconnected (code:', event.code, 'reason:', event.reason, ')');
+        const reason = String(event.reason ?? '').trim();
+        const code = event.code;
+        this.lastCloseSuggestedServerBug =
+          code === 1006 || reason.toLowerCase().includes('control frames must be final');
+        if (__DEV__) {
+          console.log('[WS] Closed code=', code, reason ? `reason="${reason}"` : '');
+        }
         this.stopHeartbeat();
+        this.clearSubscribeSendTimer();
+        this.subscribeSendQueue = [];
         this.emitConnectionState(false);
         this.ws = null;
 
@@ -198,72 +285,105 @@ class ChatWebSocketManager {
   }
 
   private attemptReconnect() {
+    this.clearReconnectTimer();
+    if (this.isManualDisconnect) return;
     if (this.reconnectAttempts < this.maxReconnectAttempts) {
       this.reconnectAttempts++;
-      const delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1);
-      console.log(`[WS] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
-      setTimeout(() => this.attemptConnect(), delay);
-    } else {
-      console.warn('[WS] Max reconnect attempts reached, falling back to HTTP polling');
+      let delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1);
+      /** Server/protocol closes will repeat until the server is fixed — avoid hammering. */
+      if (this.lastCloseSuggestedServerBug) {
+        delay = Math.max(delay, 15_000);
+      }
+      if (__DEV__) {
+        console.log(`[WS] Reconnect in ${delay}ms (${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+      }
+      this.reconnectTimer = setTimeout(() => {
+        this.reconnectTimer = null;
+        this.attemptConnect();
+      }, delay);
+    } else if (__DEV__) {
+      console.warn('[WS] Max reconnects — chat will use HTTP until next app open or login');
     }
   }
 
-  private startHeartbeat() {
+  /** App-level JSON ping only if your server expects it; delayed so it does not race subscribe burst. */
+  private startHeartbeatDeferred() {
     this.stopHeartbeat();
-    this.heartbeatTimeout = setInterval(() => {
-      if (this.ws?.readyState === WebSocket.OPEN) {
-        try {
-          this.ws.send(JSON.stringify({ type: 'ping' }));
-        } catch (e) {
-          console.error('[WS] Heartbeat send error:', e);
+    const firstPingMs = 45_000;
+    const intervalMs = 90_000;
+    this.heartbeatStartTimeout = setTimeout(() => {
+      this.heartbeatStartTimeout = null;
+      if (this.ws?.readyState !== WebSocket.OPEN) return;
+      const tick = () => {
+        if (this.ws?.readyState === WebSocket.OPEN) {
+          try {
+            this.ws.send(JSON.stringify({ type: 'ping' }));
+          } catch {
+            // ignore
+          }
         }
-      }
-    }, 30000);
+      };
+      tick();
+      this.heartbeatInterval = setInterval(tick, intervalMs);
+    }, firstPingMs);
   }
 
   private stopHeartbeat() {
-    if (this.heartbeatTimeout) {
-      clearInterval(this.heartbeatTimeout);
-      this.heartbeatTimeout = null;
+    if (this.heartbeatStartTimeout) {
+      clearTimeout(this.heartbeatStartTimeout);
+      this.heartbeatStartTimeout = null;
+    }
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = null;
+    }
+  }
+
+  /** Immediate send (internal); prefer `sendSubscribe` which queues when socket is open. */
+  private sendSubscribeNow(threadKey: string) {
+    if (this.invalidThreadKeys.has(threadKey)) {
+      return;
+    }
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    try {
+      const params = this.subscriptionParams.get(threadKey) || {};
+      const rideId = String(params.rideId ?? '').trim();
+      const otherUserId = String(params.otherUserId ?? '').trim();
+      if (!rideId || !otherUserId) {
+        if (__DEV__) {
+          console.warn('[WS] Skip subscribe — missing rideId/otherUserId for thread:', threadKey);
+        }
+        return;
+      }
+      if (!this.pendingSubscribeQueue.includes(threadKey)) {
+        this.pendingSubscribeQueue.push(threadKey);
+      }
+      this.ws.send(
+        JSON.stringify({
+          type: 'subscribe',
+          threadKey,
+          rideId,
+          otherUserId,
+        })
+      );
+    } catch (e) {
+      if (__DEV__) console.error('[WS] Subscribe send error:', e);
     }
   }
 
   private sendSubscribe(threadKey: string) {
     if (this.invalidThreadKeys.has(threadKey)) {
-      console.warn('[WS] Skipping quarantined thread:', threadKey);
+      if (__DEV__) console.warn('[WS] Skipping quarantined thread:', threadKey);
       return;
     }
     if (this.ws?.readyState === WebSocket.OPEN) {
-      try {
-        const params = this.subscriptionParams.get(threadKey) || {};
-        const rideId = String(params.rideId ?? '').trim();
-        const otherUserId = String(params.otherUserId ?? '').trim();
-        if (!rideId || !otherUserId) {
-          if (__DEV__) {
-            console.warn('[WS] Skip subscribe — missing rideId/otherUserId for thread:', threadKey);
-          }
-          return;
-        }
-        if (!this.pendingSubscribeQueue.includes(threadKey)) {
-          this.pendingSubscribeQueue.push(threadKey);
-        }
-        this.ws.send(
-          JSON.stringify({
-            type: 'subscribe',
-            threadKey,
-            rideId,
-            otherUserId,
-          })
-        );
-      } catch (e) {
-        console.error('[WS] Subscribe send error:', e);
-      }
+      this.enqueueSubscribeSend(threadKey);
     }
   }
 
   subscribe(threadKey: string, callback: (msg: any) => void, params?: { rideId?: string; otherUserId?: string }) {
     if (this.invalidThreadKeys.has(threadKey)) {
-      console.warn('[WS] Ignoring subscribe for quarantined thread:', threadKey);
+      if (__DEV__) console.warn('[WS] Ignoring subscribe for quarantined thread:', threadKey);
       return;
     }
     const rideId = String(params?.rideId ?? '').trim();
@@ -276,7 +396,9 @@ class ChatWebSocketManager {
     }
     this.subscriptions.set(threadKey, callback);
     this.subscriptionParams.set(threadKey, { rideId, otherUserId });
-    console.log(`[WS] Subscribed to thread: ${threadKey} (total subscriptions: ${this.subscriptions.size})`);
+    if (__DEV__) {
+      console.log(`[WS] Register thread (${this.subscriptions.size}):`, threadKey.slice(0, 48) + (threadKey.length > 48 ? '…' : ''));
+    }
     this.sendSubscribe(threadKey);
   }
 
@@ -284,7 +406,10 @@ class ChatWebSocketManager {
     this.subscriptions.delete(threadKey);
     this.subscriptionParams.delete(threadKey);
     this.pendingSubscribeQueue = this.pendingSubscribeQueue.filter((k) => k !== threadKey);
-    console.log(`[WS] Unsubscribed from thread: ${threadKey} (remaining subscriptions: ${this.subscriptions.size})`);
+    this.subscribeSendQueue = this.subscribeSendQueue.filter((k) => k !== threadKey);
+    if (__DEV__) {
+      console.log('[WS] Unregister thread (remaining:', this.subscriptions.size, ')');
+    }
 
     if (this.ws?.readyState === WebSocket.OPEN) {
       try {
@@ -293,14 +418,18 @@ class ChatWebSocketManager {
           threadKey,
         }));
       } catch (e) {
-        console.error('[WS] Unsubscribe send error:', e);
+        if (__DEV__) console.error('[WS] Unsubscribe send error:', e);
       }
     }
   }
 
   disconnect() {
-    console.log('[WS] Manually disconnecting');
+    if (__DEV__) console.log('[WS] Disconnect (manual)');
     this.isManualDisconnect = true;
+    this.clearReconnectTimer();
+    this.clearSubscribeSendTimer();
+    this.subscribeSendQueue = [];
+    this.reconnectAttempts = 0;
     this.stopHeartbeat();
     this.subscriptions.clear();
     this.subscriptionParams.clear();

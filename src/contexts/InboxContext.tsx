@@ -1,4 +1,5 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { AppState, type AppStateStatus } from 'react-native';
 import type { ChatConversationResponse, RideListItem } from '../types/api';
 import { useAuth } from './AuthContext';
 import {
@@ -20,7 +21,7 @@ import {
   setInFlightThreadFetch,
   clearInFlightThreadFetch,
 } from '../utils/chatFetchThrottle';
-import { getInboxActivitySortKey } from '../utils/inboxList';
+import { MAX_CHAT_WS_SUBSCRIPTIONS, compareInboxByLastMessageAtDesc } from '../utils/inboxList';
 import { normalizeChatStatus, type ChatDeliveryStatus } from '../utils/chatMessageStatus';
 import { chatWSManager } from '../services/chatWebSocketManager';
 import { setInboxRefreshCallback } from '../navigation/handleNotificationNavigation';
@@ -267,11 +268,16 @@ function buildConversationsForUser(threads: StoredThreads, viewerIds: string[]):
     if (t.deletedFor?.some((d) => viewerSet.has(d))) continue;
     const otherId = t.participantIds.find((id) => !viewerSet.has(id)) ?? '';
     const otherName = t.participantNames?.[otherId]?.trim() || 'User';
+    const unreadCount = viewerIds.reduce((m, vid) => Math.max(m, t.unreadFor?.[vid] ?? 0), 0);
+    const hasAnyMessage =
+      (t.messages ?? []).length > 0 || String(t.lastMessage ?? '').trim().length > 0;
+    /** Chats tab: only threads with at least one message (or unread), not empty “placeholder” threads. */
+    if (!hasAnyMessage && unreadCount === 0) continue;
+
     const lastMsg = (t.messages ?? []).length > 0 ? t.messages[t.messages.length - 1] : null;
     const lastSenderId = (lastMsg?.senderUserId ?? t.lastMessageSenderId ?? '').trim();
     const isLastMessageFromMe = Boolean(lastSenderId && viewerSet.has(lastSenderId));
     const lastStatus = normalizeChatStatus(lastMsg?.status);
-    const unreadCount = viewerIds.reduce((m, vid) => Math.max(m, t.unreadFor?.[vid] ?? 0), 0);
     list.push({
       id: key,
       ride: t.ride,
@@ -285,7 +291,7 @@ function buildConversationsForUser(threads: StoredThreads, viewerIds: string[]):
       unreadCount,
     });
   }
-  return list.sort((a, b) => getInboxActivitySortKey(b) - getInboxActivitySortKey(a));
+  return list.sort(compareInboxByLastMessageAtDesc);
 }
 
 function mergeServerConversationsIntoThreads(
@@ -343,7 +349,10 @@ function mergeServerConversationsIntoThreads(
 }
 
 export function InboxProvider({ children }: { children: React.ReactNode }): React.JSX.Element {
-  const { user } = useAuth();
+  const { user, isAuthenticated, needsEmailVerification, needsProfileCompletion, isLoading } = useAuth();
+  /** Match RootNavigator `sessionReady` — JWT + user id can exist before onboarding; skip chat list API until then. */
+  const chatApiReady =
+    !isLoading && isAuthenticated && !needsEmailVerification && !needsProfileCompletion;
   /** Keep in sync with screens that read `user.id` / `user.phone` for thread membership. */
   const currentUserId = (user?.id ?? user?.phone ?? '').trim();
   const currentUserName = (user?.name ?? '').trim() || 'Me';
@@ -357,6 +366,10 @@ export function InboxProvider({ children }: { children: React.ReactNode }): Reac
   const [hydrated, setHydrated] = useState(false);
   const [wsConnectedEpoch, setWsConnectedEpoch] = useState(0);
   const wsHandlersRef = useRef(new Map<string, (msg: any) => void>());
+  /** Skip subscribe/unsubscribe churn when only thread *messages* changed, not WS subscription targets. */
+  const wsDesiredSigRef = useRef('');
+  /** Avoid stacking concurrent inbox list fetches from the poll timer + foreground resume. */
+  const inboxPollInFlightRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -386,18 +399,30 @@ export function InboxProvider({ children }: { children: React.ReactNode }): Reac
   }, []);
 
   const refreshConversations = useCallback(async () => {
-    if (!currentUserId) return;
+    if (!chatApiReady || !currentUserId) return;
     try {
       const convs = await fetchConversations();
       setThreadsByKey((prev) => mergeServerConversationsIntoThreads(prev, convs, currentUserId, currentUserName));
     } catch {
       /* keep local */
     }
-  }, [currentUserId, currentUserName]);
+  }, [chatApiReady, currentUserId, currentUserName]);
+
+  /** Poll / resume only — skips if a fetch is already running (same result as waiting, less load). */
+  const runInboxPollIfIdle = useCallback(async () => {
+    if (!chatApiReady || !currentUserId) return;
+    if (inboxPollInFlightRef.current) return;
+    inboxPollInFlightRef.current = true;
+    try {
+      await refreshConversations();
+    } finally {
+      inboxPollInFlightRef.current = false;
+    }
+  }, [chatApiReady, currentUserId, refreshConversations]);
 
   // Load conversations from backend so inbox survives app reinstall / device change
   useEffect(() => {
-    if (!currentUserId) return;
+    if (!chatApiReady || !currentUserId) return;
     let cancelled = false;
     fetchConversations()
       .then((convs) => {
@@ -410,7 +435,7 @@ export function InboxProvider({ children }: { children: React.ReactNode }): Reac
     return () => {
       cancelled = true;
     };
-  }, [currentUserId, currentUserName]);
+  }, [chatApiReady, currentUserId, currentUserName]);
 
   /** Global WebSocket listener: receive messages for ANY thread, even if chat is closed. */
   useEffect(() => {
@@ -420,16 +445,10 @@ export function InboxProvider({ children }: { children: React.ReactNode }): Reac
 
     // Handler for incoming WebSocket messages - update thread regardless of UI state
     const handleIncomingWSMessage = (threadKey: string) => (msg: any) => {
-      console.log('[Inbox WS] 🎉 Message received:', msg.id);
-      console.log('[Inbox WS] senderUserId:', msg.senderUserId);
-      console.log('[Inbox WS] currentUserId:', currentUserId);
-      console.log('[Inbox WS] Is this message FROM me?', msg.senderUserId === currentUserId);
-
       setThreadsByKey((prev) => {
         let thread = prev?.[threadKey];
-        
+
         if (!thread) {
-          console.log('[Inbox WS] Creating new thread from WS message');
           thread = {
             ride: {} as RideListItem,
             participantIds: ['', ''] as [string, string],
@@ -453,7 +472,6 @@ export function InboxProvider({ children }: { children: React.ReactNode }): Reac
         // Deduplicate: check if message already exists
         const existingIndex = thread.messages.findIndex((m) => m.id === msg.id);
         if (existingIndex >= 0) {
-          console.log('[Inbox WS] Message already exists');
           const existing = thread.messages[existingIndex];
           if (existing.status === stored.status) {
             return prev;
@@ -493,9 +511,6 @@ export function InboxProvider({ children }: { children: React.ReactNode }): Reac
           unreadFor,
         };
 
-        console.log('[Inbox WS] ✅ Added message. Total:', updated.messages.length);
-        console.log('[Inbox WS] Message breakdown - from me:', updated.messages.filter(m => m.senderUserId === currentUserId).length, 'from other:', updated.messages.filter(m => m.senderUserId !== currentUserId).length);
-        
         return {
           ...prev,
           [threadKey]: updated,
@@ -504,7 +519,7 @@ export function InboxProvider({ children }: { children: React.ReactNode }): Reac
     };
 
     // Subscribe once per canonical thread key (sorted ride|user|user) — matches backend GET/WS.
-    const desired = new Map<string, { rideId: string; otherUserId: string }>();
+    const desiredAll = new Map<string, { rideId: string; otherUserId: string }>();
     Object.values(threadsByKey).forEach((thread) => {
       if (!thread) return;
       if (!thread.participantIds?.some((pid) => viewerSet.has(pid))) return;
@@ -513,8 +528,33 @@ export function InboxProvider({ children }: { children: React.ReactNode }): Reac
       const rideId = normalizeChatRideId(thread.ride?.id);
       if (!rideId) return;
       const canonicalKey = getThreadKey(rideId, currentUserId, otherId);
-      desired.set(canonicalKey, { rideId, otherUserId: otherId });
+      desiredAll.set(canonicalKey, { rideId, otherUserId: otherId });
     });
+
+    /** Production-style cap: only the most active threads get live WS; rest use HTTP/polling. */
+    const ranked = [...desiredAll.entries()].map(([canonicalKey, params]) => {
+      const thread = threadsByKey[canonicalKey];
+      const sortKey = thread?.lastMessageAt ?? 0;
+      const unread = thread ? (thread.unreadFor?.[currentUserId] ?? 0) : 0;
+      return { canonicalKey, params, sortKey, unread };
+    });
+    ranked.sort((a, b) => {
+      if (b.unread !== a.unread) return b.unread - a.unread;
+      return b.sortKey - a.sortKey;
+    });
+    const desired = new Map(
+      ranked.slice(0, MAX_CHAT_WS_SUBSCRIPTIONS).map((e) => [e.canonicalKey, e.params])
+    );
+
+    const desiredSig = [...desired.entries()]
+      .map(([k, v]) => `${k}|${v.rideId}|${v.otherUserId}`)
+      .sort()
+      .join('\n');
+    const sigWithEpoch = `${desiredSig}#${wsConnectedEpoch}`;
+    if (sigWithEpoch === wsDesiredSigRef.current) {
+      return;
+    }
+    wsDesiredSigRef.current = sigWithEpoch;
 
     desired.forEach(({ rideId, otherUserId }, canonicalKey) => {
       if (!wsHandlersRef.current.has(canonicalKey) && chatWSManager.isConnected()) {
@@ -534,6 +574,7 @@ export function InboxProvider({ children }: { children: React.ReactNode }): Reac
 
   // Full cleanup only on user switch/unmount, not on each thread update.
   useEffect(() => {
+    wsDesiredSigRef.current = '';
     return () => {
       for (const threadKey of wsHandlersRef.current.keys()) {
         chatWSManager.unsubscribe(threadKey);
@@ -550,7 +591,7 @@ export function InboxProvider({ children }: { children: React.ReactNode }): Reac
       ride?: RideListItem,
       opts?: { cancelled?: () => boolean; force?: boolean }
     ) => {
-      if (!currentUserId?.trim()) return;
+      if (!chatApiReady || !currentUserId?.trim()) return;
       const otherId = resolveOtherParticipantId(otherUserId, otherUserName);
       const rid = normalizeChatRideId(rideId);
       const key = getThreadKey(rid, currentUserId, otherId);
@@ -627,7 +668,7 @@ export function InboxProvider({ children }: { children: React.ReactNode }): Reac
         clearInFlightThreadFetch(key);
       }
     },
-    [currentUserId, currentUserName, viewerParticipantIds]
+    [chatApiReady, currentUserId, currentUserName, viewerParticipantIds]
   );
 
   const bumpUnreadFromNotification = useCallback(
@@ -666,7 +707,7 @@ export function InboxProvider({ children }: { children: React.ReactNode }): Reac
 
   useEffect(() => {
     setInboxRefreshCallback(async (rideId: string, otherUserId: string, otherUserName: string) => {
-      if (!currentUserId) return false;
+      if (!chatApiReady || !currentUserId) return false;
       bumpUnreadFromNotification(rideId, otherUserId, otherUserName);
       void refreshConversations();
       void loadThreadMessages(rideId, otherUserId, otherUserName, undefined, { force: true });
@@ -675,7 +716,7 @@ export function InboxProvider({ children }: { children: React.ReactNode }): Reac
     return () => {
       setInboxRefreshCallback(null);
     };
-  }, [currentUserId, refreshConversations, loadThreadMessages, bumpUnreadFromNotification]);
+  }, [chatApiReady, currentUserId, refreshConversations, loadThreadMessages, bumpUnreadFromNotification]);
 
   const conversations = useMemo(
     () => buildConversationsForUser(threadsByKey, viewerParticipantIds),
@@ -1043,22 +1084,47 @@ export function InboxProvider({ children }: { children: React.ReactNode }): Reac
     [currentUserId, viewerParticipantIds]
   );
 
-  // Auto-refresh conversations periodically and on mount
-  // This ensures we catch any messages that might have been missed
+  // Safety-net poll every 30s while app is foreground (WS handles real-time; this catches gaps).
+  // Paused when backgrounded to reduce network/battery. Initial load is handled by the effect above when `currentUserId` is set.
   useEffect(() => {
-    if (!currentUserId) return;
+    if (!chatApiReady || !currentUserId) return;
 
-    // Initial refresh
-    void refreshConversations();
+    let intervalId: ReturnType<typeof setInterval> | null = null;
 
-    // Refresh every 30 seconds as a safety net
-    const intervalId = setInterval(() => {
-      console.log('[Inbox] Periodic refresh of conversations');
-      void refreshConversations();
-    }, 30000);
+    const clearPoll = () => {
+      if (intervalId != null) {
+        clearInterval(intervalId);
+        intervalId = null;
+      }
+    };
 
-    return () => clearInterval(intervalId);
-  }, [currentUserId, refreshConversations]);
+    const startPoll = () => {
+      if (intervalId != null) return;
+      intervalId = setInterval(() => {
+        void runInboxPollIfIdle();
+      }, 30000);
+    };
+
+    const onAppStateChange = (next: AppStateStatus) => {
+      if (next === 'active') {
+        void runInboxPollIfIdle();
+        startPoll();
+      } else {
+        clearPoll();
+      }
+    };
+
+    const sub = AppState.addEventListener('change', onAppStateChange);
+
+    if (AppState.currentState === 'active') {
+      startPoll();
+    }
+
+    return () => {
+      clearPoll();
+      sub.remove();
+    };
+  }, [chatApiReady, currentUserId, runInboxPollIfIdle]);
 
   const hasUnread = conversations.some((c) => c.unreadCount > 0);
 

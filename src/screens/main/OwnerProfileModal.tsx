@@ -1,17 +1,36 @@
 import React, { useCallback, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Alert,
+  Linking,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import UserAvatar from '../../components/common/UserAvatar';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RidesStackParamList, SearchStackParamList } from '../../navigation/types';
-import type { PassengerSearchParams } from '../../navigation/types';
 import { useAuth } from '../../contexts/AuthContext';
 import { COLORS } from '../../constants/colors';
 import { getUserRatingsSummary } from '../../services/ratings';
+import { ProfileTripsBreakdownSheet } from '../../components/common/ProfileTripsBreakdownSheet';
+import { ProfileTripsStatCell } from '../../components/common/ProfileTripsStatCell';
+import {
+  fetchTripsForProfileSubject,
+  formatOwnProfileTripsLine,
+  tripCountsFromAggregate,
+} from '../../services/tripsAggregation';
+import { ratingQualitativeColor, ratingQualitativeLabel } from '../../utils/ratingQualitativeLabel';
+import { formatMemberSinceLabel } from '../../utils/formatMemberSinceLabel';
 import type { SearchStackParamList as TypesSearchStackParamList } from '../../navigation/types';
 import type { RidesStackParamList as TypesRidesStackParamList } from '../../navigation/types';
+import { calculateAge } from '../../utils/calculateAge';
+import { pickPublisherPhoneFromRide } from '../../utils/rideDisplay';
 
 type OwnerProfileRoute =
   | RouteProp<TypesRidesStackParamList, 'OwnerProfileModal'>
@@ -27,6 +46,8 @@ export default function OwnerProfileModal(): React.JSX.Element {
   const paramAvatarUrl = route.params?.avatarUrl?.trim();
   const paramPublisherAvg = route.params?.publisherAvgRating;
   const paramPublisherCount = route.params?.publisherRatingCount;
+  const paramDateOfBirth = route.params?.dateOfBirth?.trim();
+  const targetAge = paramDateOfBirth ? calculateAge(paramDateOfBirth) : null;
   const isSelf = Boolean(user?.id?.trim() && targetUserId === user.id.trim());
   /** No session: ratings are loaded via GET /ratings/:userId when this screen opens (see backend notes below). */
   const isGuest = !(user?.id ?? '').trim();
@@ -80,25 +101,54 @@ export default function OwnerProfileModal(): React.JSX.Element {
     }, [navigation])
   );
 
-  const memberSince = (() => {
-    if (!isSelf) return '—';
-    const raw = user?.createdAt?.trim();
-    if (!raw) return '—';
-    const dt = new Date(raw);
-    if (Number.isNaN(dt.getTime())) return '—';
-    return dt.toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
-  })();
+  const [tripsLoading, setTripsLoading] = useState(true);
+  const [tripsCompleted, setTripsCompleted] = useState(0);
+  const [tripsCancelled, setTripsCancelled] = useState(0);
+  const [tripsCompletedThisMonth, setTripsCompletedThisMonth] = useState(0);
+  const [sinceLabel, setSinceLabel] = useState('—');
+  const [tripsBreakdownVisible, setTripsBreakdownVisible] = useState(false);
+  /** Filled from GET /ratings/:userId (or profile probes) when backend exposes `subjectContactPhone`. */
+  const [contactPhoneFromApi, setContactPhoneFromApi] = useState('');
 
   useFocusEffect(
     useCallback(() => {
       if (!targetUserId) {
         setLoading(true);
+        setTripsLoading(true);
+        setTripsCompleted(0);
+        setTripsCancelled(0);
+        setTripsCompletedThisMonth(0);
+        setSinceLabel('—');
+        setContactPhoneFromApi('');
         return () => {};
       }
 
       let cancelled = false;
       const runId = ++ratingsFetchSeqRef.current;
+      setContactPhoneFromApi('');
       setLoading(true);
+      setSinceLabel(formatMemberSinceLabel(isSelf ? user?.createdAt : undefined));
+      setTripsLoading(true);
+
+      void fetchTripsForProfileSubject(targetUserId, user?.id)
+        .then((agg) => {
+          if (!cancelled) {
+            const { completed, cancelled: cx } = tripCountsFromAggregate(agg);
+            setTripsCompleted(completed);
+            setTripsCancelled(cx);
+            setTripsCompletedThisMonth(Math.max(0, agg.completedThisMonth ?? 0));
+          }
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setTripsCompleted(0);
+            setTripsCancelled(0);
+            setTripsCompletedThisMonth(0);
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setTripsLoading(false);
+        });
 
       const applyPublisherParams = (): boolean => {
         const hasAvg =
@@ -136,13 +186,21 @@ export default function OwnerProfileModal(): React.JSX.Element {
           setAvgRating(summary.avgRating ?? 0);
           setTotalRatings(summary.totalRatings ?? 0);
           setRatingKnown(true);
+          setContactPhoneFromApi((summary.subjectContactPhone ?? '').trim());
+          setSinceLabel(
+            formatMemberSinceLabel(
+              summary.subjectCreatedAt ?? (isSelf ? user?.createdAt : undefined)
+            )
+          );
         } catch {
           if (cancelled || runId !== ratingsFetchSeqRef.current) return;
+          setContactPhoneFromApi('');
           if (!hadEmbeddedFromRide) {
             setAvgRating(0);
             setTotalRatings(0);
           }
           setRatingKnown(true);
+          setSinceLabel(formatMemberSinceLabel(isSelf ? user?.createdAt : undefined));
         } finally {
           if (!cancelled && runId === ratingsFetchSeqRef.current) setLoading(false);
         }
@@ -154,8 +212,34 @@ export default function OwnerProfileModal(): React.JSX.Element {
         cancelled = true;
         ratingsFetchSeqRef.current += 1;
       };
-    }, [targetUserId, isGuest, isSelf, paramPublisherAvg, paramPublisherCount])
+    }, [targetUserId, isGuest, isSelf, paramPublisherAvg, paramPublisherCount, user?.id, user?.createdAt])
   );
+
+  const phoneFromRouteOrRide =
+    (route.params?.publisherPhone ?? '').trim() ||
+    pickPublisherPhoneFromRide(route.params?._returnToRide?.params?.ride) ||
+    '';
+  const dialPhone = phoneFromRouteOrRide || contactPhoneFromApi.trim();
+  const canCall = !isSelf && dialPhone.length > 0;
+
+  const handleCall = useCallback(async () => {
+    const cleaned = dialPhone.replace(/[^\d+]/g, '');
+    if (!cleaned) {
+      Alert.alert('No phone number', 'No phone number is available for this driver.');
+      return;
+    }
+    const url = `tel:${cleaned}`;
+    try {
+      // iOS: `canOpenURL('tel:')` is false unless `LSApplicationQueriesSchemes` includes `tel` (see app.config.js).
+      // Real devices handle `openURL` even when `canOpenURL` wrongly returns false; simulators often have no Phone app.
+      await Linking.openURL(url);
+    } catch {
+      Alert.alert(
+        'Cannot open dialer',
+        'Try on a physical phone. Simulators and some tablets do not support phone calls.'
+      );
+    }
+  }, [dialPhone]);
 
   if (loading) {
     return (
@@ -169,6 +253,7 @@ export default function OwnerProfileModal(): React.JSX.Element {
 
   return (
     <SafeAreaView style={styles.screen} edges={['top']}>
+      <>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <View style={[styles.headerCard, !isSelf ? styles.headerCardOther : null]}>
           <View style={[styles.headerTopRow, !isSelf ? styles.headerTopRowOther : null]}>
@@ -188,20 +273,51 @@ export default function OwnerProfileModal(): React.JSX.Element {
 
           <View style={styles.avatarWrap}>
             <UserAvatar uri={headerPhotoUri} name={targetDisplayName} size={72} />
+            {targetAge !== null ? (
+              <View style={styles.ageBadge}>
+                <Text style={styles.ageBadgeText}>{targetAge}y</Text>
+              </View>
+            ) : null}
           </View>
 
           <Text style={styles.name}>{targetDisplayName}</Text>
           <Text style={styles.bio}>Top-rated urban navigator and tech enthusiast.</Text>
+          {canCall ? (
+            <Pressable
+              onPress={handleCall}
+              style={({ pressed }) => [styles.callButton, pressed && { opacity: 0.85 }]}
+              accessibilityRole="button"
+              accessibilityLabel={`Call ${targetDisplayName}`}
+              accessibilityHint="Opens the phone dialer with this number"
+            >
+              <Ionicons name="call-outline" size={18} color={COLORS.white} />
+              <Text style={styles.callButtonText}>Call</Text>
+            </Pressable>
+          ) : null}
         </View>
 
         <View style={styles.statsCard}>
-          <StatItem label="Trips" value="0" icon="car-outline" />
+          {isSelf ? (
+            <StatItem
+              label="Trips"
+              value={formatOwnProfileTripsLine(tripsLoading, tripsCompleted, tripsCancelled)}
+              icon="car-outline"
+            />
+          ) : (
+            <ProfileTripsStatCell
+              completed={tripsCompleted}
+              cancelled={tripsCancelled}
+              loading={tripsLoading}
+              onPress={tripsLoading ? undefined : () => setTripsBreakdownVisible(true)}
+              accessibilityHint="Shows completed and cancelled trip counts"
+            />
+          )}
           <StatItem
             label="Rating"
             value={!ratingKnown && !isGuest ? '—' : avgRating.toFixed(1)}
             icon="star-outline"
           />
-          <StatItem label="Since" value={isSelf ? memberSince : '—'} icon="calendar-outline" />
+          <StatItem label="Since" value={sinceLabel} icon="calendar-outline" />
         </View>
 
         <View style={styles.performanceCard}>
@@ -213,7 +329,19 @@ export default function OwnerProfileModal(): React.JSX.Element {
                 <Text style={styles.ratingValue}>
                   {!ratingKnown && !isGuest ? '—' : avgRating.toFixed(1)}
                 </Text>
-                <Text style={styles.ratingText}>Excellent</Text>
+                <Text
+                  style={[
+                    styles.ratingText,
+                    {
+                      color:
+                        !ratingKnown && !isGuest
+                          ? COLORS.textMuted
+                          : ratingQualitativeColor(avgRating),
+                    },
+                  ]}
+                >
+                  {!ratingKnown && !isGuest ? '—' : ratingQualitativeLabel(avgRating)}
+                </Text>
               </View>
               <Text style={styles.reviewText}>
                 {!ratingKnown && !isGuest
@@ -237,6 +365,18 @@ export default function OwnerProfileModal(): React.JSX.Element {
           </View>
         </View>
       </ScrollView>
+      {!isSelf ? (
+        <ProfileTripsBreakdownSheet
+          visible={tripsBreakdownVisible}
+          onClose={() => setTripsBreakdownVisible(false)}
+          completed={tripsCompleted}
+          cancelled={tripsCancelled}
+          loading={tripsLoading}
+          subjectName={targetDisplayName}
+          completedThisMonth={tripsCompletedThisMonth}
+        />
+      ) : null}
+      </>
     </SafeAreaView>
   );
 }
@@ -245,19 +385,36 @@ function StatItem({
   label,
   value,
   icon,
+  onPress,
 }: {
   label: string;
   value: string;
   icon: keyof typeof Ionicons.glyphMap;
+  onPress?: () => void;
 }): React.JSX.Element {
   const iconColor = icon === 'star-outline' || icon === 'star' ? COLORS.warning : COLORS.secondary;
-  return (
-    <View style={styles.statItem}>
+  const body = (
+    <>
       <Ionicons name={icon} size={14} color={iconColor} />
-      <Text style={styles.statValue}>{value}</Text>
+      <Text style={[styles.statValue, styles.statValueCenter]} numberOfLines={2}>
+        {value}
+      </Text>
       <Text style={styles.statLabel}>{label}</Text>
-    </View>
+    </>
   );
+  if (onPress) {
+    return (
+      <Pressable
+        onPress={onPress}
+        style={({ pressed }) => [styles.statItem, pressed && { opacity: 0.72 }]}
+        accessibilityRole="button"
+        accessibilityLabel={`${label}: ${value}`}
+      >
+        {body}
+      </Pressable>
+    );
+  }
+  return <View style={styles.statItem}>{body}</View>;
 }
 
 const styles = StyleSheet.create({
@@ -309,8 +466,48 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
 
+  ageBadge: {
+    position: 'absolute',
+    right: -22,
+    bottom: 4,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 12,
+    backgroundColor: COLORS.white,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  ageBadgeText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: COLORS.text,
+  },
+
   name: { fontSize: 26, fontWeight: '800', color: COLORS.text, textAlign: 'center' },
   bio: { marginTop: 4, textAlign: 'center', fontSize: 14, color: COLORS.textSecondary },
+
+  callButton: {
+    marginTop: 14,
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 12,
+    borderRadius: 12,
+    minHeight: 48,
+    backgroundColor: COLORS.primary,
+    borderWidth: 1,
+    borderColor: COLORS.primary,
+  },
+  callButtonText: { fontSize: 15, fontWeight: '700', color: COLORS.white },
 
   statsCard: {
     backgroundColor: COLORS.white,
@@ -320,8 +517,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     paddingVertical: 12,
   },
-  statItem: { flex: 1, alignItems: 'center', gap: 2 },
+  statItem: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 2, minHeight: 88 },
   statValue: { fontSize: 16, fontWeight: '800', color: COLORS.text },
+  statValueCenter: { textAlign: 'center' },
   statLabel: { fontSize: 12, color: COLORS.textSecondary },
 
   performanceCard: { backgroundColor: 'rgba(34,197,94,0.08)', borderRadius: 14, borderWidth: 1, borderColor: 'rgba(34,197,94,0.22)', padding: 12, gap: 8 },
@@ -330,7 +528,7 @@ const styles = StyleSheet.create({
   performanceLeft: { flex: 1, gap: 8 },
   ratingRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   ratingValue: { fontSize: 18, fontWeight: '900', color: COLORS.text },
-  ratingText: { fontSize: 13, fontWeight: '700', color: COLORS.textSecondary },
+  ratingText: { fontSize: 13, fontWeight: '700' },
   reviewText: { fontSize: 12, color: COLORS.textSecondary, textDecorationLine: 'underline' },
   performanceArrow: { width: 34, height: 34, borderRadius: 17, backgroundColor: 'rgba(34,197,94,0.14)', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: 'rgba(34,197,94,0.28)' },
 });

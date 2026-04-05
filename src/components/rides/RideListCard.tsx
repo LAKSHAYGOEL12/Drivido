@@ -13,7 +13,12 @@ import {
   isRideCancelledByOwner,
   isViewerRideOwner,
 } from '../../utils/rideDisplay';
-import { bookingIsCancelled } from '../../utils/bookingStatus';
+import {
+  bookingIsCancelled,
+  bookingIsCancelledByOwner,
+  bookingRowHoldsOccupiedSeats,
+  effectiveOccupiedSeatsFromBookingRow,
+} from '../../utils/bookingStatus';
 import { getRideAvailabilityShort } from '../../utils/rideSeats';
 import { bookingPassengerDisplayName, ridePublisherDisplayName } from '../../utils/displayNames';
 import UserAvatar from '../common/UserAvatar';
@@ -32,6 +37,8 @@ export type RideListCardProps = {
   showCancelledBadge?: boolean;
   /** Past rides: show “Rejected” when owner rejected passenger request. */
   showRejectedBadge?: boolean;
+  /** Past rides (passenger): driver removed you from this booking. */
+  showRemovedByDriverBadge?: boolean;
   /** Past rides: show “Completed” after destination + 1h window (not cancelled). */
   showCompletedBadge?: boolean;
   /** Past rides completed: show inline rating CTA row. */
@@ -65,6 +72,7 @@ export default function RideListCard({
   viewerAvatarUrl,
   showCancelledBadge,
   showRejectedBadge,
+  showRemovedByDriverBadge,
   showCompletedBadge,
   showRatePrompt,
   showRatedState,
@@ -79,9 +87,6 @@ export default function RideListCard({
   const pickup = placePreview(pickupFull, 40);
   const dest = placePreview(destFull, 40);
   const driverName = ridePublisherDisplayName(ride);
-  const vehicleSubtitle = [ride.vehicleModel, ride.licensePlate ?? ride.vehicleNumber]
-    .filter((s) => typeof s === 'string' && s.trim())
-    .join(' • ');
   const isOwner = isViewerRideOwner(ride, currentUserId);
   const bookings = ride.bookings ?? [];
   const bookingModeSource = ride as RideListItem & {
@@ -104,44 +109,54 @@ export default function RideListCard({
   const pendingRequestCount = pendingBookings.length;
   const confirmedBookings = bookings.filter((b) => {
     const s = String(b.status ?? '').trim().toLowerCase();
-    return !bookingIsCancelled(s) && s !== 'pending' && s !== 'rejected';
+    if (s === 'pending' || s === 'rejected') return false;
+    return bookingRowHoldsOccupiedSeats(b);
   });
   const activePassengerCount = confirmedBookings.length;
-  const bookedSeats = confirmedBookings.reduce((sum, b) => sum + (b.seats ?? 0), 0);
+  const bookedSeats = confirmedBookings.reduce(
+    (sum, b) => sum + effectiveOccupiedSeatsFromBookingRow(b),
+    0
+  );
   const totalBookingsCount = getRideTotalBookingCount(ride);
   const ownerMyRidesSeatOnly = Boolean(isOwner && myRidesOwnerSummary);
-  const displayName = ownerMyRidesSeatOnly
-    ? isRequestBookingMode
-      ? pendingRequestCount > 0
-        ? `${pendingRequestCount} request${pendingRequestCount !== 1 ? 's' : ''} pending`
-        : 'No request pending'
-      : bookedSeats > 0
-      ? `${bookedSeats} seat${bookedSeats !== 1 ? 's' : ''} booked`
-      : 'No seats booked yet'
-    : isOwner
-      ? formatOwnerRideCardTitle(ride)
-      : driverName;
-  const displaySubtitle = ownerMyRidesSeatOnly
-    ? vehicleSubtitle
-    : isOwner
-      ? hideSeatAvailability
-        ? isRequestBookingMode
-          ? pendingRequestCount > 0
-            ? `${pendingRequestCount} request${pendingRequestCount !== 1 ? 's' : ''} pending`
-            : vehicleSubtitle
-          : activePassengerCount > 0
-          ? `${activePassengerCount} passenger${activePassengerCount !== 1 ? 's' : ''}`
-          : vehicleSubtitle
-        : isRequestBookingMode
-          ? pendingRequestCount > 0
-            ? `${pendingRequestCount} request${pendingRequestCount !== 1 ? 's' : ''} pending`
+  /** Request-mode owner with ≥1 pending booking: card shows only this line (no passenger names / duplicate status). */
+  const ownerHasPendingRequests =
+    isOwner && isRequestBookingMode && pendingRequestCount > 0;
+  const pendingRequestPrimaryLine =
+    pendingRequestCount === 1 ? 'Pending request' : `${pendingRequestCount} pending requests`;
+
+  const displayName = ownerHasPendingRequests
+    ? pendingRequestPrimaryLine
+    : ownerMyRidesSeatOnly
+      ? bookedSeats > 0
+        ? `${bookedSeats} seat${bookedSeats !== 1 ? 's' : ''} booked`
+        : 'No seats booked yet'
+      : isOwner
+        ? formatOwnerRideCardTitle(ride)
+        : driverName;
+  const displaySubtitle = ownerHasPendingRequests
+    ? ''
+    : ownerMyRidesSeatOnly
+      ? ''
+      : isOwner
+        ? hideSeatAvailability
+          ? isRequestBookingMode
+            ? pendingRequestCount > 0
+              ? `${pendingRequestCount} request${pendingRequestCount !== 1 ? 's' : ''} pending`
+              : ''
+            : activePassengerCount > 0
+            ? `${activePassengerCount} passenger${activePassengerCount !== 1 ? 's' : ''}`
             : ''
-          : confirmedBookings.length > 0
-          ? `${bookedSeats} seat${bookedSeats !== 1 ? 's' : ''} booked`
-          : totalBookingsCount > 0
-            ? `${isRideCancelledByOwner(ride) ? 'Cancelled · ' : ''}Had ${totalBookingsCount} passenger${totalBookingsCount !== 1 ? 's' : ''}`
-            : ''
-      : vehicleSubtitle;
+          : isRequestBookingMode
+            ? pendingRequestCount > 0
+              ? `${pendingRequestCount} request${pendingRequestCount !== 1 ? 's' : ''} pending`
+              : ''
+            : confirmedBookings.length > 0
+            ? `${bookedSeats} seat${bookedSeats !== 1 ? 's' : ''} booked`
+            : totalBookingsCount > 0
+              ? `${isRideCancelledByOwner(ride) ? 'Cancelled · ' : ''}Had ${totalBookingsCount} passenger${totalBookingsCount !== 1 ? 's' : ''}`
+              : ''
+        : '';
   const nameSourceForAvatar = confirmedBookings.length > 0 ? confirmedBookings : bookings;
   const firstBookingForAvatar = nameSourceForAvatar[0];
   const passengerAvatarUrl = firstBookingForAvatar?.avatarUrl?.trim();
@@ -195,6 +210,11 @@ export default function RideListCard({
           {showRejectedBadge ? (
             <View style={styles.rejectedBadge}>
               <Text style={styles.rejectedBadgeText}>Rejected</Text>
+            </View>
+          ) : null}
+          {showRemovedByDriverBadge ? (
+            <View style={styles.removedByDriverBadge}>
+              <Text style={styles.removedByDriverBadgeText}>Removed by driver</Text>
             </View>
           ) : null}
         </View>
@@ -392,6 +412,21 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '700',
     color: COLORS.error,
+    textTransform: 'uppercase',
+    letterSpacing: 0.3,
+  },
+  removedByDriverBadge: {
+    backgroundColor: 'rgba(234,88,12,0.12)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(234,88,12,0.4)',
+  },
+  removedByDriverBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#c2410c',
     textTransform: 'uppercase',
     letterSpacing: 0.3,
   },

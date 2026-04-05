@@ -1,4 +1,5 @@
 import type { RideListItem } from '../types/api';
+import { mergeVehicleFieldsIntoRide } from './rideVehicleFields';
 
 /**
  * Extract a ride object from GET /rides/:id (or similar) JSON for navigation / chat.
@@ -24,9 +25,9 @@ export function unwrapRideFromDetailResponse(res: unknown): RideListItem | null 
   const list = Array.isArray(raw.bookings)
     ? (raw.bookings as NonNullable<RideListItem['bookings']>)
     : [];
-  return {
+  return mergeVehicleFieldsIntoRide({
     ...(candidate as unknown as RideListItem),
     id,
     bookings: list,
-  };
+  });
 }

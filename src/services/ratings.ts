@@ -31,6 +31,16 @@ export type UserRatingsSummary = {
   reviews: UserRatingReview[];
   /** Profile photo URL for the user whose ratings were fetched (when API includes nested `user`). */
   subjectAvatarUrl?: string;
+  /**
+   * Subject user's signup / member-since timestamp when `GET /ratings/:userId` embeds `user` (or top-level).
+   * Backend: expose `createdAt` on the rated user object for public profile "Since".
+   */
+  subjectCreatedAt?: string;
+  /**
+   * Driver/passenger contact when backend exposes it for the profile subject (same trust rules as avatar).
+   * Prefer E.164 or national digits; app opens the device dialer via `tel:`.
+   */
+  subjectContactPhone?: string;
 };
 
 function extractRatingsArray(raw: unknown): unknown[] {
@@ -163,10 +173,47 @@ function extractVerifiedSubjectAvatar(body: unknown, expectedUserId: string): st
   return undefined;
 }
 
-/** Try common public-profile URL shapes when ratings payload omits the subject's avatar. */
-async function probePublicUserAvatar(userId: string): Promise<string | undefined> {
+const SUBJECT_PHONE_KEYS = [
+  'phone',
+  'mobile',
+  'phoneNumber',
+  'phone_number',
+  'contactPhone',
+  'contact_phone',
+] as const;
+
+function phoneWhenRecordMatchesUser(
+  record: Record<string, unknown> | null,
+  expectedUserId: string
+): string | undefined {
+  if (!record) return undefined;
+  const rid = stringifyApiUserId(record._id ?? record.id);
+  if (!rid || rid !== expectedUserId.trim()) return undefined;
+  for (const k of SUBJECT_PHONE_KEYS) {
+    const v = record[k];
+    if (typeof v === 'string' && v.trim()) return v.trim();
+  }
+  return undefined;
+}
+
+/** Only trust phone if JSON says it belongs to `expectedUserId`. */
+function extractVerifiedSubjectPhone(body: unknown, expectedUserId: string): string | undefined {
+  const top = asObject(body);
+  if (!top) return undefined;
+  const layers = [top, asObject(top.data), asObject(top.user), asObject(asObject(top.data)?.user)];
+  for (const layer of layers) {
+    const hit = phoneWhenRecordMatchesUser(layer, expectedUserId);
+    if (hit) return hit;
+  }
+  return undefined;
+}
+
+/** Try common public-profile URL shapes when ratings payload omits avatar or contact phone. */
+async function probePublicUserProfileExtras(
+  userId: string
+): Promise<{ subjectAvatarUrl?: string; subjectContactPhone?: string }> {
   const id = userId.trim();
-  if (!id) return undefined;
+  if (!id) return {};
 
   const pathProbes: { path: string; userIdFromPath: boolean }[] = [
     { path: `/users/${encodeURIComponent(id)}`, userIdFromPath: true },
@@ -186,23 +233,34 @@ async function probePublicUserAvatar(userId: string): Promise<string | undefined
     )
   );
 
+  let subjectAvatarUrl: string | undefined;
+  let subjectContactPhone: string | undefined;
+
   for (let i = 0; i < pathProbes.length; i++) {
     const { userIdFromPath } = pathProbes[i];
     const body = bodies[i];
     if (body == null) continue;
-    const verified = extractVerifiedSubjectAvatar(body, id);
-    if (verified) return verified;
+    const verifiedAvatar = extractVerifiedSubjectAvatar(body, id);
+    const verifiedPhone = extractVerifiedSubjectPhone(body, id);
+    if (verifiedAvatar && !subjectAvatarUrl) subjectAvatarUrl = verifiedAvatar;
+    if (verifiedPhone && !subjectContactPhone) subjectContactPhone = verifiedPhone;
     if (!userIdFromPath) continue;
     const top = asObject(body) ?? {};
     const nested = asObject(top.data) ?? {};
     const user = asObject(nested.user) ?? asObject(top.user) ?? {};
-    const loose =
-      pickAvatarUrlFromRecord(top) ??
-      pickAvatarUrlFromRecord(nested) ??
-      pickAvatarUrlFromRecord(user);
-    if (loose) return loose;
+    if (!subjectAvatarUrl) {
+      const loose =
+        pickAvatarUrlFromRecord(top) ??
+        pickAvatarUrlFromRecord(nested) ??
+        pickAvatarUrlFromRecord(user);
+      if (loose) subjectAvatarUrl = loose;
+    }
   }
-  return undefined;
+
+  return {
+    ...(subjectAvatarUrl ? { subjectAvatarUrl } : {}),
+    ...(subjectContactPhone ? { subjectContactPhone } : {}),
+  };
 }
 
 export async function getUserRatingsSummary(userId: string): Promise<UserRatingsSummary> {
@@ -387,16 +445,34 @@ export async function getUserRatingsSummary(userId: string): Promise<UserRatings
 
   // (dev logs removed)
 
+  let subjectContactPhone =
+    phoneWhenRecordMatchesUser(userObj, userId) ??
+    extractVerifiedSubjectPhone(raw, userId) ??
+    extractVerifiedSubjectPhone(data, userId);
+
   let subjectAvatarUrl =
     pickSubjectAvatarFromApiEnvelope(raw, data, userObj) ?? findAvatarUrlForUserInTree(raw, userId);
-  if (!subjectAvatarUrl) {
-    subjectAvatarUrl = await probePublicUserAvatar(userId);
-  }
+  const extras = await probePublicUserProfileExtras(userId);
+  if (!subjectAvatarUrl && extras.subjectAvatarUrl) subjectAvatarUrl = extras.subjectAvatarUrl;
+  if (!subjectContactPhone && extras.subjectContactPhone) subjectContactPhone = extras.subjectContactPhone;
+
+  const subjectCreatedAtRaw = asString(
+    userObj.createdAt ??
+      userObj.created_at ??
+      userObj.joinedAt ??
+      userObj.joined_at ??
+      userObj.memberSince ??
+      userObj.member_since ??
+      data.createdAt ??
+      data.created_at
+  ).trim();
 
   return {
     avgRating: finalAvgRating,
     totalRatings: finalTotalRatings,
     reviews,
     ...(subjectAvatarUrl ? { subjectAvatarUrl } : {}),
+    ...(subjectCreatedAtRaw ? { subjectCreatedAt: subjectCreatedAtRaw } : {}),
+    ...(subjectContactPhone ? { subjectContactPhone } : {}),
   };
 }

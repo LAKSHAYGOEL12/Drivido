@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import UserAvatar from '../../components/common/UserAvatar';
 import { Ionicons } from '@expo/vector-icons';
@@ -8,6 +8,15 @@ import { useAuth } from '../../contexts/AuthContext';
 import { COLORS } from '../../constants/colors';
 import type { ProfileStackParamList } from '../../navigation/types';
 import { getUserRatingsSummary } from '../../services/ratings';
+import { ProfileTripsBreakdownSheet } from '../../components/common/ProfileTripsBreakdownSheet';
+import { ProfileTripsStatCell } from '../../components/common/ProfileTripsStatCell';
+import {
+  fetchTripsForProfileSubject,
+  formatOwnProfileTripsLine,
+  tripCountsFromAggregate,
+} from '../../services/tripsAggregation';
+import { ratingQualitativeColor, ratingQualitativeLabel } from '../../utils/ratingQualitativeLabel';
+import { formatMemberSinceLabel } from '../../utils/formatMemberSinceLabel';
 
 type UserProfileEntryRoute = RouteProp<ProfileStackParamList, 'ProfileEntry'>;
 
@@ -23,15 +32,13 @@ export default function UserProfileEntry(): React.JSX.Element {
   const [loading, setLoading] = useState(true);
   const [avgRating, setAvgRating] = useState(0);
   const [totalRatings, setTotalRatings] = useState(0);
-
-  const memberSince = (() => {
-    if (!isSelf) return '—';
-    const raw = user?.createdAt?.trim();
-    if (!raw) return '—';
-    const dt = new Date(raw);
-    if (Number.isNaN(dt.getTime())) return '—';
-    return dt.toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
-  })();
+  const [tripsLoading, setTripsLoading] = useState(true);
+  const [tripsCompleted, setTripsCompleted] = useState(0);
+  const [tripsCancelled, setTripsCancelled] = useState(0);
+  const [tripsCompletedThisMonth, setTripsCompletedThisMonth] = useState(0);
+  const [memberSinceLabel, setMemberSinceLabel] = useState('—');
+  const [tripsBreakdownVisible, setTripsBreakdownVisible] = useState(false);
+  const prevTripsSubjectIdRef = useRef<string | null>(null);
 
   const [fetchedSubjectAvatar, setFetchedSubjectAvatar] = useState<string | undefined>();
   const headerPhotoUri =
@@ -44,13 +51,20 @@ export default function UserProfileEntry(): React.JSX.Element {
     useCallback(() => {
       // Never fall back to current user on this screen.
       if (!targetUserId) {
+        prevTripsSubjectIdRef.current = null;
         setLoading(true);
         setFetchedSubjectAvatar(undefined);
+        setTripsLoading(true);
+        setTripsCompleted(0);
+        setTripsCancelled(0);
+        setTripsCompletedThisMonth(0);
+        setMemberSinceLabel('—');
         return () => {};
       }
 
       let cancelled = false;
       setLoading(true);
+      setMemberSinceLabel(formatMemberSinceLabel(isSelf ? user?.createdAt : undefined));
 
       void (async () => {
         try {
@@ -59,20 +73,50 @@ export default function UserProfileEntry(): React.JSX.Element {
           setAvgRating(summary.avgRating ?? 0);
           setTotalRatings(summary.totalRatings ?? 0);
           setFetchedSubjectAvatar(summary.subjectAvatarUrl);
+          setMemberSinceLabel(
+            formatMemberSinceLabel(
+              summary.subjectCreatedAt ?? (isSelf ? user?.createdAt : undefined)
+            )
+          );
         } catch {
           if (cancelled) return;
           setAvgRating(0);
           setTotalRatings(0);
           setFetchedSubjectAvatar(undefined);
-        } finally {
-          if (!cancelled) setLoading(false);
+          setMemberSinceLabel(formatMemberSinceLabel(isSelf ? user?.createdAt : undefined));
         }
+        const tripsSubjectChanged = prevTripsSubjectIdRef.current !== targetUserId;
+        prevTripsSubjectIdRef.current = targetUserId;
+        if (tripsSubjectChanged) {
+          setTripsLoading(true);
+        }
+        try {
+          const viewerForTrips = isSelf
+            ? (user?.id?.trim() || targetUserId)
+            : user?.id?.trim();
+          const agg = await fetchTripsForProfileSubject(targetUserId, viewerForTrips || undefined);
+          if (!cancelled) {
+            const { completed, cancelled: cx } = tripCountsFromAggregate(agg);
+            setTripsCompleted(completed);
+            setTripsCancelled(cx);
+            setTripsCompletedThisMonth(Math.max(0, agg.completedThisMonth ?? 0));
+          }
+        } catch {
+          if (!cancelled) {
+            setTripsCompleted(0);
+            setTripsCancelled(0);
+            setTripsCompletedThisMonth(0);
+          }
+        } finally {
+          if (!cancelled) setTripsLoading(false);
+        }
+        if (!cancelled) setLoading(false);
       })();
 
       return () => {
         cancelled = true;
       };
-    }, [targetUserId])
+    }, [targetUserId, isSelf, user?.id, user?.createdAt])
   );
 
   const handleBack = () => {
@@ -97,6 +141,7 @@ export default function UserProfileEntry(): React.JSX.Element {
   }
 
   return (
+    <>
     <ScrollView style={styles.screen} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
       <View style={styles.headerCard}>
         <View style={styles.headerTopRow}>
@@ -123,9 +168,29 @@ export default function UserProfileEntry(): React.JSX.Element {
       </View>
 
       <View style={styles.statsCard}>
-        <StatItem label="Trips" value="0" icon="car-outline" />
+        {isSelf ? (
+          <StatItem
+            label="Trips"
+            value={formatOwnProfileTripsLine(tripsLoading, tripsCompleted, tripsCancelled)}
+            icon="car-outline"
+            onPress={() =>
+              navigation.navigate('Trips', {
+                userId: targetUserId,
+                ...(targetDisplayName.trim() ? { displayName: targetDisplayName.trim() } : {}),
+              })
+            }
+          />
+        ) : (
+          <ProfileTripsStatCell
+            completed={tripsCompleted}
+            cancelled={tripsCancelled}
+            loading={tripsLoading}
+            onPress={tripsLoading ? undefined : () => setTripsBreakdownVisible(true)}
+            accessibilityHint="Shows completed and cancelled trip counts"
+          />
+        )}
         <StatItem label="Rating" value={avgRating > 0 ? avgRating.toFixed(1) : '0'} icon="star-outline" />
-        <StatItem label="Since" value={memberSince} icon="calendar-outline" />
+        <StatItem label="Since" value={memberSinceLabel} icon="calendar-outline" />
       </View>
 
       <View style={styles.performanceCard}>
@@ -135,7 +200,7 @@ export default function UserProfileEntry(): React.JSX.Element {
             <View style={styles.ratingRow}>
               <Ionicons name="star-outline" size={16} color={COLORS.warning} />
               <Text style={styles.ratingValue}>{avgRating > 0 ? avgRating.toFixed(1) : '0.0'}</Text>
-              <Text style={styles.ratingText}>Excellent</Text>
+              <Text style={styles.ratingText}>{ratingQualitativeLabel(avgRating)}</Text>
             </View>
             <Text style={styles.reviewText}>Based on {totalRatings} reviews</Text>
           </View>
@@ -157,6 +222,18 @@ export default function UserProfileEntry(): React.JSX.Element {
         </View>
       </View>
     </ScrollView>
+    {!isSelf ? (
+      <ProfileTripsBreakdownSheet
+        visible={tripsBreakdownVisible}
+        onClose={() => setTripsBreakdownVisible(false)}
+        completed={tripsCompleted}
+        cancelled={tripsCancelled}
+        loading={tripsLoading}
+        subjectName={targetDisplayName}
+        completedThisMonth={tripsCompletedThisMonth}
+      />
+    ) : null}
+    </>
   );
 }
 
@@ -164,19 +241,37 @@ function StatItem({
   label,
   value,
   icon,
+  onPress,
 }: {
   label: string;
   value: string;
   icon: keyof typeof Ionicons.glyphMap;
+  onPress?: () => void;
 }): React.JSX.Element {
   const iconColor = icon === 'star-outline' || icon === 'star' ? COLORS.warning : COLORS.secondary;
-  return (
-    <View style={styles.statItem}>
+  const body = (
+    <>
       <Ionicons name={icon} size={14} color={iconColor} />
-      <Text style={styles.statValue}>{value}</Text>
+      <Text style={[styles.statValue, styles.statValueCenter]} numberOfLines={2}>
+        {value}
+      </Text>
       <Text style={styles.statLabel}>{label}</Text>
-    </View>
+    </>
   );
+  if (onPress) {
+    return (
+      <Pressable
+        onPress={onPress}
+        style={({ pressed }) => [styles.statItem, pressed && { opacity: 0.72 }]}
+        accessibilityRole="button"
+        accessibilityLabel={`${label}: ${value}`}
+        accessibilityHint="Opens trip summary"
+      >
+        {body}
+      </Pressable>
+    );
+  }
+  return <View style={styles.statItem}>{body}</View>;
 }
 
 const styles = StyleSheet.create({
@@ -275,6 +370,7 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: COLORS.text,
   },
+  statValueCenter: { textAlign: 'center' as const },
   statLabel: {
     fontSize: 12,
     color: COLORS.textSecondary,
@@ -315,7 +411,6 @@ const styles = StyleSheet.create({
   ratingText: {
     fontSize: 16,
     fontWeight: '700',
-    color: COLORS.textSecondary,
   },
   reviewText: {
     fontSize: 13,

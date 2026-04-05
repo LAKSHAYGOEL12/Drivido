@@ -11,6 +11,7 @@ import {
   Pressable,
   ActivityIndicator,
   BackHandler,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -42,8 +43,21 @@ import {
   recommendedFareRange,
   straightLineKmBetweenStops,
 } from '../../utils/publishFare';
+import SelectVehicleBottomSheet, {
+  type VehicleFormValues,
+} from '../../components/publish/SelectVehicleBottomSheet';
+import { vehicleListToAuthPatch, vehiclesFromUser } from '../../utils/userVehicle';
+import { createUserVehicle, listUserVehicles } from '../../services/userVehicles';
+import {
+  loadRecentPublished,
+  addRecentPublished,
+  removeRecentPublished,
+  clearRecentPublished,
+  type RecentPublishedEntry,
+} from '../../services/recent-published-storage';
+import { formatPublishStyleDateLabel } from '../../utils/rideDisplay';
 
-const MAX_PASSENGERS = 4;
+const MAX_PASSENGERS = 6;
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -53,17 +67,6 @@ const HOUR_OUTER_RADIUS = 90;
 const HOUR_INNER_RADIUS = 60;
 const MINUTE_OPTIONS = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55] as const;
 const MIN_LEAD_MINUTES = 30;
-
-function formatDateLabel(d: Date): string {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const tomorrow = new Date(today);
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  const dNorm = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-  if (dNorm.getTime() === today.getTime()) return `Today, ${MONTHS[d.getMonth()]} ${d.getDate()}`;
-  if (dNorm.getTime() === tomorrow.getTime()) return `Tomorrow, ${MONTHS[d.getMonth()]} ${d.getDate()}`;
-  return `${WEEKDAYS[d.getDay()]}, ${MONTHS[d.getMonth()]} ${d.getDate()}`;
-}
 
 function getCalendarDays(year: number, month: number): (number | null)[] {
   const first = new Date(year, month, 1);
@@ -81,6 +84,18 @@ function getCalendarDays(year: number, month: number): (number | null)[] {
 
 function formatTimeLabel(hour: number, minute: number): string {
   return `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
+}
+
+function formatPublishedMetaLine(e: RecentPublishedEntry): string {
+  const [y, m, d] = e.dateYmd.split('-').map(Number);
+  if (!y || !m || !d) return '';
+  const dt = new Date(y, m - 1, d);
+  const label = formatPublishStyleDateLabel(dt);
+  const time = formatTimeLabel(e.hour, e.minute);
+  const pax = e.seats === 1 ? '1 seat' : `${e.seats} seats`;
+  const fare = e.rate.trim() ? `₹${e.rate}` : '—';
+  const mode = e.instantBooking ? 'Instant' : 'Request';
+  return `${label} · ${time} · ${pax} · ${fare} · ${mode}`;
 }
 
 function getMinTimeForToday(): { hour: number; minute: number } {
@@ -165,7 +180,10 @@ function getAvailableTimeSlots(selectedDate: Date): { hour: number; minute: numb
 export default function PublishRide(): React.JSX.Element {
   const navigation = useNavigation<any>();
   const route = useRoute<any>();
-  const { user } = useAuth();
+  const { user, patchUser, refreshUser, isAuthenticated, needsProfileCompletion } = useAuth();
+  const sessionReady = isAuthenticated && !needsProfileCompletion;
+  const recentUserKey = useMemo(() => (user?.id ?? user?.phone ?? '').trim(), [user?.id, user?.phone]);
+  const [publishedRecents, setPublishedRecents] = useState<RecentPublishedEntry[]>([]);
   const { prefetchLocation } = useLocation();
   const [pickup, setPickup] = useState('');
   const [destination, setDestination] = useState('');
@@ -174,8 +192,11 @@ export default function PublishRide(): React.JSX.Element {
   const [destinationLatitude, setDestinationLatitude] = useState(0);
   const [destinationLongitude, setDestinationLongitude] = useState(0);
   const [publishLoading, setPublishLoading] = useState(false);
+  const [addVehicleOpen, setAddVehicleOpen] = useState(false);
+  const [addVehicleBusy, setAddVehicleBusy] = useState(false);
+  const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null);
   const [selectedDate, setSelectedDate] = useState<Date>(() => new Date());
-  const [dateLabel, setDateLabel] = useState(() => formatDateLabel(new Date()));
+  const [dateLabel, setDateLabel] = useState(() => formatPublishStyleDateLabel(new Date()));
   const [selectedTime, setSelectedTime] = useState(() => getDefaultTimeOneHourAhead());
   const [timeLabel, setTimeLabel] = useState(() => {
     const t = getDefaultTimeOneHourAhead();
@@ -263,7 +284,7 @@ export default function PublishRide(): React.JSX.Element {
   const handleSelectDate = (day: number) => {
     const d = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth(), day);
     setSelectedDate(d);
-    setDateLabel(formatDateLabel(d));
+    setDateLabel(formatPublishStyleDateLabel(d));
     setShowDateModal(false);
   };
 
@@ -339,11 +360,57 @@ export default function PublishRide(): React.JSX.Element {
   const isTimeInPast = isSelectedDateTimeInPast(selectedDate, selectedTime);
   const isTimeTooSoon = isSelectedDateTimeTooSoon(selectedDate, selectedTime, MIN_LEAD_MINUTES);
 
+  const mergedVehicles = useMemo(() => vehiclesFromUser(user), [user]);
+
+  useEffect(() => {
+    if (mergedVehicles.length === 0) {
+      setSelectedVehicleId(null);
+      return;
+    }
+    setSelectedVehicleId((prev) => {
+      if (prev && mergedVehicles.some((v) => v.id === prev)) return prev;
+      return mergedVehicles[0].id;
+    });
+  }, [mergedVehicles]);
+
   // Prefetch location when user lands on Publish (no prompt; uses cache when possible)
   useFocusEffect(
     React.useCallback(() => {
       prefetchLocation();
     }, [prefetchLocation])
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      if (!sessionReady) {
+        setPublishedRecents([]);
+        return;
+      }
+      let cancelled = false;
+      void loadRecentPublished(recentUserKey).then((list) => {
+        if (!cancelled) setPublishedRecents(list);
+      });
+      return () => {
+        cancelled = true;
+      };
+    }, [sessionReady, recentUserKey])
+  );
+
+  const syncVehiclesFromApi = useCallback(async () => {
+    await refreshUser();
+    try {
+      const list = await listUserVehicles();
+      patchUser(vehicleListToAuthPatch(list));
+      return list;
+    } catch {
+      return [];
+    }
+  }, [refreshUser, patchUser]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (sessionReady) void syncVehiclesFromApi();
+    }, [sessionReady, syncVehiclesFromApi])
   );
 
   /** After location pick we reset the stack; restore date/time/seats from draft + new coords from params. */
@@ -485,7 +552,7 @@ export default function PublishRide(): React.JSX.Element {
         const d = new Date(p.selectedDateIso);
         if (!Number.isNaN(d.getTime())) {
           setSelectedDate(d);
-          setDateLabel(formatDateLabel(d));
+          setDateLabel(formatPublishStyleDateLabel(d));
         }
       }
       if (
@@ -591,7 +658,7 @@ export default function PublishRide(): React.JSX.Element {
     setDestinationLongitude(0);
     const today = new Date();
     setSelectedDate(today);
-    setDateLabel(formatDateLabel(today));
+    setDateLabel(formatPublishStyleDateLabel(today));
     const defaultTime = getDefaultTimeOneHourAhead();
     setSelectedTime(defaultTime);
     setTimeLabel(formatTimeLabel(defaultTime.hour, defaultTime.minute));
@@ -606,6 +673,204 @@ export default function PublishRide(): React.JSX.Element {
     lastRouteFareCoordsKeyRef.current = null;
   }, []);
 
+  const onRemovePublishedRecent = useCallback(
+    async (id: string) => {
+      await removeRecentPublished(id, recentUserKey);
+      setPublishedRecents(await loadRecentPublished(recentUserKey));
+    },
+    [recentUserKey]
+  );
+
+  const onClearPublishedRecents = useCallback(async () => {
+    await clearRecentPublished(recentUserKey);
+    setPublishedRecents([]);
+  }, [recentUserKey]);
+
+  const proceedPublish = useCallback(
+    async (vehicleExtra?: VehicleFormValues, rideOpts?: { vehicleId?: string }) => {
+      if (publishLoading) return;
+      const fromList =
+        mergedVehicles.find((x) => x.id === selectedVehicleId) ?? mergedVehicles[0];
+      const resolved: VehicleFormValues | undefined = vehicleExtra
+        ? vehicleExtra
+        : fromList
+          ? {
+              vehicleModel: fromList.vehicleModel,
+              licensePlate: fromList.licensePlate,
+              vehicleColor: fromList.vehicleColor ?? '',
+            }
+          : undefined;
+      const vm = (resolved?.vehicleModel ?? user?.vehicleModel ?? user?.vehicleName ?? '').trim();
+      const lp = (resolved?.licensePlate ?? user?.licensePlate ?? '').trim();
+      if (!vm || !lp) {
+        Alert.alert('Vehicle required', 'Add your vehicle name and license plate to your profile to publish rides.');
+        return;
+      }
+      const vc = (resolved?.vehicleColor ?? user?.vehicleColor ?? '').trim();
+      const stableVehicleId =
+        rideOpts?.vehicleId ??
+        (fromList && fromList.id !== 'legacy-profile' ? fromList.id : undefined);
+      setPublishLoading(true);
+      try {
+        const scheduledAt = new Date(
+          selectedDate.getFullYear(),
+          selectedDate.getMonth(),
+          selectedDate.getDate(),
+          selectedTime.hour,
+          selectedTime.minute,
+          0,
+          0
+        ).toISOString();
+        const username = (user?.name?.trim() || user?.phone || '').trim() || 'User';
+        const body: CreateRidePayload = {
+          pickupLocationName: pickup.trim(),
+          pickupLatitude: pickupLatitude,
+          pickupLongitude: pickupLongitude,
+          destinationLocationName: destination.trim(),
+          destinationLatitude: destinationLatitude,
+          destinationLongitude: destinationLongitude,
+          scheduledAt,
+          seats,
+          username,
+          price: rate.trim(),
+          bookingMode: instantBooking ? 'instant' : 'request',
+          instantBooking,
+          vehicleModel: vm,
+          licensePlate: lp,
+          ...(vc ? { vehicleColor: vc } : {}),
+          ...(stableVehicleId ? { vehicleId: stableVehicleId } : {}),
+          ...(routeDurationSeconds > 0 ? { estimatedDurationSeconds: routeDurationSeconds } : {}),
+        };
+        if (__DEV__) {
+          console.log('[PublishRide] username:', username);
+          console.log('[PublishRide] POST /api/rides body:', JSON.stringify(body, null, 2));
+        }
+        await api.post(API.endpoints.rides.create, body);
+        const y = selectedDate.getFullYear();
+        const mo = String(selectedDate.getMonth() + 1).padStart(2, '0');
+        const da = String(selectedDate.getDate()).padStart(2, '0');
+        const dateYmd = `${y}-${mo}-${da}`;
+        void addRecentPublished(
+          {
+            pickup: pickup.trim(),
+            destination: destination.trim(),
+            pickupLatitude,
+            pickupLongitude,
+            destinationLatitude,
+            destinationLongitude,
+            dateYmd,
+            hour: selectedTime.hour,
+            minute: selectedTime.minute,
+            seats,
+            rate: rate.trim(),
+            instantBooking,
+          },
+          recentUserKey
+        ).then(setPublishedRecents);
+        resetFormToDefault();
+        const tabNav = navigation.getParent();
+        if (tabNav) (tabNav as any).navigate('YourRides');
+      } catch (e: unknown) {
+        const message =
+          e && typeof e === 'object' && 'message' in e
+            ? String((e as { message: unknown }).message)
+            : 'Failed to publish ride.';
+        alertPublishFailed(message);
+      } finally {
+        setPublishLoading(false);
+      }
+    },
+    [
+      resetFormToDefault,
+      publishLoading,
+      pickup,
+      destination,
+      pickupLatitude,
+      pickupLongitude,
+      destinationLatitude,
+      destinationLongitude,
+      selectedDate,
+      selectedTime,
+      seats,
+      rate,
+      instantBooking,
+      user?.name,
+      user?.phone,
+      user?.vehicleModel,
+      user?.vehicleName,
+      user?.licensePlate,
+      user?.vehicleColor,
+      navigation,
+      routeDurationSeconds,
+      recentUserKey,
+      mergedVehicles,
+      selectedVehicleId,
+    ]
+  );
+
+  const handleAddVehicleAndPublish = useCallback(
+    async (v: VehicleFormValues) => {
+      setAddVehicleBusy(true);
+      try {
+        const created = await createUserVehicle({
+          vehicleModel: v.vehicleModel,
+          licensePlate: v.licensePlate,
+          vehicleColor: v.vehicleColor || undefined,
+        });
+        const list = await syncVehiclesFromApi();
+        const plateNorm = v.licensePlate.replace(/\s+/g, '').toUpperCase();
+        const pickId =
+          created?.id ??
+          list.find((x) => x.licensePlate.replace(/\s+/g, '').toUpperCase() === plateNorm)?.id;
+        if (pickId) setSelectedVehicleId(pickId);
+        setAddVehicleOpen(false);
+        await proceedPublish(v, { vehicleId: pickId });
+      } catch (e: unknown) {
+        const message =
+          e && typeof e === 'object' && 'message' in e
+            ? String((e as { message: unknown }).message)
+            : 'Could not save vehicle to your profile.';
+        Alert.alert('Error', message);
+      } finally {
+        setAddVehicleBusy(false);
+      }
+    },
+    [syncVehiclesFromApi, proceedPublish]
+  );
+
+  const handleSaveNewVehicle = useCallback(
+    async (v: VehicleFormValues) => {
+      setAddVehicleBusy(true);
+      try {
+        const created = await createUserVehicle({
+          vehicleModel: v.vehicleModel,
+          licensePlate: v.licensePlate,
+          vehicleColor: v.vehicleColor || undefined,
+        });
+        const list = await syncVehiclesFromApi();
+        const plateNorm = v.licensePlate.replace(/\s+/g, '').toUpperCase();
+        const pickId =
+          created?.id ??
+          list.find((x) => x.licensePlate.replace(/\s+/g, '').toUpperCase() === plateNorm)?.id;
+        if (pickId) setSelectedVehicleId(pickId);
+      } catch (e: unknown) {
+        const message =
+          e && typeof e === 'object' && 'message' in e
+            ? String((e as { message: unknown }).message)
+            : 'Could not save vehicle to your profile.';
+        Alert.alert('Error', message);
+      } finally {
+        setAddVehicleBusy(false);
+      }
+    },
+    [syncVehiclesFromApi]
+  );
+
+  const handleConfirmVehicleSelection = useCallback(() => {
+    setAddVehicleOpen(false);
+    void proceedPublish();
+  }, [proceedPublish]);
+
   const handlePublish = useCallback(async () => {
     if (publishLoading) return;
     if (isTimeInPast || isTimeTooSoon) {
@@ -618,8 +883,12 @@ export default function PublishRide(): React.JSX.Element {
     }
     const validLat = (v: number) => typeof v === 'number' && !Number.isNaN(v) && v >= -90 && v <= 90;
     const validLon = (v: number) => typeof v === 'number' && !Number.isNaN(v) && v >= -180 && v <= 180;
-    const pickupSet = (pickupLatitude !== 0 || pickupLongitude !== 0) && validLat(pickupLatitude) && validLon(pickupLongitude);
-    const destinationSet = (destinationLatitude !== 0 || destinationLongitude !== 0) && validLat(destinationLatitude) && validLon(destinationLongitude);
+    const pickupSet =
+      (pickupLatitude !== 0 || pickupLongitude !== 0) && validLat(pickupLatitude) && validLon(pickupLongitude);
+    const destinationSet =
+      (destinationLatitude !== 0 || destinationLongitude !== 0) &&
+      validLat(destinationLatitude) &&
+      validLon(destinationLongitude);
     if (!pickupSet || !destinationSet) {
       alertNeedMapLocations();
       return;
@@ -628,67 +897,18 @@ export default function PublishRide(): React.JSX.Element {
       alertFareRequiredBeforePublish();
       return;
     }
-    setPublishLoading(true);
-    try {
-      const scheduledAt = new Date(
-        selectedDate.getFullYear(),
-        selectedDate.getMonth(),
-        selectedDate.getDate(),
-        selectedTime.hour,
-        selectedTime.minute,
-        0,
-        0
-      ).toISOString();
-      const username = (user?.name?.trim() || user?.phone || '').trim() || 'User';
-      const body: CreateRidePayload = {
-        pickupLocationName: pickup.trim(),
-        pickupLatitude: pickupLatitude,
-        pickupLongitude: pickupLongitude,
-        destinationLocationName: destination.trim(),
-        destinationLatitude: destinationLatitude,
-        destinationLongitude: destinationLongitude,
-        scheduledAt,
-        seats,
-        username,
-        price: rate.trim(),
-        bookingMode: instantBooking ? 'instant' : 'request',
-        instantBooking,
-        ...(routeDurationSeconds > 0 ? { estimatedDurationSeconds: routeDurationSeconds } : {}),
-      };
-      if (__DEV__) {
-        console.log('[PublishRide] username:', username);
-        console.log('[PublishRide] POST /api/rides body:', JSON.stringify(body, null, 2));
-      }
-      await api.post(API.endpoints.rides.create, body);
-      resetFormToDefault();
-      const tabNav = navigation.getParent();
-      if (tabNav) (tabNav as any).navigate('YourRides');
-    } catch (e: unknown) {
-      const message = e && typeof e === 'object' && 'message' in e ? String((e as { message: unknown }).message) : 'Failed to publish ride.';
-      alertPublishFailed(message);
-    } finally {
-      setPublishLoading(false);
-    }
+    setAddVehicleOpen(true);
   }, [
-    resetFormToDefault,
+    publishLoading,
     isTimeInPast,
     isTimeTooSoon,
-    publishLoading,
     pickup,
     destination,
     pickupLatitude,
     pickupLongitude,
     destinationLatitude,
     destinationLongitude,
-    selectedDate,
-    selectedTime,
-    seats,
     rate,
-    instantBooking,
-    user?.name,
-    user?.phone,
-    navigation,
-    routeDurationSeconds,
   ]);
 
   return (
@@ -739,7 +959,7 @@ export default function PublishRide(): React.JSX.Element {
                 style={[styles.fieldValue, !destination.trim() && styles.fieldValuePlaceholder]}
                 numberOfLines={1}
               >
-                {destination.trim() ? destination : 'Where to?'}
+                {destination.trim() ? destination : 'Add destination'}
               </Text>
               <Text style={[styles.fieldLabel, styles.destinationLabel]}>DESTINATION</Text>
             </View>
@@ -891,6 +1111,48 @@ export default function PublishRide(): React.JSX.Element {
           )}
           {!publishLoading && <Ionicons name="rocket-outline" size={22} color={COLORS.text} />}
         </TouchableOpacity>
+
+        {sessionReady && publishedRecents.length > 0 ? (
+          <View style={styles.pubRecentsSection}>
+            <View style={styles.pubRecentsHeader}>
+              <Text style={styles.pubRecentsTitle}>RECENT PUBLISHED</Text>
+              <TouchableOpacity onPress={() => void onClearPublishedRecents()} hitSlop={8}>
+                <Text style={styles.pubRecentsClearAll}>Clear all</Text>
+              </TouchableOpacity>
+            </View>
+            {publishedRecents.map((item) => (
+              <View key={item.id} style={styles.pubRecentItem}>
+                <TouchableOpacity
+                  style={styles.pubRecentItemMain}
+                  onPress={() => navigation.navigate('PublishRecentEdit', { entry: item })}
+                  activeOpacity={0.72}
+                >
+                  <View style={styles.pubRecentIconCircle}>
+                    <Ionicons name="rocket-outline" size={15} color={COLORS.textSecondary} />
+                  </View>
+                  <View style={styles.pubRecentTextCol}>
+                    <Text style={styles.pubRecentRouteLine} numberOfLines={2}>
+                      <Text style={styles.pubRecentBold}>{item.pickup}</Text>
+                      <Text style={styles.pubRecentToWord}> to </Text>
+                      <Text style={styles.pubRecentBold}>{item.destination}</Text>
+                    </Text>
+                    <Text style={styles.pubRecentMeta} numberOfLines={2}>
+                      {formatPublishedMetaLine(item)}
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.pubRecentClose}
+                  onPress={() => void onRemovePublishedRecent(item.id)}
+                  hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                  accessibilityLabel="Remove from recent published"
+                >
+                  <Ionicons name="close" size={17} color={COLORS.textMuted} />
+                </TouchableOpacity>
+              </View>
+            ))}
+          </View>
+        ) : null}
       </ScrollView>
 
       <Modal visible={showDateModal} transparent animationType="slide">
@@ -1092,6 +1354,20 @@ export default function PublishRide(): React.JSX.Element {
         value={seats}
         onDone={(n) => setSeats(Math.max(1, Math.min(MAX_PASSENGERS, n)))}
       />
+
+      <SelectVehicleBottomSheet
+        visible={addVehicleOpen}
+        onClose={() => {
+          if (!addVehicleBusy && !publishLoading) setAddVehicleOpen(false);
+        }}
+        vehicles={mergedVehicles}
+        selectedVehicleId={selectedVehicleId}
+        onSelectedVehicleIdChange={setSelectedVehicleId}
+        onAddAndPublish={handleAddVehicleAndPublish}
+        onSaveNewVehicle={handleSaveNewVehicle}
+        onConfirmSelection={handleConfirmVehicleSelection}
+        busy={addVehicleBusy || publishLoading}
+      />
     </SafeAreaView>
   );
 }
@@ -1124,12 +1400,12 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: COLORS.textMuted,
     letterSpacing: 0.8,
-    marginTop: 18,
-    marginBottom: 6,
+    marginTop: 12,
+    marginBottom: 4,
     marginLeft: 2,
   },
   cardSectionLabelFirst: {
-    marginTop: 2,
+    marginTop: 0,
   },
   section: {
     marginTop: 20,
@@ -1137,11 +1413,11 @@ const styles = StyleSheet.create({
   singleCard: {
     marginTop: 0,
     backgroundColor: COLORS.background,
-    borderRadius: 18,
+    borderRadius: 16,
     borderWidth: 1,
     borderColor: COLORS.borderLight,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
     ...Platform.select({
       ios: {
         shadowColor: '#000',
@@ -1176,8 +1452,8 @@ const styles = StyleSheet.create({
   fieldRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 6,
-    paddingVertical: 12,
+    paddingHorizontal: 4,
+    paddingVertical: 9,
   },
   fieldRowDisabled: {
     opacity: 0.55,
@@ -1197,8 +1473,8 @@ const styles = StyleSheet.create({
   dottedLine: {
     width: 2,
     flex: 1,
-    minHeight: 16,
-    marginVertical: 4,
+    minHeight: 12,
+    marginVertical: 3,
     borderLeftWidth: 2,
     borderLeftColor: COLORS.border,
     borderStyle: 'dashed',
@@ -1468,6 +1744,85 @@ const styles = StyleSheet.create({
   },
   publishButtonTextDisabled: {
     color: COLORS.textMuted,
+  },
+  pubRecentsSection: {
+    marginTop: 28,
+    paddingBottom: 8,
+  },
+  pubRecentsHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  pubRecentsTitle: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: COLORS.textMuted,
+    letterSpacing: 0.6,
+  },
+  pubRecentsClearAll: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: COLORS.primary,
+  },
+  pubRecentItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.background,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    marginBottom: 10,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  pubRecentItemMain: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+    paddingLeft: 10,
+    paddingRight: 2,
+    minHeight: 50,
+  },
+  pubRecentIconCircle: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: COLORS.backgroundSecondary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 8,
+  },
+  pubRecentTextCol: {
+    flex: 1,
+    minWidth: 0,
+  },
+  pubRecentRouteLine: {
+    fontSize: 13,
+    lineHeight: 17,
+  },
+  pubRecentBold: {
+    fontWeight: '700',
+    color: COLORS.text,
+  },
+  pubRecentToWord: {
+    fontWeight: '500',
+    color: COLORS.textSecondary,
+  },
+  pubRecentMeta: {
+    fontSize: 11,
+    color: COLORS.textSecondary,
+    marginTop: 2,
+  },
+  pubRecentClose: {
+    paddingVertical: 12,
+    paddingHorizontal: 10,
   },
   footer: {
     fontSize: 12,

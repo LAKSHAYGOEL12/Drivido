@@ -25,6 +25,16 @@ export function normalizePhoneForValidation(value: string): string {
   return value.replace(/\D/g, '').replace(/^91(?=\d{10})/, '').replace(/^0+/, '').slice(-10);
 }
 
+/**
+ * Input for +91 national field: digits only, max 10. If user pastes `91` + 10 digits, strips `91`.
+ */
+export function clampPhoneNationalInput(raw: string): string {
+  let d = raw.replace(/\D/g, '');
+  if (d.startsWith('91') && d.length > 10) d = d.slice(2);
+  d = d.replace(/^0+/, '');
+  return d.slice(0, 10);
+}
+
 function ageYearsFromIsoDate(isoDate: string): number {
   const d = new Date(`${isoDate}T12:00:00.000Z`);
   if (Number.isNaN(d.getTime())) return NaN;
@@ -68,6 +78,9 @@ export const validation = {
 
   otp: (value: string, length = 6): boolean =>
     new RegExp(`^\\d{${length}}$`).test(value),
+
+  /** Exactly 10 national digits (same rules as {@link clampPhoneNationalInput}). */
+  phoneNational: (value: string): boolean => /^\d{10}$/.test(clampPhoneNationalInput(value)),
 } as const;
 
 export const validationErrors = {
@@ -76,5 +89,6 @@ export const validationErrors = {
   name: 'Name must be 2–100 characters',
   dateOfBirth: 'Enter date of birth as YYYY-MM-DD (you must be at least 13)',
   gender: 'Select a gender option',
+  phone: 'Enter a valid 10-digit mobile number',
   otp: (length: number) => `Enter ${length} digit OTP`,
 } as const;

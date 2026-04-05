@@ -18,6 +18,27 @@ export const RIDE_MONTHS_SHORT = [
   'Dec',
 ];
 
+export const RIDE_WEEKDAYS_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+/**
+ * Publish / edit ride date row: "Today, Jan 3" · "Tomorrow, …" · "Mon, Jan 5".
+ * Matches calendar-day semantics (local midnight boundaries).
+ */
+export function formatPublishStyleDateLabel(d: Date): string {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const tomorrow = new Date(today);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const dNorm = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  if (dNorm.getTime() === today.getTime()) {
+    return `Today, ${RIDE_MONTHS_SHORT[d.getMonth()]} ${d.getDate()}`;
+  }
+  if (dNorm.getTime() === tomorrow.getTime()) {
+    return `Tomorrow, ${RIDE_MONTHS_SHORT[d.getMonth()]} ${d.getDate()}`;
+  }
+  return `${RIDE_WEEKDAYS_SHORT[d.getDay()]}, ${RIDE_MONTHS_SHORT[d.getMonth()]} ${d.getDate()}`;
+}
+
 /** Card header: "Oct 24" style (no year). */
 export function getRideCardDateShort(ride: RideListItem): string {
   if (ride.scheduledAt) {
@@ -360,4 +381,43 @@ export function getRideDepartureArrivalRow(ride: RideListItem): {
     durationLabel: formatDurationShort(mins),
     arrival: formatClockHHMM(end),
   };
+}
+
+/**
+ * When the API embeds a publisher/driver phone on ride list/detail (any of several keys).
+ */
+export function pickPublisherPhoneFromRide(ride: RideListItem | undefined): string | undefined {
+  if (!ride) return undefined;
+  const r = ride as Record<string, unknown>;
+  const pub = r.publisher && typeof r.publisher === 'object' ? (r.publisher as Record<string, unknown>) : null;
+  const candidates = [r.publisherPhone, r.publisher_phone, r.driverPhone, r.driver_phone, pub?.phone];
+  for (const v of candidates) {
+    if (typeof v === 'string' && v.trim() !== '') return v.trim();
+  }
+  return undefined;
+}
+
+/**
+ * When the API embeds passenger contact on a booking row (list/detail).
+ */
+export function pickPassengerPhoneFromBooking(booking: unknown): string | undefined {
+  if (!booking || typeof booking !== 'object') return undefined;
+  const b = booking as Record<string, unknown>;
+  const user = b.user && typeof b.user === 'object' ? (b.user as Record<string, unknown>) : null;
+  const candidates = [
+    b.phone,
+    b.phoneNumber,
+    b.phone_number,
+    b.mobile,
+    b.passengerPhone,
+    b.passenger_phone,
+    user?.phone,
+    user?.mobile,
+    user?.phoneNumber,
+    user?.phone_number,
+  ];
+  for (const v of candidates) {
+    if (typeof v === 'string' && v.trim() !== '') return v.trim();
+  }
+  return undefined;
 }
