@@ -8,6 +8,7 @@ import RideDetailScreen from '../screens/main/RideDetailScreen';
 import PublishedRideRouteMapScreen from '../screens/main/PublishedRideRouteMapScreen';
 import LocationPickerScreen from '../screens/main/LocationPickerScreen';
 import EditRideScreen from '../screens/main/EditRideScreen';
+import PublishRecentEditScreen from '../screens/main/PublishRecentEditScreen';
 import BookPassengerDetailScreen from '../screens/main/BookPassengerDetailScreen';
 import ChatScreen from '../screens/main/ChatScreen';
 import OwnerProfileModal from '../screens/main/OwnerProfileModal';
@@ -39,10 +40,6 @@ export default function RidesStack(): React.JSX.Element {
         name="RideDetail"
         component={RideDetailScreen}
         options={{ headerShown: false }}
-        getId={({ params }) => {
-          const id = (params as { ride?: { id?: string } } | undefined)?.ride?.id?.trim();
-          return id ? `ride-${id}` : undefined;
-        }}
       />
       <Stack.Screen
         name="PublishedRideRouteMap"
@@ -62,6 +59,11 @@ export default function RidesStack(): React.JSX.Element {
       <Stack.Screen
         name="EditRide"
         component={EditRideScreen}
+        options={{ headerShown: false }}
+      />
+      <Stack.Screen
+        name="PublishRecentEdit"
+        component={PublishRecentEditScreen}
         options={{ headerShown: false }}
       />
       <Stack.Screen

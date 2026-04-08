@@ -72,7 +72,7 @@ export default function TripsScreen(): React.JSX.Element {
         setRefreshing(false);
       }
     },
-    [subjectId, viewerForTripsFetch, isSelfSubject]
+    [subjectId, viewerForTripsFetch, fetchUsesSelfLedger]
   );
 
   useFocusEffect(
@@ -125,15 +125,15 @@ export default function TripsScreen(): React.JSX.Element {
     navigation.goBack();
   }, [returnToRide, navigation, leaveToRideDetail]);
 
-  const completedThisMonth = aggregate?.completedThisMonth ?? 0;
+  const completedAllTime = aggregate?.completedAllTime ?? 0;
   const totalKm = aggregate?.totalCompletedDistanceKm ?? 0;
   const lastLabel = aggregate ? formatLastTripRelative(aggregate.lastTripAt) : '—';
   const distanceLabel = totalKm > 0 ? formatDistance(totalKm) : '—';
-  const completedMonthBlurb = isSelfSubject
-    ? `You have successfully completed ${completedThisMonth} trip${completedThisMonth === 1 ? '' : 's'} this month.`
+  const completedBlurb = isSelfSubject
+    ? `You have successfully completed ${completedAllTime} trip${completedAllTime === 1 ? '' : 's'} in total.`
     : subjectFirstName
-      ? `${subjectFirstName} has successfully completed ${completedThisMonth} trip${completedThisMonth === 1 ? '' : 's'} this month.`
-      : `This member has successfully completed ${completedThisMonth} trip${completedThisMonth === 1 ? '' : 's'} this month.`;
+      ? `${subjectFirstName} has successfully completed ${completedAllTime} trip${completedAllTime === 1 ? '' : 's'} in total.`
+      : `This member has successfully completed ${completedAllTime} trip${completedAllTime === 1 ? '' : 's'} in total.`;
 
   const cancelledCount = aggregate?.cancelledAllTime ?? 0;
   const cancelledBlurb = isSelfSubject
@@ -235,13 +235,13 @@ export default function TripsScreen(): React.JSX.Element {
               />
             </View>
             <Text style={styles.summaryNumber}>
-              {tab === 'completed' ? completedThisMonth : cancelledCount}
+              {tab === 'completed' ? completedAllTime : cancelledCount}
             </Text>
             <Text style={styles.summaryCaption}>
               {tab === 'completed' ? 'COMPLETED TRIPS' : 'CANCELLED TRIPS'}
             </Text>
             <Text style={styles.summaryBlurb}>
-              {tab === 'completed' ? completedMonthBlurb : cancelledBlurb}
+              {tab === 'completed' ? completedBlurb : cancelledBlurb}
             </Text>
             {isSelfSubject && tab === 'completed' ? (
               <View style={styles.journeyBadge}>

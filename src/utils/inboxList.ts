@@ -1,5 +1,6 @@
 import type { RideListItem } from '../types/api';
-import { getRideScheduledAt } from './rideDisplay';
+import { bookingIsCancelled } from './bookingStatus';
+import { getRideScheduledAt, isRideCancelledByOwner, isRidePastArrivalWindow } from './rideDisplay';
 
 /** Inbox row shape for sorting / visibility (avoids circular import from InboxContext). */
 export type InboxListRow = {
@@ -39,6 +40,20 @@ export function isFutureRideForInbox(ride: RideListItem): boolean {
   const at = getRideScheduledAt(ride);
   if (!at) return false;
   return at.getTime() > Date.now();
+}
+
+/**
+ * Live WebSocket subscribe only for trips that are still “active” (not cancelled/completed and not past
+ * the arrival + grace window). Past threads still update via inbox HTTP refresh / opening chat.
+ */
+export function isRideEligibleForChatWebSocketSubscription(ride: RideListItem | null | undefined): boolean {
+  if (!ride || !String(ride.id ?? '').trim()) return false;
+  if (isRideCancelledByOwner(ride)) return false;
+  if (bookingIsCancelled(ride.myBookingStatus)) return false;
+  const st = String(ride.status ?? '').trim().toLowerCase();
+  if (st === 'completed' || st === 'cancelled' || st === 'canceled') return false;
+  if (isRidePastArrivalWindow(ride)) return false;
+  return true;
 }
 
 /**

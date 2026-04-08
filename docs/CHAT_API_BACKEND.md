@@ -212,12 +212,12 @@ app.use('/api/chat', authMiddleware, chatRoutes);
 
 ---
 
-### 4. Mark as read (optional)
+### 4. Mark as read (**required for cross-device unread**)
 
 **POST** `/api/chat/conversations/read`
 
 **Body:** `{ "rideId": "ride123", "otherUserId": "userB" }`
 
-- Set `unreadFor[currentUserId] = 0` for that thread.
+- Set `unreadFor[currentUserId] = 0` for that thread (and persist so **GET /chat/conversations** returns `unreadCount: 0`).
 
-The app can also derive “read” when the user opens the chat and then refetches; the above endpoint keeps unread counts in sync.
+The app calls this when the user opens a thread or marks all read, and **trusts** `unreadCount` from **GET /chat/conversations** when merging — so reading on one device clears the badge on others after the next inbox fetch.

@@ -19,6 +19,7 @@
 import { Platform } from 'react-native';
 import { resolveApiBaseOrigin } from '../config/apiBaseUrl';
 import { API } from '../constants/API';
+import { isAccountDeactivatedApiError } from '../utils/deactivatedAccount';
 import { setStoredTokens, clearStoredTokens } from './token-storage';
 import { getFreshFirebaseIdToken } from './firebaseIdToken';
 import { exchangeFirebaseIdTokenForBackendSession } from './backendAuthExchange';
@@ -99,6 +100,13 @@ export function setOnSessionExpired(callback: () => void): void {
   onSessionExpired = callback;
 }
 
+let onAccountDeactivated: (() => void) | null = null;
+
+/** When API returns 403 ACCOUNT_DEACTIVATED, invoked before the request throws. Set from AuthProvider. */
+export function setOnAccountDeactivated(callback: (() => void) | null): void {
+  onAccountDeactivated = callback;
+}
+
 function getHeaders(includeJsonContentType = true): HeadersInit {
   const headers: Record<string, string> = {
     ...(includeJsonContentType ? { 'Content-Type': 'application/json' } : {}),
@@ -108,8 +116,28 @@ function getHeaders(includeJsonContentType = true): HeadersInit {
 }
 
 const DEFAULT_TIMEOUT_MS = 15000;
+const NETWORK_ERROR_COOLDOWN_MS = 12000;
 
 type RequestConfig = RequestInit & { timeout?: number; /** When true, GET 404 returns null instead of throwing (no console.warn). */ silentNotFound?: boolean };
+let networkErrorCooldownUntil = 0;
+
+function isNetworkFailureErrorMessage(message: string): boolean {
+  const m = message.toLowerCase();
+  return (
+    m === 'network request failed' ||
+    m.includes('network request failed') ||
+    m.includes('enotfound') ||
+    m.includes('econnrefused') ||
+    m.includes('failed to fetch')
+  );
+}
+
+function maybeSetNetworkCooldown(err: unknown): void {
+  if (!(err instanceof Error)) return;
+  if (isNetworkFailureErrorMessage(err.message)) {
+    networkErrorCooldownUntil = Date.now() + NETWORK_ERROR_COOLDOWN_MS;
+  }
+}
 
 /** Refresh token response from backend. */
 interface RefreshResponse {
@@ -153,6 +181,11 @@ async function request<T>(
     );
   }
   const { timeout = DEFAULT_TIMEOUT_MS, headers: optHeaders, silentNotFound, ...init } = options;
+  const method = String(init.method ?? 'GET').toUpperCase();
+  const isChatPath = path.includes('/chat/');
+  if (method === 'GET' && !isChatPath && Date.now() < networkErrorCooldownUntil) {
+    throw new Error('No internet connection. Showing cached data. Pull to refresh when online.');
+  }
   const isFormDataBody = typeof FormData !== 'undefined' && init.body instanceof FormData;
   const pathWithPrefix = path.startsWith('http')
     ? path
@@ -208,12 +241,18 @@ async function request<T>(
       if (silentNotFound === true && res.status === 404) {
         return null as T;
       }
+      if (isAccountDeactivatedApiError(res.status, data)) {
+        onAccountDeactivated?.();
+      }
       const msg = getErrorMessage(data, res.status, res.statusText);
       const isChat404 = res.status === 404 && url.includes('/chat/');
       const isAuth404 = res.status === 404 && url.includes('/auth/');
       const isRide404 = isExpectedRideDetail404(url, res.status);
       if (__DEV__ && !isChat404 && !isAuth404 && !isRide404) console.warn('[API]', res.status, url, data);
       throw Object.assign(new Error(msg), { status: res.status, data });
+    }
+    if (method === 'GET') {
+      networkErrorCooldownUntil = 0;
     }
     return data as T;
   } catch (e) {
@@ -227,8 +266,7 @@ async function request<T>(
     if (e instanceof Error) {
       const isAborted = e.name === 'AbortError' || e.message === 'Aborted';
       const isNetworkFailed =
-        e.message === 'Network request failed' ||
-        e.message.includes('Network request failed');
+        isNetworkFailureErrorMessage(e.message);
       if (isAborted) {
         throw new Error(
           'Connection timed out. Check that the backend is running and your device can reach ' +
@@ -237,6 +275,7 @@ async function request<T>(
         );
       }
       if (isNetworkFailed) {
+        maybeSetNetworkCooldown(e);
         const base = getApiBaseUrl() || 'backend';
         const testUrl = base + (API_PREFIX || '/api') + '/health';
         throw new Error(
@@ -346,6 +385,9 @@ async function getJsonWithEtagImpl<T>(
         : await res.json().catch(() => ({}));
 
     if (!res.ok) {
+      if (isAccountDeactivatedApiError(res.status, data)) {
+        onAccountDeactivated?.();
+      }
       const msg = getErrorMessage(data, res.status, res.statusText);
       const isChat404 = res.status === 404 && url.includes('/chat/');
       const isAuth404 = res.status === 404 && url.includes('/auth/');
@@ -366,7 +408,7 @@ async function getJsonWithEtagImpl<T>(
     if (e instanceof Error) {
       const isAborted = e.name === 'AbortError' || e.message === 'Aborted';
       const isNetworkFailed =
-        e.message === 'Network request failed' || e.message.includes('Network request failed');
+        isNetworkFailureErrorMessage(e.message);
       if (isAborted) {
         throw new Error(
           'Connection timed out. Check that the backend is running and your device can reach ' +
@@ -375,6 +417,7 @@ async function getJsonWithEtagImpl<T>(
         );
       }
       if (isNetworkFailed) {
+        maybeSetNetworkCooldown(e);
         const base = getApiBaseUrl() || 'backend';
         const testUrl = base + (API_PREFIX || '/api') + '/health';
         throw new Error(

@@ -11,6 +11,7 @@ import { COLORS } from '../../constants/colors';
 import { getUserRatingsSummary, type UserRatingReview } from '../../services/ratings';
 import type { ProfileStackParamList } from '../../navigation/types';
 import { calculateAge } from '../../utils/calculateAge';
+import { DEACTIVATED_ACCOUNT_LABEL } from '../../utils/deactivatedAccount';
 
 export default function RatingsScreen(): React.JSX.Element {
   const navigation = useNavigation<NativeStackNavigationProp<ProfileStackParamList>>();
@@ -20,19 +21,24 @@ export default function RatingsScreen(): React.JSX.Element {
   const targetDisplayName = route.params?.displayName?.trim() || user?.name?.trim() || 'Drivido User';
   const targetDateOfBirth = (route.params as any)?.dateOfBirth;
   const targetAge = calculateAge(targetDateOfBirth);
-  const displayName = targetDisplayName;
   const isViewingSelf = Boolean(user?.id?.trim() && targetUserId === user.id.trim());
   const [subjectAvatarUrl, setSubjectAvatarUrl] = useState<string | undefined>();
-  const headerAvatarUri =
-    (route.params?.avatarUrl ?? '').trim() ||
-    (isViewingSelf ? (user?.avatarUrl ?? '').trim() : '') ||
-    (subjectAvatarUrl ?? '').trim() ||
-    undefined;
   const [avgRating, setAvgRating] = useState(0);
   const [totalRatings, setTotalRatings] = useState(0);
   const [recentReviews, setRecentReviews] = useState<UserRatingReview[]>([]);
   const [loading, setLoading] = useState(true);
+  const [subjectDeactivated, setSubjectDeactivated] = useState(false);
   const ratingsFetchSeqRef = useRef(0);
+
+  const displayName =
+    subjectDeactivated && !isViewingSelf ? DEACTIVATED_ACCOUNT_LABEL : targetDisplayName;
+  const headerAvatarUri =
+    subjectDeactivated && !isViewingSelf
+      ? undefined
+      : (route.params?.avatarUrl ?? '').trim() ||
+        (isViewingSelf ? (user?.avatarUrl ?? '').trim() : '') ||
+        (subjectAvatarUrl ?? '').trim() ||
+        undefined;
 
   useFocusEffect(
     useCallback(() => {
@@ -42,6 +48,7 @@ export default function RatingsScreen(): React.JSX.Element {
         setTotalRatings(0);
         setRecentReviews([]);
         setSubjectAvatarUrl(undefined);
+        setSubjectDeactivated(false);
         setLoading(false);
         return () => {};
       }
@@ -52,12 +59,14 @@ export default function RatingsScreen(): React.JSX.Element {
         try {
           const summary = await getUserRatingsSummary(userId);
           if (cancelled || runId !== ratingsFetchSeqRef.current) return;
+          setSubjectDeactivated(summary.subjectDeactivated === true);
           setAvgRating(summary.avgRating);
           setTotalRatings(summary.totalRatings);
           setRecentReviews(summary.reviews);
           setSubjectAvatarUrl(summary.subjectAvatarUrl);
         } catch {
           if (cancelled || runId !== ratingsFetchSeqRef.current) return;
+          setSubjectDeactivated(false);
           setAvgRating(0);
           setTotalRatings(0);
           setRecentReviews([]);
@@ -161,6 +170,39 @@ export default function RatingsScreen(): React.JSX.Element {
         <View style={styles.loaderWrap}>
           <ActivityIndicator size="large" color={COLORS.primary} />
         </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (subjectDeactivated && !isViewingSelf) {
+    return (
+      <SafeAreaView style={styles.screen} edges={['top']}>
+        <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+          <View style={styles.topBar}>
+            <Pressable onPress={() => navigation.goBack()} style={styles.iconButton} accessibilityRole="button">
+              <Ionicons name="arrow-back" size={20} color={COLORS.text} />
+            </Pressable>
+            <View style={styles.topAvatar}>
+              <UserAvatar
+                uri={undefined}
+                name={DEACTIVATED_ACCOUNT_LABEL}
+                size={34}
+                backgroundColor="#e2e8f0"
+                fallbackTextColor={COLORS.textSecondary}
+              />
+            </View>
+            <View style={styles.topTitleWrap}>
+              <Text style={styles.topTitle}>Ratings</Text>
+              <Text style={styles.topSubtitle}>{DEACTIVATED_ACCOUNT_LABEL}</Text>
+            </View>
+          </View>
+          <View style={styles.headerSeparator} />
+          <View style={styles.deactivatedCard}>
+            <Text style={styles.deactivatedCardText}>
+              This account is no longer active. Ratings and reviews are hidden.
+            </Text>
+          </View>
+        </ScrollView>
       </SafeAreaView>
     );
   }
@@ -300,7 +342,7 @@ export default function RatingsScreen(): React.JSX.Element {
                     />
                   ))}
                 </View>
-                <Text style={styles.reviewText}>{review.review?.trim() ? review.review : '—'}</Text>
+                {review.review?.trim() ? <Text style={styles.reviewText}>{review.review}</Text> : null}
                 <View style={styles.rolePill}>
                   <Text style={styles.rolePillText}>
                     {(review.role || 'review').replace(/_/g, ' ')}
@@ -342,6 +384,19 @@ const styles = StyleSheet.create({
     marginHorizontal: -16,
     marginTop: 4,
     marginBottom: 10,
+  },
+  deactivatedCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: COLORS.borderLight,
+    padding: 16,
+  },
+  deactivatedCardText: {
+    fontSize: 15,
+    lineHeight: 22,
+    color: COLORS.textSecondary,
+    textAlign: 'center',
   },
   iconButton: {
     width: 30,

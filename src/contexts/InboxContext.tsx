@@ -13,7 +13,11 @@ import {
   type StoredThreads,
   type StoredMessage,
 } from '../services/chat-storage';
-import { fetchConversations, fetchThreadMessages } from '../services/chat-api';
+import {
+  fetchConversations,
+  fetchThreadMessages,
+  markChatThreadReadOnServer,
+} from '../services/chat-api';
 import {
   shouldSkipThreadMessagesFetch,
   markThreadMessagesFetchedOk,
@@ -21,10 +25,22 @@ import {
   setInFlightThreadFetch,
   clearInFlightThreadFetch,
 } from '../utils/chatFetchThrottle';
-import { MAX_CHAT_WS_SUBSCRIPTIONS, compareInboxByLastMessageAtDesc } from '../utils/inboxList';
+import {
+  MAX_CHAT_WS_SUBSCRIPTIONS,
+  compareInboxByLastMessageAtDesc,
+  isRideEligibleForChatWebSocketSubscription,
+} from '../utils/inboxList';
+import {
+  pruneStaleTerminalChatThreads,
+  shouldPruneInboxChatForRide,
+} from '../utils/inboxChatRetention';
 import { normalizeChatStatus, type ChatDeliveryStatus } from '../utils/chatMessageStatus';
 import { chatWSManager } from '../services/chatWebSocketManager';
 import { setInboxRefreshCallback } from '../navigation/handleNotificationNavigation';
+import {
+  DEACTIVATED_ACCOUNT_LABEL,
+  ridePeerDeactivated,
+} from '../utils/deactivatedAccount';
 
 export type InboxMessageStatus = ChatDeliveryStatus;
 
@@ -42,6 +58,8 @@ export interface InboxConversation {
   ride: RideListItem;
   otherUserName: string;
   otherUserId?: string;
+  /** True when peer is deactivated — pass into Chat for header + send guard. */
+  otherUserDeactivated?: boolean;
   otherUserAvatarUrl?: string;
   lastMessage: string;
   lastMessageAt: number;
@@ -259,15 +277,28 @@ function stripAliasThreads(
   return next;
 }
 
-function buildConversationsForUser(threads: StoredThreads, viewerIds: string[]): InboxConversation[] {
+function buildConversationsForUser(
+  threads: StoredThreads,
+  viewerIds: string[],
+  viewerUserIdForRetention: string
+): InboxConversation[] {
   const viewerSet = new Set(viewerIds.filter(Boolean));
   const list: InboxConversation[] = [];
   for (const key of Object.keys(threads)) {
     const t = threads[key];
     if (!t?.participantIds?.some((pid) => viewerSet.has(pid))) continue;
     if (t.deletedFor?.some((d) => viewerSet.has(d))) continue;
+    if (
+      viewerUserIdForRetention.trim() &&
+      shouldPruneInboxChatForRide(t.ride, viewerUserIdForRetention)
+    ) {
+      continue;
+    }
     const otherId = t.participantIds.find((id) => !viewerSet.has(id)) ?? '';
-    const otherName = t.participantNames?.[otherId]?.trim() || 'User';
+    const peerDeactivated = ridePeerDeactivated(t.ride, otherId);
+    const otherName = peerDeactivated
+      ? DEACTIVATED_ACCOUNT_LABEL
+      : t.participantNames?.[otherId]?.trim() || 'User';
     const unreadCount = viewerIds.reduce((m, vid) => Math.max(m, t.unreadFor?.[vid] ?? 0), 0);
     const hasAnyMessage =
       (t.messages ?? []).length > 0 || String(t.lastMessage ?? '').trim().length > 0;
@@ -283,7 +314,8 @@ function buildConversationsForUser(threads: StoredThreads, viewerIds: string[]):
       ride: t.ride,
       otherUserName: otherName,
       otherUserId: otherId || undefined,
-      otherUserAvatarUrl: t.otherUserAvatarUrl,
+      otherUserDeactivated: peerDeactivated,
+      otherUserAvatarUrl: peerDeactivated ? undefined : t.otherUserAvatarUrl,
       lastMessage: t.lastMessage ?? '',
       lastMessageAt: t.lastMessageAt ?? 0,
       messageStatus: isLastMessageFromMe ? lastStatus : 'sent',
@@ -310,9 +342,16 @@ function mergeServerConversationsIntoThreads(
     if (!key || !c.ride) continue;
     const existing = next[key];
     const participantIds = [currentUserId, (c.otherUserId ?? '').trim()].filter(Boolean).sort() as [string, string];
+    const serverPeerInactive =
+      c.otherUserAccountActive === false || c.other_user_account_active === false;
+    const peerDeactivated =
+      serverPeerInactive || ridePeerDeactivated(c.ride, (c.otherUserId ?? '').trim());
+    const displayOtherName = peerDeactivated
+      ? DEACTIVATED_ACCOUNT_LABEL
+      : (c.otherUserName ?? 'User').trim();
     const participantNames = {
       [currentUserId]: currentUserName,
-      [c.otherUserId ?? '']: (c.otherUserName ?? 'User').trim(),
+      [c.otherUserId ?? '']: displayOtherName,
     };
     let mergedMsgs = existing?.messages ?? [];
     for (const [k, t] of Object.entries(next)) {
@@ -324,11 +363,16 @@ function mergeServerConversationsIntoThreads(
         delete next[k];
       }
     }
-    const avatarFromServer = c.otherUserAvatarUrl;
-    const serverUnread = c.unreadCount ?? 0;
-    const localUnread = existing?.unreadFor?.[currentUserId] ?? 0;
+    const avatarFromServer = peerDeactivated ? undefined : c.otherUserAvatarUrl;
+    /**
+     * Trust server `unreadCount` for threads returned by GET /chat/conversations so read state
+     * syncs across devices. `Math.max(server, local)` kept stale local badges after reading on another phone.
+     */
+    const rawUnread = c.unreadCount;
     const mergedUnread =
-      serverUnread > 0 || localUnread > 0 ? Math.max(serverUnread, localUnread) : 0;
+      typeof rawUnread === 'number' && !Number.isNaN(rawUnread)
+        ? Math.max(0, Math.floor(rawUnread))
+        : (existing?.unreadFor?.[currentUserId] ?? 0);
     next[key] = {
       ride: { ...c.ride, id: rid },
       participantIds: existing?.participantIds ?? participantIds,
@@ -349,10 +393,21 @@ function mergeServerConversationsIntoThreads(
 }
 
 export function InboxProvider({ children }: { children: React.ReactNode }): React.JSX.Element {
-  const { user, isAuthenticated, needsEmailVerification, needsProfileCompletion, isLoading } = useAuth();
+  const {
+    user,
+    isAuthenticated,
+    needsEmailVerification,
+    needsProfileCompletion,
+    needsAccountReactivation,
+    isLoading,
+  } = useAuth();
   /** Match RootNavigator `sessionReady` — JWT + user id can exist before onboarding; skip chat list API until then. */
   const chatApiReady =
-    !isLoading && isAuthenticated && !needsEmailVerification && !needsProfileCompletion;
+    !isLoading &&
+    isAuthenticated &&
+    !needsEmailVerification &&
+    !needsProfileCompletion &&
+    !needsAccountReactivation;
   /** Keep in sync with screens that read `user.id` / `user.phone` for thread membership. */
   const currentUserId = (user?.id ?? user?.phone ?? '').trim();
   const currentUserName = (user?.name ?? '').trim() || 'Me';
@@ -370,6 +425,9 @@ export function InboxProvider({ children }: { children: React.ReactNode }): Reac
   const wsDesiredSigRef = useRef('');
   /** Avoid stacking concurrent inbox list fetches from the poll timer + foreground resume. */
   const inboxPollInFlightRef = useRef(false);
+  /** Debounce WS orphan fallback refreshes (production safety against bursty malformed packets). */
+  const orphanRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastOrphanRefreshAtRef = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -398,11 +456,39 @@ export function InboxProvider({ children }: { children: React.ReactNode }): Reac
     return unsubscribe;
   }, []);
 
+  useEffect(() => {
+    chatWSManager.onOrphanMessage((msg) => {
+      if (!chatApiReady || !currentUserId) return;
+      // Some servers occasionally emit chat_message without threadKey/rideId.
+      // Recover by refreshing inbox from HTTP, debounced to avoid request bursts.
+      const now = Date.now();
+      if (now - lastOrphanRefreshAtRef.current < 1000) return;
+      if (orphanRefreshTimerRef.current) return;
+      orphanRefreshTimerRef.current = setTimeout(() => {
+        orphanRefreshTimerRef.current = null;
+        lastOrphanRefreshAtRef.current = Date.now();
+        void runInboxPollIfIdle();
+      }, 450);
+    });
+    return () => {
+      if (orphanRefreshTimerRef.current) {
+        clearTimeout(orphanRefreshTimerRef.current);
+        orphanRefreshTimerRef.current = null;
+      }
+      chatWSManager.onOrphanMessage(null);
+    };
+  }, [chatApiReady, currentUserId, runInboxPollIfIdle]);
+
   const refreshConversations = useCallback(async () => {
     if (!chatApiReady || !currentUserId) return;
     try {
       const convs = await fetchConversations();
-      setThreadsByKey((prev) => mergeServerConversationsIntoThreads(prev, convs, currentUserId, currentUserName));
+      setThreadsByKey((prev) =>
+        pruneStaleTerminalChatThreads(
+          mergeServerConversationsIntoThreads(prev, convs, currentUserId, currentUserName),
+          currentUserId
+        )
+      );
     } catch {
       /* keep local */
     }
@@ -427,7 +513,12 @@ export function InboxProvider({ children }: { children: React.ReactNode }): Reac
     fetchConversations()
       .then((convs) => {
         if (cancelled) return;
-        setThreadsByKey((prev) => mergeServerConversationsIntoThreads(prev, convs, currentUserId, currentUserName));
+        setThreadsByKey((prev) =>
+          pruneStaleTerminalChatThreads(
+            mergeServerConversationsIntoThreads(prev, convs, currentUserId, currentUserName),
+            currentUserId
+          )
+        );
       })
       .catch(() => {
         /* keep local only if API not implemented or fails */
@@ -527,6 +618,7 @@ export function InboxProvider({ children }: { children: React.ReactNode }): Reac
       if (!otherId || otherId.startsWith('name-')) return;
       const rideId = normalizeChatRideId(thread.ride?.id);
       if (!rideId) return;
+      if (!isRideEligibleForChatWebSocketSubscription(thread.ride)) return;
       const canonicalKey = getThreadKey(rideId, currentUserId, otherId);
       desiredAll.set(canonicalKey, { rideId, otherUserId: otherId });
     });
@@ -719,9 +811,15 @@ export function InboxProvider({ children }: { children: React.ReactNode }): Reac
   }, [chatApiReady, currentUserId, refreshConversations, loadThreadMessages, bumpUnreadFromNotification]);
 
   const conversations = useMemo(
-    () => buildConversationsForUser(threadsByKey, viewerParticipantIds),
-    [threadsByKey, viewerParticipantIds]
+    () => buildConversationsForUser(threadsByKey, viewerParticipantIds, currentUserId),
+    [threadsByKey, viewerParticipantIds, currentUserId]
   );
+
+  /** Drop completed/cancelled chats older than retention; re-run when account hydrates. */
+  useEffect(() => {
+    if (!hydrated || !currentUserId.trim()) return;
+    setThreadsByKey((prev) => pruneStaleTerminalChatThreads(prev, currentUserId));
+  }, [hydrated, currentUserId]);
 
   const ensureThread = useCallback(
     (ride: RideListItem, otherUserName: string, otherUserId: string | undefined): string => {
@@ -1041,7 +1139,9 @@ export function InboxProvider({ children }: { children: React.ReactNode }): Reac
   );
 
   const markAllAsRead = useCallback(() => {
+    const viewerSet = new Set(viewerParticipantIds.filter(Boolean));
     setThreadsByKey((prev) => {
+      const syncRead: { rideId: string; otherUserId: string }[] = [];
       const next = { ...prev };
       for (const k of Object.keys(next)) {
         const t = next[k];
@@ -1053,7 +1153,21 @@ export function InboxProvider({ children }: { children: React.ReactNode }): Reac
             changed = true;
           }
         }
-        if (changed) next[k] = { ...t, unreadFor };
+        if (changed) {
+          next[k] = { ...t, unreadFor };
+          const otherId = t.participantIds.find((id) => !viewerSet.has(id)) ?? '';
+          const rid = normalizeChatRideId(t.ride?.id ?? '');
+          if (rid && otherId && !otherId.startsWith('name-')) {
+            syncRead.push({ rideId: rid, otherUserId: otherId });
+          }
+        }
+      }
+      if (syncRead.length > 0) {
+        setTimeout(() => {
+          for (const row of syncRead) {
+            void markChatThreadReadOnServer(row.rideId, row.otherUserId).catch(() => {});
+          }
+        }, 0);
       }
       return next;
     });
@@ -1062,7 +1176,11 @@ export function InboxProvider({ children }: { children: React.ReactNode }): Reac
   const markConversationAsRead = useCallback(
     (rideId: string, otherUserId?: string, otherUserName?: string) => {
       const otherId = resolveOtherParticipantId(otherUserId, otherUserName);
-      const key = getThreadKey(normalizeChatRideId(rideId), currentUserId, otherId);
+      const rid = normalizeChatRideId(rideId);
+      const key = getThreadKey(rid, currentUserId, otherId);
+      if (rid && otherId && !otherId.startsWith('name-')) {
+        void markChatThreadReadOnServer(rid, otherId).catch(() => {});
+      }
       setThreadsByKey((prev) => {
         const t = prev[key];
         if (!t) return prev;

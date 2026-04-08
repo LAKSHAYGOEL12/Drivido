@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -11,7 +12,8 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { Alert } from '../../utils/themedAlert';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect, useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import type { RidesStackParamList, SearchStackParamList } from '../../navigation/types';
@@ -19,11 +21,13 @@ import type { RideListItem } from '../../types/api';
 import api from '../../services/api';
 import { API } from '../../constants/API';
 import { COLORS } from '../../constants/colors';
+import { addRecentPublished } from '../../services/recent-published-storage';
 import DatePickerModal from '../../components/common/DatePickerModal';
 import PassengersPickerModal from '../../components/common/PassengersPickerModal';
 import { showToast } from '../../utils/toast';
 import { bookingIsCancelled } from '../../utils/bookingStatus';
 import { formatPublishStyleDateLabel } from '../../utils/rideDisplay';
+import { findMainTabNavigatorWithOptions } from '../../navigation/findMainTabNavigator';
 
 const MIN_LEAD_MINUTES = 30;
 const CLOCK_SIZE = 232;
@@ -61,13 +65,13 @@ function parseDateTimeParts(ride: RideListItem): { date: string; time: string } 
 
 export default function EditRideScreen(): React.JSX.Element {
   const navigation = useNavigation();
+  const insets = useSafeAreaInsets();
   const route = useRoute<EditRideRouteProp>();
   const ride = route.params.ride;
   const anyRide = ride as RideListItem & {
-    notes?: string;
     description?: string;
-    contactInfo?: string;
-    contact?: string;
+    rideDescription?: string;
+    ride_description?: string;
   };
 
   const hasBookings = useMemo(() => {
@@ -90,9 +94,9 @@ export default function EditRideScreen(): React.JSX.Element {
   const [totalSeats, setTotalSeats] = useState(
     ride.seats != null && !Number.isNaN(Number(ride.seats)) ? String(Math.max(1, Math.floor(Number(ride.seats)))) : ''
   );
-  const [notes, setNotes] = useState((anyRide.notes ?? '').trim());
-  const [description, setDescription] = useState((anyRide.description ?? '').trim());
-  const [contactInfo, setContactInfo] = useState((anyRide.contactInfo ?? anyRide.contact ?? '').trim());
+  const [description, setDescription] = useState(
+    (anyRide.description ?? anyRide.rideDescription ?? anyRide.ride_description ?? '').trim()
+  );
   const [showDateModal, setShowDateModal] = useState(false);
   const [showSeatsModal, setShowSeatsModal] = useState(false);
   const [showPriceModal, setShowPriceModal] = useState(false);
@@ -114,6 +118,7 @@ export default function EditRideScreen(): React.JSX.Element {
   const [timeModalToast, setTimeModalToast] = useState('');
   const timeModalToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [saving, setSaving] = useState(false);
+  const scrollRef = useRef<ScrollView | null>(null);
 
   const majorFieldLocked = hasBookings;
 
@@ -218,6 +223,17 @@ export default function EditRideScreen(): React.JSX.Element {
     }, [route.params, navigation])
   );
 
+  // Ensure bottom tabs stay hidden while EditRide is focused, regardless of nested route timing.
+  useFocusEffect(
+    React.useCallback(() => {
+      const mainTabs = findMainTabNavigatorWithOptions(navigation as { getParent?: () => unknown });
+      mainTabs?.setOptions?.({ tabBarStyle: { display: 'none' } });
+      return () => {
+        mainTabs?.setOptions?.({ tabBarStyle: undefined });
+      };
+    }, [navigation])
+  );
+
   const showTimeValidationToast = () => {
     if (timeModalToastTimerRef.current) clearTimeout(timeModalToastTimerRef.current);
     setTimeModalToast('Choose a time at least 30 minutes from now.');
@@ -262,14 +278,15 @@ export default function EditRideScreen(): React.JSX.Element {
       });
       return;
     }
+    const descriptionTrimmed = description.trim();
     const payload: Record<string, unknown> = {
       pickupLocationName: pickupLocation.trim(),
       destinationLocationName: dropLocation.trim(),
       price: price.trim(),
       seats: Math.max(1, Math.floor(Number(totalSeats))),
-      notes: notes.trim(),
-      description: description.trim(),
-      contactInfo: contactInfo.trim(),
+      description: descriptionTrimmed,
+      rideDescription: descriptionTrimmed,
+      ride_description: descriptionTrimmed,
     };
     if (dateValue.trim() && timeValue.trim()) {
       const scheduledAt = new Date(`${dateValue.trim()}T${timeValue.trim()}:00`);
@@ -278,6 +295,60 @@ export default function EditRideScreen(): React.JSX.Element {
     setSaving(true);
     try {
       await api.patch(API.endpoints.rides.detail(ride.id), payload);
+      const ymd = dateValue.trim();
+      if (/^\d{4}-\d{2}-\d{2}$/.test(ymd)) {
+        await addRecentPublished({
+          rideId: String(ride.id ?? '').trim() || undefined,
+          pickup: pickupLocation.trim(),
+          destination: dropLocation.trim(),
+          pickupLatitude: Number(ride.pickupLatitude ?? 0),
+          pickupLongitude: Number(ride.pickupLongitude ?? 0),
+          destinationLatitude: Number(ride.destinationLatitude ?? 0),
+          destinationLongitude: Number(ride.destinationLongitude ?? 0),
+          dateYmd: ymd,
+          hour: Math.max(0, Math.min(23, Math.floor(timeHour))),
+          minute: Math.max(0, Math.min(59, Math.floor(timeMinute))),
+          seats: Math.max(1, Math.floor(Number(totalSeats))),
+          rate: price.trim(),
+          rideDescription: descriptionTrimmed,
+          instantBooking:
+            String(
+              (
+                ride as RideListItem & {
+                  bookingMode?: string;
+                  booking_mode?: string;
+                  instantBooking?: boolean;
+                  instant_booking?: boolean;
+                }
+              ).bookingMode ??
+                (
+                  ride as RideListItem & {
+                    bookingMode?: string;
+                    booking_mode?: string;
+                    instantBooking?: boolean;
+                    instant_booking?: boolean;
+                  }
+                ).booking_mode ??
+                ''
+            )
+              .trim()
+              .toLowerCase() === 'instant' ||
+            Boolean(
+              (
+                ride as RideListItem & {
+                  instantBooking?: boolean;
+                  instant_booking?: boolean;
+                }
+              ).instantBooking ??
+                (
+                  ride as RideListItem & {
+                    instantBooking?: boolean;
+                    instant_booking?: boolean;
+                  }
+                ).instant_booking
+            ),
+        });
+      }
       showToast({
         title: 'Updated',
         message: 'Ride details updated',
@@ -297,6 +368,11 @@ export default function EditRideScreen(): React.JSX.Element {
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
+      <KeyboardAvoidingView
+        style={styles.keyboardAvoid}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 84 : 0}
+      >
         <View style={styles.header}>
           <TouchableOpacity onPress={() => navigation.goBack()} style={styles.headerBack} hitSlop={12}>
             <Ionicons name="arrow-back" size={24} color={COLORS.primary} />
@@ -310,7 +386,14 @@ export default function EditRideScreen(): React.JSX.Element {
           </View>
         </View>
 
-      <ScrollView style={styles.scroll} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        ref={scrollRef}
+        style={styles.scroll}
+        contentContainerStyle={[styles.content, { paddingBottom: 112 + insets.bottom }]}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+      >
         {hasBookings ? (
           <View style={styles.banner}>
             <Ionicons name="information-circle-outline" size={18} color={COLORS.warning} />
@@ -438,46 +521,35 @@ export default function EditRideScreen(): React.JSX.Element {
 
         <View style={styles.card}>
           <View style={styles.sectionHeaderRow}>
-            <Text style={styles.sectionTitle}>Editable details</Text>
+            <Text style={styles.sectionTitle}>Ride description</Text>
             <View style={styles.editablePill}>
               <Ionicons name="create-outline" size={12} color={COLORS.primary} />
               <Text style={styles.editablePillText}>Always editable</Text>
             </View>
           </View>
-          <Text style={styles.sectionHint}>Use these for passenger instructions and contact updates.</Text>
-
-          <Text style={styles.label}>Notes</Text>
-          <TextInput
-            value={notes}
-            onChangeText={setNotes}
-            style={[styles.input, styles.multilineInput]}
-            placeholder="Notes"
-            placeholderTextColor={COLORS.textMuted}
-            multiline
-            textAlignVertical="top"
-          />
+          <Text style={styles.sectionHint}>Optional — shown to passengers on ride detail.</Text>
 
           <Text style={styles.label}>Description</Text>
           <TextInput
             value={description}
             onChangeText={setDescription}
             style={[styles.input, styles.multilineInput]}
-            placeholder="Description"
+            placeholder="Luggage, music, pickup notes…"
             placeholderTextColor={COLORS.textMuted}
             multiline
             textAlignVertical="top"
+            maxLength={500}
+            onFocus={() => {
+              setTimeout(() => {
+                scrollRef.current?.scrollToEnd({ animated: true });
+              }, 120);
+            }}
           />
-
-          <Text style={styles.label}>Contact info</Text>
-          <TextInput
-            value={contactInfo}
-            onChangeText={setContactInfo}
-            style={styles.input}
-            placeholder="Contact info"
-            placeholderTextColor={COLORS.textMuted}
-          />
+          <Text style={styles.counterHint}>{description.length}/500</Text>
         </View>
 
+      </ScrollView>
+      <View style={[styles.stickyFooter, { paddingBottom: Math.max(10, insets.bottom) }]}>
         <TouchableOpacity
           style={[styles.updateButton, saving && styles.updateButtonDisabled]}
           onPress={handleUpdateRide}
@@ -493,7 +565,7 @@ export default function EditRideScreen(): React.JSX.Element {
             </View>
           )}
         </TouchableOpacity>
-      </ScrollView>
+      </View>
 
       <DatePickerModal
         visible={showDateModal}
@@ -681,12 +753,14 @@ export default function EditRideScreen(): React.JSX.Element {
           </View>
         </View>
       </Modal>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: COLORS.background },
+  keyboardAvoid: { flex: 1 },
   header: {
     flexDirection: 'row',
     alignItems: 'flex-start',
@@ -750,6 +824,13 @@ const styles = StyleSheet.create({
     color: COLORS.textMuted,
     marginBottom: 8,
     lineHeight: 16,
+  },
+  counterHint: {
+    fontSize: 12,
+    color: COLORS.textMuted,
+    textAlign: 'right',
+    marginTop: -4,
+    marginBottom: 10,
   },
   lockPill: {
     flexDirection: 'row',
@@ -909,7 +990,6 @@ const styles = StyleSheet.create({
     opacity: 0.9,
   },
   updateButton: {
-    marginTop: 6,
     backgroundColor: COLORS.primary,
     paddingVertical: 14,
     borderRadius: 12,
@@ -919,6 +999,13 @@ const styles = StyleSheet.create({
   updateButtonDisabled: { opacity: 0.65 },
   updateInner: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   updateText: { color: COLORS.white, fontSize: 15, fontWeight: '800' },
+  stickyFooter: {
+    borderTopWidth: 1,
+    borderTopColor: COLORS.borderLight,
+    backgroundColor: COLORS.background,
+    paddingHorizontal: 16,
+    paddingTop: 10,
+  },
   bottomOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.45)',

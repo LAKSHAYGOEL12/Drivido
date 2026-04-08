@@ -6,6 +6,7 @@ import {
   TextInput,
   TouchableOpacity,
   FlatList,
+  ActivityIndicator,
 } from 'react-native';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -16,32 +17,38 @@ import { useInbox, type InboxConversation } from '../../contexts/InboxContext';
 import { COLORS } from '../../constants/colors';
 import { applyInboxVisibilityLimit, INBOX_VISIBLE_CHAT_MAX } from '../../utils/inboxList';
 import UserAvatar from '../../components/common/UserAvatar';
+import { ridePeerDeactivated } from '../../utils/deactivatedAccount';
+import SkeletonBlock from '../../components/common/SkeletonBlock';
 
 function formatConversationTime(ts: number): string {
   const date = new Date(ts);
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();
   const diffDays = Math.floor(diffMs / (24 * 60 * 60 * 1000));
-  if (diffDays === 0) {
-    const h = date.getHours();
-    const m = date.getMinutes();
-    const am = h < 12;
-    const h12 = h % 12 || 12;
-    return `${h12}:${String(m).padStart(2, '0')} ${am ? 'AM' : 'PM'}`;
-  }
-  if (diffDays === 1) return 'Yesterday';
-  if (diffDays < 7) return ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][date.getDay()];
-  return `${diffDays} days ago`;
+  const h = date.getHours();
+  const m = date.getMinutes();
+  const am = h < 12;
+  const h12 = h % 12 || 12;
+  if (diffDays === 0) return `${h12}:${String(m).padStart(2, '0')} ${am ? 'AM' : 'PM'}`;
+  return `${String(date.getDate()).padStart(2, '0')} ${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][date.getMonth()]}`;
 }
 
 export default function Inbox(): React.JSX.Element {
   const navigation = useNavigation<NativeStackNavigationProp<InboxStackParamList>>();
   const { conversations, markConversationAsRead, refreshConversations } = useInbox();
   const [search, setSearch] = useState('');
+  const [loading, setLoading] = useState(true);
 
   useFocusEffect(
     React.useCallback(() => {
-      void refreshConversations();
+      let cancelled = false;
+      setLoading(true);
+      void refreshConversations().finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+      return () => {
+        cancelled = true;
+      };
     }, [refreshConversations])
   );
 
@@ -65,6 +72,10 @@ export default function Inbox(): React.JSX.Element {
       otherUserName: conv.otherUserName,
       otherUserId: conv.otherUserId,
       ...(conv.otherUserAvatarUrl ? { otherUserAvatarUrl: conv.otherUserAvatarUrl } : {}),
+      ...(conv.otherUserDeactivated === true ||
+      ridePeerDeactivated(conv.ride, (conv.otherUserId ?? '').trim())
+        ? { otherUserDeactivated: true }
+        : {}),
     });
   };
 
@@ -86,14 +97,18 @@ export default function Inbox(): React.JSX.Element {
         </View>
         <View style={styles.rowCenter}>
           <View style={styles.nameRow}>
-            <Text style={styles.name} numberOfLines={1}>{item.otherUserName}</Text>
+            <Text style={[styles.name, item.unreadCount > 0 && styles.nameUnread]} numberOfLines={1}>
+              {item.otherUserName}
+            </Text>
           </View>
-          <Text style={styles.lastMessage} numberOfLines={1}>
+          <Text style={[styles.lastMessage, item.unreadCount > 0 && styles.lastMessageUnread]} numberOfLines={1}>
             {item.lastMessage || 'No messages yet'}
           </Text>
         </View>
         <View style={styles.rowRight}>
-          <Text style={styles.time}>{formatConversationTime(item.lastMessageAt)}</Text>
+          <Text style={[styles.time, item.unreadCount > 0 && styles.timeUnread]}>
+            {formatConversationTime(item.lastMessageAt)}
+          </Text>
           {item.unreadCount > 0 ? (
             <View style={styles.unreadBadge}>
               <Text style={styles.unreadCount}>{item.unreadCount}</Text>
@@ -126,19 +141,33 @@ export default function Inbox(): React.JSX.Element {
           <Text style={styles.sectionTitle}>RECENT CONVERSATIONS</Text>
         </View>
 
-        <FlatList
-          data={filtered}
-          renderItem={renderItem}
-          keyExtractor={(item) => item.id}
-          contentContainerStyle={styles.listContent}
-          showsVerticalScrollIndicator={false}
-          ItemSeparatorComponent={() => <View style={styles.separator} />}
-          ListEmptyComponent={
-            <View style={styles.empty}>
-              <Text style={styles.emptyText}>No conversations</Text>
-            </View>
-          }
-        />
+        {loading && filtered.length === 0 ? (
+          <View style={styles.skeletonWrap}>
+            {Array.from({ length: 6 }).map((_, idx) => (
+              <View key={`chat-skeleton-${idx}`} style={styles.skeletonRow}>
+                <SkeletonBlock width={52} height={52} borderRadius={26} />
+                <View style={styles.skeletonTextCol}>
+                  <SkeletonBlock width="45%" height={14} borderRadius={7} />
+                  <SkeletonBlock width="80%" height={12} borderRadius={6} />
+                </View>
+              </View>
+            ))}
+          </View>
+        ) : (
+          <FlatList
+            data={filtered}
+            renderItem={renderItem}
+            keyExtractor={(item) => item.id}
+            contentContainerStyle={styles.listContent}
+            showsVerticalScrollIndicator={false}
+            ItemSeparatorComponent={() => <View style={styles.separator} />}
+            ListEmptyComponent={
+              <View style={styles.empty}>
+                <Text style={styles.emptyText}>No messages yet</Text>
+              </View>
+            }
+          />
+        )}
       </View>
     </SafeAreaView>
   );
@@ -226,6 +255,9 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: COLORS.text,
   },
+  nameUnread: {
+    fontWeight: '800',
+  },
   tag: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -250,6 +282,10 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: COLORS.textSecondary,
   },
+  lastMessageUnread: {
+    color: COLORS.text,
+    fontWeight: '600',
+  },
   rowRight: {
     alignItems: 'flex-end',
     marginLeft: 8,
@@ -258,6 +294,10 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: COLORS.textMuted,
     marginBottom: 4,
+  },
+  timeUnread: {
+    color: COLORS.text,
+    fontWeight: '700',
   },
   unreadBadge: {
     minWidth: 22,
@@ -283,5 +323,29 @@ const styles = StyleSheet.create({
   emptyText: {
     fontSize: 15,
     color: COLORS.textMuted,
+  },
+  loadingWrap: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingTop: 28,
+    gap: 8,
+  },
+  loadingText: {
+    fontSize: 13,
+    color: COLORS.textMuted,
+  },
+  skeletonWrap: {
+    paddingHorizontal: 20,
+    paddingTop: 8,
+    gap: 14,
+  },
+  skeletonRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  skeletonTextCol: {
+    flex: 1,
+    marginLeft: 14,
+    gap: 8,
   },
 });

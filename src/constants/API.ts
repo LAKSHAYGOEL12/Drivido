@@ -68,6 +68,19 @@ export const API = {
        * DELETE — remove tokens for current user (logout); optional if backend only upserts.
        */
       pushToken: '/user/push-token',
+      /**
+       * Grace-period account deletion. With default `EXPO_PUBLIC_API_PREFIX=/api` these are
+       * `POST /api/user/account-deletion/request` and `POST /api/user/account-deletion/cancel`.
+       * See `src/services/accountDeletion.ts`.
+       */
+      accountDeletion: {
+        request: '/user/account-deletion/request',
+        cancel: '/user/account-deletion/cancel',
+      },
+      /** Pause account — see `src/services/accountDeactivate.ts`. */
+      deactivate: '/user/deactivate',
+      /** Resume account when backend allows self-serve reactivation. */
+      reactivate: '/user/reactivate',
     },
     upload: {
       aadhaar: '/upload/aadhaar',
@@ -79,6 +92,8 @@ export const API = {
       messages: '/chat/messages',
       /** POST – send message. Body: { rideId, otherUserId, text } */
       send: '/chat/messages',
+      /** POST – mark thread read for current user. Body: { rideId, otherUserId } — syncs unread across devices */
+      read: '/chat/conversations/read',
       /** DELETE – remove thread for current user. Query: rideId, otherUserId */
       deleteConversation: '/chat/conversations',
     },
@@ -101,6 +116,7 @@ export const API = {
     recentPublished: {
       list: '/recent-published',
       upsert: '/recent-published',
+      upsertByRide: (rideId: string) => `/recent-published/${encodeURIComponent(rideId)}`,
       remove: (id: string) => `/recent-published/${id}`,
       clear: '/recent-published',
     },

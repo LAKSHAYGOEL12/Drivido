@@ -9,6 +9,7 @@ import type { SearchStackParamList, RidesStackParamList, ProfileStackParamList }
 import { useAuth } from '../../contexts/AuthContext';
 import { COLORS } from '../../constants/colors';
 import { getUserRatingsSummary, type UserRatingReview } from '../../services/ratings';
+import { DEACTIVATED_ACCOUNT_LABEL } from '../../utils/deactivatedAccount';
 
 type OwnerRatingsRoute =
   | RouteProp<RidesStackParamList, 'OwnerRatingsModal'>
@@ -34,14 +35,18 @@ export default function OwnerRatingsModal(): React.JSX.Element {
   const { user } = useAuth();
 
   const targetUserId = route.params?.userId?.trim() ?? '';
+  const isViewingSelf = Boolean(user?.id?.trim() && targetUserId === user.id.trim());
   const targetDisplayName = route.params?.displayName?.trim() ?? 'User';
   const paramRatedUserAvatar = route.params?.avatarUrl?.trim();
   const [fetchedSubjectAvatar, setFetchedSubjectAvatar] = useState<string | undefined>();
+  const [subjectDeactivated, setSubjectDeactivated] = useState(false);
   const headerPhotoUri =
-    paramRatedUserAvatar ||
-    (targetUserId && targetUserId === (user?.id ?? '').trim() ? (user?.avatarUrl ?? '').trim() : '') ||
-    (fetchedSubjectAvatar ?? '').trim() ||
-    undefined;
+    subjectDeactivated && !isViewingSelf
+      ? undefined
+      : paramRatedUserAvatar ||
+        (targetUserId && targetUserId === (user?.id ?? '').trim() ? (user?.avatarUrl ?? '').trim() : '') ||
+        (fetchedSubjectAvatar ?? '').trim() ||
+        undefined;
 
   const [avgRating, setAvgRating] = useState(0);
   const [totalRatings, setTotalRatings] = useState(0);
@@ -90,6 +95,7 @@ export default function OwnerRatingsModal(): React.JSX.Element {
       if (!targetUserId) {
         setLoading(true);
         setFetchedSubjectAvatar(undefined);
+        setSubjectDeactivated(false);
         return () => {};
       }
 
@@ -101,12 +107,14 @@ export default function OwnerRatingsModal(): React.JSX.Element {
         try {
           const summary = await getUserRatingsSummary(targetUserId);
           if (cancelled || runId !== ratingsFetchSeqRef.current) return;
+          setSubjectDeactivated(summary.subjectDeactivated === true);
           setAvgRating(summary.avgRating ?? 0);
           setTotalRatings(summary.totalRatings ?? 0);
           setRecentReviews(summary.reviews ?? []);
           setFetchedSubjectAvatar(summary.subjectAvatarUrl);
         } catch {
           if (cancelled || runId !== ratingsFetchSeqRef.current) return;
+          setSubjectDeactivated(false);
           setAvgRating(0);
           setTotalRatings(0);
           setRecentReviews([]);
@@ -192,6 +200,40 @@ export default function OwnerRatingsModal(): React.JSX.Element {
         <View style={styles.loaderWrap}>
           <ActivityIndicator size="large" color={COLORS.primary} />
         </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (subjectDeactivated && !isViewingSelf) {
+    return (
+      <SafeAreaView style={styles.screen} edges={['top']}>
+        <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+          <View style={styles.topBar}>
+            <Pressable onPress={() => navigation.goBack()} style={styles.iconButton} accessibilityRole="button">
+              <Ionicons name="arrow-back" size={20} color={COLORS.text} />
+            </Pressable>
+            <View style={styles.topAvatar}>
+              <UserAvatar
+                uri={undefined}
+                name={DEACTIVATED_ACCOUNT_LABEL}
+                size={34}
+                backgroundColor="#e2e8f0"
+                fallbackTextColor={COLORS.textSecondary}
+              />
+            </View>
+            <View style={styles.topTitleWrap}>
+              <Text style={styles.topTitle}>Ratings</Text>
+              <Text style={styles.topSubtitle}>{DEACTIVATED_ACCOUNT_LABEL}</Text>
+            </View>
+            <View style={styles.rightSpacer} />
+          </View>
+          <View style={styles.headerSeparator} />
+          <View style={styles.deactivatedCard}>
+            <Text style={styles.deactivatedCardText}>
+              This account is no longer active. Ratings and reviews are hidden.
+            </Text>
+          </View>
+        </ScrollView>
       </SafeAreaView>
     );
   }
@@ -322,7 +364,7 @@ export default function OwnerRatingsModal(): React.JSX.Element {
                     ))}
                   </View>
 
-                  <Text style={styles.reviewText}>{review.review?.trim() ? review.review : '—'}</Text>
+                  {review.review?.trim() ? <Text style={styles.reviewText}>{review.review}</Text> : null}
                 </Pressable>
               ))
             )}
@@ -345,6 +387,19 @@ const styles = StyleSheet.create({
   topSubtitle: { fontSize: 13, fontWeight: '700', color: COLORS.textSecondary },
   rightSpacer: { width: 34 },
   headerSeparator: { height: 1, backgroundColor: COLORS.border, marginTop: 10, marginBottom: 12 },
+  deactivatedCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: COLORS.borderLight,
+    padding: 16,
+  },
+  deactivatedCardText: {
+    fontSize: 15,
+    lineHeight: 22,
+    color: COLORS.textSecondary,
+    textAlign: 'center',
+  },
   summaryCard: {
     backgroundColor: 'rgba(34,197,94,0.08)',
     borderRadius: 14,

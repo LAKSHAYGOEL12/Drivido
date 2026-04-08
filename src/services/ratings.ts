@@ -6,6 +6,12 @@ import {
   findAvatarUrlForUserInTree,
   stringifyApiUserId,
 } from '../utils/avatarUrl';
+import {
+  DEACTIVATED_ACCOUNT_LABEL,
+  ratingsEnvelopeSubjectInactive,
+  ratingRowReviewerInactive,
+} from '../utils/deactivatedAccount';
+import { normalizeRidePreferenceIds } from '../constants/ridePreferences';
 
 export type SubmitRideRatingPayload = {
   rideId: string;
@@ -41,6 +47,12 @@ export type UserRatingsSummary = {
    * Prefer E.164 or national digits; app opens the device dialer via `tel:`.
    */
   subjectContactPhone?: string;
+  /** Rated user’s account is inactive — client must not show ratings breakdown, reviews, or PII. */
+  subjectDeactivated?: boolean;
+  /** Short public bio when `GET /ratings/:userId` embeds it on `user` / envelope. */
+  subjectBio?: string;
+  /** Driver comfort tags from `user.ridePreferences` on ratings payload (may be empty). */
+  subjectRidePreferences: string[];
 };
 
 function extractRatingsArray(raw: unknown): unknown[] {
@@ -274,6 +286,16 @@ export async function getUserRatingsSummary(userId: string): Promise<UserRatings
   const data = asObject(root?.data) ?? root ?? {};
   const userObj = asObject(data.user) ?? {};
 
+  if (ratingsEnvelopeSubjectInactive(root, data, userObj)) {
+    return {
+      avgRating: 0,
+      totalRatings: 0,
+      reviews: [],
+      subjectDeactivated: true,
+      subjectRidePreferences: [],
+    };
+  }
+
   const avgRating = asNumber(
     data.avgRating ?? userObj.avgRating ?? data.averageRating ?? userObj.averageRating
   );
@@ -410,14 +432,15 @@ export async function getUserRatingsSummary(userId: string): Promise<UserRatings
       const fromUserNameCandidate = asString(fromUserNameRaw).trim() || findName(fromUserObj, 3) || findName(obj, 3);
       const fromUserAvatarUrl =
         pickAvatarUrlFromRecord(fromUserObj) ?? pickAvatarUrlFromRecord(obj) ?? undefined;
+      const reviewerInactive = ratingRowReviewerInactive(obj, fromUserObj);
       return {
         id: asString(obj._id || obj.id) || `${idx}`,
         rating: Math.min(5, Math.max(0, Math.round(asNumber(ratingRaw)))),
         review: reviewText,
         role: asString(obj.role),
-        fromUserName: fromUserNameCandidate,
-        fromUserId: fromUserId || undefined,
-        ...(fromUserAvatarUrl ? { fromUserAvatarUrl } : {}),
+        fromUserName: reviewerInactive ? DEACTIVATED_ACCOUNT_LABEL : fromUserNameCandidate,
+        fromUserId: reviewerInactive ? undefined : fromUserId || undefined,
+        ...(reviewerInactive || !fromUserAvatarUrl ? {} : { fromUserAvatarUrl }),
         createdAt: asString(obj.createdAt ?? obj.updatedAt ?? obj.date),
       };
     });
@@ -467,12 +490,40 @@ export async function getUserRatingsSummary(userId: string): Promise<UserRatings
       data.created_at
   ).trim();
 
+  const subjectBioRaw = asString(
+    data.subjectBio ??
+      data.subject_bio ??
+      root?.subjectBio ??
+      root?.subject_bio ??
+      userObj.bio ??
+      userObj.description ??
+      userObj.profileBio ??
+      userObj.profile_bio ??
+      userObj.about ??
+      userObj.subjectBio ??
+      userObj.subject_bio ??
+      data.bio ??
+      data.description
+  ).trim();
+
+  const subjectRidePrefsRaw =
+    userObj.ridePreferences ??
+    userObj.ride_preferences ??
+    data.subjectRidePreferences ??
+    data.subject_ride_preferences ??
+    root?.subjectRidePreferences;
+  const subjectRidePreferences = normalizeRidePreferenceIds(
+    Array.isArray(subjectRidePrefsRaw) ? subjectRidePrefsRaw : []
+  );
+
   return {
     avgRating: finalAvgRating,
     totalRatings: finalTotalRatings,
     reviews,
     ...(subjectAvatarUrl ? { subjectAvatarUrl } : {}),
     ...(subjectCreatedAtRaw ? { subjectCreatedAt: subjectCreatedAtRaw } : {}),
+    ...(subjectBioRaw ? { subjectBio: subjectBioRaw } : {}),
     ...(subjectContactPhone ? { subjectContactPhone } : {}),
+    subjectRidePreferences,
   };
 }

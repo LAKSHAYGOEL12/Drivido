@@ -17,7 +17,32 @@ export function bookingIsCancelledByOwner(status: string | undefined | null): bo
 export function bookingIsCancelled(status: string | undefined | null): boolean {
   const s = (status ?? '').trim().toLowerCase();
   if (bookingIsCancelledByOwner(status)) return true;
-  return s === 'cancelled' || s === 'canceled';
+  return (
+    s === 'cancelled' ||
+    s === 'canceled' ||
+    s === 'cancelled_by_passenger' ||
+    s === 'canceled_by_passenger' ||
+    s === 'passenger_cancelled' ||
+    s === 'cancelled_by_rider' ||
+    s === 'canceled_by_rider'
+  );
+}
+
+/** Pending/request-like states that are not confirmed seats yet. */
+export function bookingIsPendingLike(status: string | undefined | null): boolean {
+  const s = (status ?? '').trim().toLowerCase();
+  return (
+    s === 'pending' ||
+    s === 'requested' ||
+    s === 'request_pending' ||
+    s === 'awaiting_approval'
+  );
+}
+
+/** Accepted/confirmed states that should count as occupied seats. */
+export function bookingIsAcceptedLike(status: string | undefined | null): boolean {
+  const s = (status ?? '').trim().toLowerCase();
+  return s === 'accepted' || s === 'confirmed' || s === 'booked' || s === 'approved';
 }
 
 /**
@@ -34,15 +59,15 @@ export function effectiveOccupiedSeatsFromBookingRow(b: {
     typeof b.seats === 'number' && Number.isFinite(b.seats) ? Math.max(0, Math.floor(b.seats)) : 0;
   if (seats <= 0) return 0;
   const s = String(b.status ?? '').trim().toLowerCase();
-  if (s === 'pending' || s === 'rejected') return 0;
+  if (bookingIsPendingLike(s) || s === 'rejected') return 0;
   if (bookingIsCancelledByOwner(b.status)) {
     // Backend often keeps `seats` as last booked count for display after full removal — do not count toward capacity.
     if (b.ownerPartialSeatRemoval === true) return seats;
     return 0;
   }
   if (bookingIsCancelled(b.status)) return 0;
-  if (s === 'confirmed' || s === 'accepted') return seats;
-  return seats;
+  if (bookingIsAcceptedLike(s)) return seats;
+  return 0;
 }
 
 /** True if this booking row still holds at least one seat on the ride (for lists / detail). */

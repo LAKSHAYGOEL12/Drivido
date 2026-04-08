@@ -12,8 +12,8 @@ import {
   ActivityIndicator,
   RefreshControl,
   Platform,
-  Alert,
 } from 'react-native';
+import { Alert } from '../../utils/themedAlert';
 import { useNavigation, useRoute, useFocusEffect, type RouteProp } from '@react-navigation/native';
 import type { SearchStackParamList } from '../../navigation/types';
 import { Ionicons } from '@expo/vector-icons';
@@ -49,6 +49,7 @@ import {
   type PlaceRecentFieldType,
 } from '../../services/place-recent-storage';
 import { pickPublisherAvatarUrl } from '../../utils/avatarUrl';
+import RideCardSkeleton from '../../components/rides/RideCardSkeleton';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -109,6 +110,7 @@ function formatPassengerLabel(passengers: string | undefined): string {
   return n === 1 ? '1 passenger' : `${n} passengers`;
 }
 
+
 function normalizeRideItem(raw: Record<string, unknown>): RideListItem {
   const r = raw as Record<string, unknown>;
   const rideDate = toStr(r.rideDate ?? r.ride_date);
@@ -142,6 +144,22 @@ function normalizeRideItem(raw: Record<string, unknown>): RideListItem {
     typeof rawAvail === 'number' && !Number.isNaN(rawAvail)
       ? Math.max(0, Math.floor(rawAvail))
       : undefined;
+  const rawPendingReq =
+    r.pendingRequests ??
+    r.pending_requests ??
+    r.pendingRequestCount ??
+    r.pending_request_count ??
+    r.requestsPending ??
+    r.requests_pending;
+  const pendingRequestsNum =
+    typeof rawPendingReq === 'number' && !Number.isNaN(rawPendingReq)
+      ? Math.max(0, Math.floor(rawPendingReq))
+      : undefined;
+  const rawHasPending = r.hasPendingRequests ?? r.has_pending_requests;
+  let hasPendingRequestsFlag: boolean | undefined;
+  if (typeof rawHasPending === 'boolean') hasPendingRequestsFlag = rawHasPending;
+  else if (rawHasPending === 'true') hasPendingRequestsFlag = true;
+  else if (rawHasPending === 'false') hasPendingRequestsFlag = false;
   const num = (v: unknown): number | undefined => {
     if (typeof v === 'number' && !Number.isNaN(v)) return v;
     if (v != null && v !== '') return Number(v);
@@ -180,6 +198,8 @@ function normalizeRideItem(raw: Record<string, unknown>): RideListItem {
     ...(bookedSeats !== undefined ? { bookedSeats } : {}),
     ...(totalBookings !== undefined ? { totalBookings } : {}),
     ...(availableSeatsNum !== undefined ? { availableSeats: availableSeatsNum } : {}),
+    ...(pendingRequestsNum !== undefined ? { pendingRequests: pendingRequestsNum } : {}),
+    ...(hasPendingRequestsFlag !== undefined ? { hasPendingRequests: hasPendingRequestsFlag } : {}),
     rideDate: outDate,
     rideTime: outTime,
     scheduledDate: scheduledDate || outDate,
@@ -217,6 +237,10 @@ function normalizeRideItem(raw: Record<string, unknown>): RideListItem {
       if (rawVi === 'true') return { viewerIsOwner: true };
       if (rawVi === 'false') return { viewerIsOwner: false };
       return {};
+    })(),
+    ...(function (): { description?: string } {
+      const desc = toStr(r.description ?? r.rideDescription ?? r.ride_description)?.trim();
+      return desc ? { description: desc } : {};
     })(),
     ...(pubAvatar ? { publisherAvatarUrl: pubAvatar } : {}),
   };
@@ -530,6 +554,17 @@ function routeMatchesByCoordinates(
   return passDirectionalConsistencyWithRide(ride, searchFromLat, searchFromLon, searchToLat, searchToLon);
 }
 
+/** Loose pickup/destination string match (same as legacy search before coords-only mode). */
+function routeMatchesByPlaceText(ride: RideListItem, userFrom: string, userTo: string): boolean {
+  const rideFrom = (ride.pickupLocationName ?? ride.from ?? '').trim().toLowerCase();
+  const rideTo = (ride.destinationLocationName ?? ride.to ?? '').trim().toLowerCase();
+  const from = userFrom.trim().toLowerCase();
+  const to = userTo.trim().toLowerCase();
+  const fromOk = !rideFrom || rideFrom.includes(from) || from.includes(rideFrom);
+  const toOk = !rideTo || rideTo.includes(to) || to.includes(rideTo);
+  return fromOk && toOk;
+}
+
 /** Match route: coords → legacy + extra rules; else loose text match. */
 function routeMatches(
   ride: RideListItem,
@@ -539,23 +574,23 @@ function routeMatches(
   searchToCoords: { latitude: number; longitude: number } | null
 ): boolean {
   if (!userFrom.trim() || !userTo.trim()) return true;
-  // When both ride and search have coordinates, use geometry only — no text fallback (avoids opposite-destination false positives).
+  // When both ride and search have coordinates, try geometry first. If it fails, still try text:
+  // geocoded "Ghaziabad"/"Noida" are often city centers while the publisher pinned a sector — 4 km geometry then wrongly hides valid rides.
   if (rideHasCoordinates(ride) && searchFromCoords && searchToCoords) {
-    return routeMatchesByCoordinates(
-      ride,
-      searchFromCoords.latitude,
-      searchFromCoords.longitude,
-      searchToCoords.latitude,
-      searchToCoords.longitude
-    );
+    if (
+      routeMatchesByCoordinates(
+        ride,
+        searchFromCoords.latitude,
+        searchFromCoords.longitude,
+        searchToCoords.latitude,
+        searchToCoords.longitude
+      )
+    ) {
+      return true;
+    }
+    return routeMatchesByPlaceText(ride, userFrom, userTo);
   }
-  const rideFrom = (ride.pickupLocationName ?? ride.from ?? '').trim().toLowerCase();
-  const rideTo = (ride.destinationLocationName ?? ride.to ?? '').trim().toLowerCase();
-  const from = userFrom.trim().toLowerCase();
-  const to = userTo.trim().toLowerCase();
-  const fromOk = !rideFrom || rideFrom.includes(from) || from.includes(rideFrom);
-  const toOk = !rideTo || rideTo.includes(to) || to.includes(rideTo);
-  return fromOk && toOk;
+  return routeMatchesByPlaceText(ride, userFrom, userTo);
 }
 
 type SearchResultsRouteProp = RouteProp<SearchStackParamList, 'SearchResults'>;
@@ -586,6 +621,10 @@ export default function SearchResultsScreen(): React.JSX.Element {
   const [searchFromLon, setSearchFromLon] = useState<number | undefined>(fromLongitude);
   const [searchToLat, setSearchToLat] = useState<number | undefined>(toLatitude);
   const [searchToLon, setSearchToLon] = useState<number | undefined>(toLongitude);
+  const sameRouteWarning =
+    searchFrom.trim().length > 0 &&
+    searchTo.trim().length > 0 &&
+    searchFrom.trim().toLowerCase() === searchTo.trim().toLowerCase();
 
   const [showEditModal, setShowEditModal] = useState(false);
   const [draftFrom, setDraftFrom] = useState(from);
@@ -774,6 +813,7 @@ export default function SearchResultsScreen(): React.JSX.Element {
   /** Only persist after results load successfully — not when tapping Search on the previous screen. */
   const recentSavedSigRef = useRef<string | null>(null);
   useEffect(() => {
+    if (sameRouteWarning) return;
     if (!sessionReady || loading || error) return;
     const sig = `${searchFrom}|${searchTo}|${searchDate}|${passengersForRecent}|${searchFromLat ?? ''}|${searchFromLon ?? ''}|${searchToLat ?? ''}|${searchToLon ?? ''}`;
     if (recentSavedSigRef.current === sig) return;
@@ -794,6 +834,7 @@ export default function SearchResultsScreen(): React.JSX.Element {
       recentUserKey
     );
   }, [
+    sameRouteWarning,
     sessionReady,
     loading,
     error,
@@ -859,8 +900,6 @@ export default function SearchResultsScreen(): React.JSX.Element {
         ? String((e as { message: unknown }).message)
         : 'Failed to load rides.';
       setError(message);
-      setRides([]);
-      setMyConfirmedRideIds(new Set());
     } finally {
       setLoading(false);
     }
@@ -905,8 +944,15 @@ export default function SearchResultsScreen(): React.JSX.Element {
   }, [runFetchRides]);
 
   React.useEffect(() => {
+    if (sameRouteWarning) {
+      setLoading(false);
+      setError(null);
+      setRides([]);
+      setMyConfirmedRideIds(new Set());
+      return;
+    }
     fetchRides();
-  }, [fetchRides]);
+  }, [sameRouteWarning, fetchRides]);
 
   React.useEffect(() => {
     return () => {
@@ -1014,10 +1060,19 @@ export default function SearchResultsScreen(): React.JSX.Element {
         </TouchableOpacity>
       </View>
 
-      {loading && rides.length === 0 ? (
+      {sameRouteWarning ? (
         <View style={styles.center}>
-          <ActivityIndicator size="large" color={COLORS.primary} />
-          <Text style={styles.loadingText}>Finding rides…</Text>
+          <Ionicons name="warning-outline" size={48} color={COLORS.warning} />
+          <Text style={styles.emptyTitle}>Invalid route</Text>
+          <Text style={styles.emptySubtitle}>
+            Pickup and destination are same, select different destination.
+          </Text>
+        </View>
+      ) : loading && rides.length === 0 ? (
+        <View style={styles.skeletonListWrap}>
+          {Array.from({ length: 4 }).map((_, idx) => (
+            <RideCardSkeleton key={`ride-skeleton-${idx}`} />
+          ))}
         </View>
       ) : error && rides.length === 0 ? (
         <View style={styles.center}>
@@ -1028,66 +1083,74 @@ export default function SearchResultsScreen(): React.JSX.Element {
           </TouchableOpacity>
         </View>
       ) : (
-        <FlatList
-          data={rides}
-          keyExtractor={(item) => item.id}
-          contentContainerStyle={rides.length === 0 ? styles.emptyList : styles.list}
-          refreshControl={
-            <RefreshControl refreshing={loading} onRefresh={fetchRides} colors={[COLORS.primary]} />
-          }
-          ListEmptyComponent={
-            <View style={styles.empty}>
-              <Ionicons name="car-outline" size={56} color={COLORS.textMuted} />
-              <Text style={styles.emptyTitle}>No rides found</Text>
-              <Text style={styles.emptySubtitle}>No rides match this date and route. Try another date or locations.</Text>
+        <>
+          {error ? (
+            <View style={styles.staleBanner}>
+              <Ionicons name="cloud-offline-outline" size={14} color={COLORS.warning} />
+              <Text style={styles.staleBannerText}>{error}</Text>
             </View>
-          }
-          renderItem={({ item }) => {
-            const isOwner = isViewerRideOwner(item, currentUserId);
-            const hasMyBooking =
-              myConfirmedRideIds.has(item.id) ||
-              ((item.bookings ?? []).some(
-                (b) => (b.userId ?? '').trim() === currentUserId && !bookingIsCancelled(b.status)
-              )) ||
-              Boolean(
-                item.myBookingStatus &&
-                  String(item.myBookingStatus).trim() &&
-                  !bookingIsCancelled(String(item.myBookingStatus))
-              );
-            const seatFullBlocked =
-              !isOwner && isRideSeatsFull(item) && !hasMyBooking;
-            return (
-              <RideListCard
-                ride={item}
-                currentUserId={currentUserId}
-                currentUserName={currentUserName}
-                viewerAvatarUrl={viewerAvatarUrl}
-                seatFullUnavailable={seatFullBlocked}
-                onPress={() => {
-                  if (seatFullBlocked) {
-                    showToast({
-                      title: 'Ride full',
-                      message: 'All seats on this ride are booked.',
-                      variant: 'info',
+          ) : null}
+          <FlatList
+            data={rides}
+            keyExtractor={(item) => item.id}
+            contentContainerStyle={rides.length === 0 ? styles.emptyList : styles.list}
+            refreshControl={
+              <RefreshControl refreshing={loading} onRefresh={fetchRides} colors={[COLORS.primary]} />
+            }
+            ListEmptyComponent={
+              <View style={styles.empty}>
+                <Ionicons name="car-outline" size={56} color={COLORS.textMuted} />
+                <Text style={styles.emptyTitle}>No rides found</Text>
+                <Text style={styles.emptySubtitle}>No rides match this date and route. Try another date or locations.</Text>
+              </View>
+            }
+            renderItem={({ item }) => {
+              const isOwner = isViewerRideOwner(item, currentUserId);
+              const hasMyBooking =
+                myConfirmedRideIds.has(item.id) ||
+                ((item.bookings ?? []).some(
+                  (b) => (b.userId ?? '').trim() === currentUserId && !bookingIsCancelled(b.status)
+                )) ||
+                Boolean(
+                  item.myBookingStatus &&
+                    String(item.myBookingStatus).trim() &&
+                    !bookingIsCancelled(String(item.myBookingStatus))
+                );
+              const seatFullBlocked =
+                !isOwner && isRideSeatsFull(item) && !hasMyBooking;
+              return (
+                <RideListCard
+                  ride={item}
+                  currentUserId={currentUserId}
+                  currentUserName={currentUserName}
+                  viewerAvatarUrl={viewerAvatarUrl}
+                  seatFullUnavailable={seatFullBlocked}
+                  onPress={() => {
+                    if (seatFullBlocked) {
+                      showToast({
+                        title: 'Ride full',
+                        message: 'All seats on this ride are booked.',
+                        variant: 'info',
+                      });
+                      return;
+                    }
+                    navigation.navigate('RideDetail', {
+                      ride: item,
+                      passengerSearch: {
+                        from: searchFrom,
+                        to: searchTo,
+                        fromLatitude: searchFromLat,
+                        fromLongitude: searchFromLon,
+                        toLatitude: searchToLat,
+                        toLongitude: searchToLon,
+                      },
                     });
-                    return;
-                  }
-                  navigation.navigate('RideDetail', {
-                    ride: item,
-                    passengerSearch: {
-                      from: searchFrom,
-                      to: searchTo,
-                      fromLatitude: searchFromLat,
-                      fromLongitude: searchFromLon,
-                      toLatitude: searchToLat,
-                      toLongitude: searchToLon,
-                    },
-                  });
-                }}
-              />
-            );
-          }}
-        />
+                  }}
+                />
+              );
+            }}
+          />
+        </>
       )}
 
       <Modal visible={showEditModal} transparent animationType="none" onRequestClose={closeEditSheet}>
@@ -1420,6 +1483,25 @@ const styles = StyleSheet.create({
     color: COLORS.error,
     textAlign: 'center',
   },
+  staleBanner: {
+    marginHorizontal: 16,
+    marginTop: 8,
+    marginBottom: 2,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 10,
+    backgroundColor: '#fff7ed',
+    borderWidth: 1,
+    borderColor: '#fed7aa',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  staleBannerText: {
+    flex: 1,
+    fontSize: 12,
+    color: COLORS.textSecondary,
+  },
   retryButton: {
     marginTop: 16,
     paddingVertical: 12,
@@ -1436,6 +1518,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 4,
     paddingBottom: 32,
+  },
+  skeletonListWrap: {
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 24,
   },
   topHeader: {
     marginHorizontal: 16,

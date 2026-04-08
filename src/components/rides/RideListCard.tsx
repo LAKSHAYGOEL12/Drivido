@@ -11,15 +11,18 @@ import {
   getRouteDurationMinutes,
   getRideTotalBookingCount,
   isRideCancelledByOwner,
+  isViewerOwnerStrict,
   isViewerRideOwner,
+  readPendingSeatRequestCount,
+  userIdsMatch,
 } from '../../utils/rideDisplay';
 import {
-  bookingIsCancelled,
+  bookingIsPendingLike,
   bookingIsCancelledByOwner,
   bookingRowHoldsOccupiedSeats,
   effectiveOccupiedSeatsFromBookingRow,
 } from '../../utils/bookingStatus';
-import { getRideAvailabilityShort } from '../../utils/rideSeats';
+import { getRideAvailabilityShort, isRideSeatsFull } from '../../utils/rideSeats';
 import { bookingPassengerDisplayName, ridePublisherDisplayName } from '../../utils/displayNames';
 import UserAvatar from '../common/UserAvatar';
 
@@ -37,6 +40,8 @@ export type RideListCardProps = {
   showCancelledBadge?: boolean;
   /** Past rides: show “Rejected” when owner rejected passenger request. */
   showRejectedBadge?: boolean;
+  /** Optional badge label override for rejected state. */
+  rejectedBadgeText?: string;
   /** Past rides (passenger): driver removed you from this booking. */
   showRemovedByDriverBadge?: boolean;
   /** Past rides: show “Completed” after destination + 1h window (not cancelled). */
@@ -54,6 +59,8 @@ export type RideListCardProps = {
    * no “Had N passengers” (uses active bookings / seat count only).
    */
   myRidesOwnerSummary?: boolean;
+  /** Past owner cards: keep owner identity avatar/name instead of passenger avatar. */
+  ownerUseSelfIdentity?: boolean;
 };
 
 /** One-line preview for lists; full names only on ride detail. */
@@ -72,6 +79,7 @@ export default function RideListCard({
   viewerAvatarUrl,
   showCancelledBadge,
   showRejectedBadge,
+  rejectedBadgeText,
   showRemovedByDriverBadge,
   showCompletedBadge,
   showRatePrompt,
@@ -79,6 +87,7 @@ export default function RideListCard({
   seatFullUnavailable,
   hideSeatAvailability,
   myRidesOwnerSummary,
+  ownerUseSelfIdentity,
 }: RideListCardProps): React.JSX.Element {
   const showSeatAvailabilityRow = !hideSeatAvailability && ride.seats != null;
   const showFullUnavailableUi = Boolean(seatFullUnavailable && !hideSeatAvailability);
@@ -88,6 +97,10 @@ export default function RideListCard({
   const dest = placePreview(destFull, 40);
   const driverName = ridePublisherDisplayName(ride);
   const isOwner = isViewerRideOwner(ride, currentUserId);
+  /** Publisher = same `userId` as viewer, or API `viewerIsOwner` — so pending shows on any list, not only My rides. */
+  const isRidePublisherViewer =
+    Boolean(currentUserId?.trim()) &&
+    (userIdsMatch(currentUserId, ride.userId) || isViewerOwnerStrict(ride));
   const bookings = ride.bookings ?? [];
   const bookingModeSource = ride as RideListItem & {
     bookingMode?: string;
@@ -105,11 +118,10 @@ export default function RideListCard({
       )
   ).trim().toLowerCase();
   const isRequestBookingMode = bookingModeRaw === 'request';
-  const pendingBookings = bookings.filter((b) => String(b.status ?? '').trim().toLowerCase() === 'pending');
-  const pendingRequestCount = pendingBookings.length;
+  const pendingRequestCount = readPendingSeatRequestCount(ride, bookings);
   const confirmedBookings = bookings.filter((b) => {
     const s = String(b.status ?? '').trim().toLowerCase();
-    if (s === 'pending' || s === 'rejected') return false;
+    if (bookingIsPendingLike(s) || s === 'rejected') return false;
     return bookingRowHoldsOccupiedSeats(b);
   });
   const activePassengerCount = confirmedBookings.length;
@@ -119,21 +131,28 @@ export default function RideListCard({
   );
   const totalBookingsCount = getRideTotalBookingCount(ride);
   const ownerMyRidesSeatOnly = Boolean(isOwner && myRidesOwnerSummary);
-  /** Request-mode owner with ≥1 pending booking: card shows only this line (no passenger names / duplicate status). */
-  const ownerHasPendingRequests =
-    isOwner && isRequestBookingMode && pendingRequestCount > 0;
-  const pendingRequestPrimaryLine =
-    pendingRequestCount === 1 ? 'Pending request' : `${pendingRequestCount} pending requests`;
+  const ownerHasPendingRequests = isRidePublisherViewer && pendingRequestCount > 0;
 
-  const displayName = ownerHasPendingRequests
-    ? pendingRequestPrimaryLine
-    : ownerMyRidesSeatOnly
-      ? bookedSeats > 0
-        ? `${bookedSeats} seat${bookedSeats !== 1 ? 's' : ''} booked`
-        : 'No seats booked yet'
-      : isOwner
-        ? formatOwnerRideCardTitle(ride)
-        : driverName;
+  const displayName = (() => {
+    if (ownerHasPendingRequests) return 'Pending request';
+    if (ownerMyRidesSeatOnly) {
+      if (isRequestBookingMode) {
+        if (isRideSeatsFull(ride)) return 'Ride full';
+        if (bookedSeats > 0) {
+          return `${bookedSeats} seat${bookedSeats !== 1 ? 's' : ''} booked`;
+        }
+        return 'No seats booked yet';
+      }
+      if (isRideSeatsFull(ride)) return 'Ride full';
+      if (bookedSeats > 0) {
+        return `${bookedSeats} seat${bookedSeats !== 1 ? 's' : ''} booked`;
+      }
+      return 'No seats booked yet';
+    }
+    if (isOwner && ownerUseSelfIdentity) return currentUserName || 'You';
+    if (isOwner) return formatOwnerRideCardTitle(ride);
+    return driverName;
+  })();
   const displaySubtitle = ownerHasPendingRequests
     ? ''
     : ownerMyRidesSeatOnly
@@ -162,12 +181,16 @@ export default function RideListCard({
   const passengerAvatarUrl = firstBookingForAvatar?.avatarUrl?.trim();
   const driverAvatarUrl = ride.publisherAvatarUrl?.trim();
   const avatarImageUri = isOwner
-    ? firstBookingForAvatar
+    ? ownerUseSelfIdentity
+      ? viewerAvatarUrl?.trim()
+      : firstBookingForAvatar
       ? passengerAvatarUrl
       : viewerAvatarUrl?.trim()
     : driverAvatarUrl;
   const avatarDisplayName = isOwner
-    ? firstBookingForAvatar
+    ? ownerUseSelfIdentity
+      ? currentUserName || 'You'
+      : firstBookingForAvatar
       ? bookingPassengerDisplayName(firstBookingForAvatar)
       : currentUserName || 'You'
     : driverName;
@@ -209,7 +232,7 @@ export default function RideListCard({
           ) : null}
           {showRejectedBadge ? (
             <View style={styles.rejectedBadge}>
-              <Text style={styles.rejectedBadgeText}>Rejected</Text>
+              <Text style={styles.rejectedBadgeText}>{(rejectedBadgeText ?? 'Rejected').trim()}</Text>
             </View>
           ) : null}
           {showRemovedByDriverBadge ? (
@@ -280,7 +303,7 @@ export default function RideListCard({
         <View style={styles.driverText}>
           {isOwner && !ownerMyRidesSeatOnly && !String(displayName).trim() ? null : (
             <Text
-              style={styles.driverName}
+              style={[styles.driverName, ownerHasPendingRequests && styles.driverNamePendingRequest]}
               numberOfLines={isOwner && !ownerMyRidesSeatOnly ? 2 : 1}
               ellipsizeMode="tail"
             >
@@ -502,7 +525,7 @@ const styles = StyleSheet.create({
     height: 10,
     borderRadius: 5,
     borderWidth: 2,
-    borderColor: COLORS.primary,
+    borderColor: COLORS.error,
     backgroundColor: COLORS.white,
   },
   hollowDot: {
@@ -556,6 +579,12 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
     color: COLORS.text,
+  },
+  driverNamePendingRequest: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: COLORS.primary,
+    letterSpacing: 0.2,
   },
   driverVehicle: {
     fontSize: 11,

@@ -17,6 +17,9 @@ import {
 } from '../../services/tripsAggregation';
 import { ratingQualitativeColor, ratingQualitativeLabel } from '../../utils/ratingQualitativeLabel';
 import { formatMemberSinceLabel } from '../../utils/formatMemberSinceLabel';
+import { DEACTIVATED_ACCOUNT_LABEL } from '../../utils/deactivatedAccount';
+import RidePreferenceChips from '../../components/profile/RidePreferenceChips';
+import { normalizeRidePreferenceIds } from '../../constants/ridePreferences';
 
 type UserProfileEntryRoute = RouteProp<ProfileStackParamList, 'ProfileEntry'>;
 
@@ -26,8 +29,14 @@ export default function UserProfileEntry(): React.JSX.Element {
   const { user } = useAuth();
 
   const targetUserId = route.params?.userId?.trim() ?? '';
-  const targetDisplayName = route.params?.displayName?.trim() ?? 'User';
+  const peerDeactivatedFromRoute = route.params?.peerDeactivated === true;
+  const targetDisplayName = peerDeactivatedFromRoute
+    ? DEACTIVATED_ACCOUNT_LABEL
+    : route.params?.displayName?.trim() ?? 'User';
   const isSelf = Boolean(user?.id?.trim() && targetUserId === user.id.trim());
+  const [subjectDeactivatedFromApi, setSubjectDeactivatedFromApi] = useState(false);
+  const showDeactivatedOther =
+    !isSelf && (peerDeactivatedFromRoute || subjectDeactivatedFromApi);
 
   const [loading, setLoading] = useState(true);
   const [avgRating, setAvgRating] = useState(0);
@@ -38,14 +47,17 @@ export default function UserProfileEntry(): React.JSX.Element {
   const [tripsCompletedThisMonth, setTripsCompletedThisMonth] = useState(0);
   const [memberSinceLabel, setMemberSinceLabel] = useState('—');
   const [tripsBreakdownVisible, setTripsBreakdownVisible] = useState(false);
+  const [subjectBioFromApi, setSubjectBioFromApi] = useState('');
+  const [subjectRidePrefsFromApi, setSubjectRidePrefsFromApi] = useState<string[]>([]);
   const prevTripsSubjectIdRef = useRef<string | null>(null);
 
   const [fetchedSubjectAvatar, setFetchedSubjectAvatar] = useState<string | undefined>();
-  const headerPhotoUri =
-    (route.params?.avatarUrl ?? '').trim() ||
-    (isSelf ? (user?.avatarUrl ?? '').trim() : '') ||
-    (fetchedSubjectAvatar ?? '').trim() ||
-    undefined;
+  const headerPhotoUri = showDeactivatedOther
+    ? undefined
+    : (route.params?.avatarUrl ?? '').trim() ||
+      (isSelf ? (user?.avatarUrl ?? '').trim() : '') ||
+      (fetchedSubjectAvatar ?? '').trim() ||
+      undefined;
 
   useFocusEffect(
     useCallback(() => {
@@ -59,6 +71,25 @@ export default function UserProfileEntry(): React.JSX.Element {
         setTripsCancelled(0);
         setTripsCompletedThisMonth(0);
         setMemberSinceLabel('—');
+        setSubjectDeactivatedFromApi(false);
+        setSubjectBioFromApi('');
+        setSubjectRidePrefsFromApi([]);
+        return () => {};
+      }
+
+      if (peerDeactivatedFromRoute && !isSelf) {
+        setSubjectDeactivatedFromApi(false);
+        setFetchedSubjectAvatar(undefined);
+        setAvgRating(0);
+        setTotalRatings(0);
+        setTripsLoading(false);
+        setTripsCompleted(0);
+        setTripsCancelled(0);
+        setTripsCompletedThisMonth(0);
+        setMemberSinceLabel('—');
+        setSubjectBioFromApi('');
+        setSubjectRidePrefsFromApi([]);
+        setLoading(false);
         return () => {};
       }
 
@@ -70,9 +101,29 @@ export default function UserProfileEntry(): React.JSX.Element {
         try {
           const summary = await getUserRatingsSummary(targetUserId);
           if (cancelled) return;
+          if (summary.subjectDeactivated && !isSelf) {
+            setSubjectDeactivatedFromApi(true);
+            setSubjectBioFromApi('');
+            setSubjectRidePrefsFromApi([]);
+            setAvgRating(0);
+            setTotalRatings(0);
+            setFetchedSubjectAvatar(undefined);
+            setMemberSinceLabel('—');
+            setTripsLoading(false);
+            setTripsCompleted(0);
+            setTripsCancelled(0);
+            setTripsCompletedThisMonth(0);
+            setLoading(false);
+            return;
+          }
+          setSubjectDeactivatedFromApi(false);
           setAvgRating(summary.avgRating ?? 0);
           setTotalRatings(summary.totalRatings ?? 0);
           setFetchedSubjectAvatar(summary.subjectAvatarUrl);
+          setSubjectBioFromApi((summary.subjectBio ?? '').trim());
+          setSubjectRidePrefsFromApi(
+            normalizeRidePreferenceIds(summary.subjectRidePreferences ?? [])
+          );
           setMemberSinceLabel(
             formatMemberSinceLabel(
               summary.subjectCreatedAt ?? (isSelf ? user?.createdAt : undefined)
@@ -80,11 +131,15 @@ export default function UserProfileEntry(): React.JSX.Element {
           );
         } catch {
           if (cancelled) return;
+          setSubjectDeactivatedFromApi(false);
           setAvgRating(0);
           setTotalRatings(0);
           setFetchedSubjectAvatar(undefined);
+          setSubjectBioFromApi('');
+          setSubjectRidePrefsFromApi([]);
           setMemberSinceLabel(formatMemberSinceLabel(isSelf ? user?.createdAt : undefined));
         }
+        if (cancelled) return;
         const tripsSubjectChanged = prevTripsSubjectIdRef.current !== targetUserId;
         prevTripsSubjectIdRef.current = targetUserId;
         if (tripsSubjectChanged) {
@@ -99,7 +154,7 @@ export default function UserProfileEntry(): React.JSX.Element {
             const { completed, cancelled: cx } = tripCountsFromAggregate(agg);
             setTripsCompleted(completed);
             setTripsCancelled(cx);
-            setTripsCompletedThisMonth(Math.max(0, agg.completedThisMonth ?? 0));
+            setTripsCompletedThisMonth(Math.max(0, agg?.completedThisMonth ?? 0));
           }
         } catch {
           if (!cancelled) {
@@ -116,7 +171,7 @@ export default function UserProfileEntry(): React.JSX.Element {
       return () => {
         cancelled = true;
       };
-    }, [targetUserId, isSelf, user?.id, user?.createdAt])
+    }, [targetUserId, isSelf, user?.id, user?.createdAt, peerDeactivatedFromRoute])
   );
 
   const handleBack = () => {
@@ -137,6 +192,31 @@ export default function UserProfileEntry(): React.JSX.Element {
       <View style={styles.loaderWrap}>
         <ActivityIndicator size="large" color={COLORS.primary} />
       </View>
+    );
+  }
+
+  if (showDeactivatedOther) {
+    return (
+      <ScrollView style={styles.screen} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+        <View style={styles.headerCard}>
+          <View style={styles.headerTopRow}>
+            <Pressable style={styles.circleIconButton} accessibilityRole="button" onPress={handleBack}>
+              <Ionicons name="arrow-back" size={18} color={COLORS.textSecondary} />
+            </Pressable>
+            <View style={styles.headerTitleWrap}>
+              <Text style={styles.headerTitle}>Profile</Text>
+            </View>
+            <View style={styles.headerRightSpacer} />
+          </View>
+          <View style={styles.avatarWrap}>
+            <UserAvatar uri={undefined} name={DEACTIVATED_ACCOUNT_LABEL} size={72} />
+          </View>
+          <Text style={styles.name}>{DEACTIVATED_ACCOUNT_LABEL}</Text>
+          <Text style={styles.bioMuted}>
+            This account is no longer active. Ratings, trip history, and contact details are hidden.
+          </Text>
+        </View>
+      </ScrollView>
     );
   }
 
@@ -164,7 +244,28 @@ export default function UserProfileEntry(): React.JSX.Element {
         </View>
 
         <Text style={styles.name}>{targetDisplayName}</Text>
-        <Text style={styles.bio}>Top-rated urban navigator and tech enthusiast.</Text>
+        {(() => {
+          const bioLine = isSelf
+            ? (user?.bio ?? '').trim() || subjectBioFromApi
+            : subjectBioFromApi;
+          if (bioLine) {
+            return <Text style={styles.bio}>{bioLine}</Text>;
+          }
+          if (isSelf) {
+            return (
+              <Text style={styles.bioHint}>Add a short description in Edit profile.</Text>
+            );
+          }
+          return null;
+        })()}
+        <RidePreferenceChips
+          ids={
+            isSelf
+              ? normalizeRidePreferenceIds(user?.ridePreferences ?? subjectRidePrefsFromApi)
+              : subjectRidePrefsFromApi
+          }
+          style={styles.ridePrefChips}
+        />
       </View>
 
       <View style={styles.statsCard}>
@@ -351,6 +452,30 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     fontSize: 14,
     color: COLORS.textSecondary,
+    lineHeight: 20,
+    paddingHorizontal: 8,
+  },
+  bioHint: {
+    marginTop: 4,
+    textAlign: 'center',
+    fontSize: 14,
+    color: COLORS.textMuted,
+    fontStyle: 'italic',
+    lineHeight: 20,
+    paddingHorizontal: 12,
+  },
+  ridePrefChips: {
+    marginTop: 12,
+    justifyContent: 'center',
+    paddingHorizontal: 4,
+  },
+  bioMuted: {
+    marginTop: 8,
+    textAlign: 'center',
+    fontSize: 14,
+    lineHeight: 20,
+    color: COLORS.textSecondary,
+    paddingHorizontal: 8,
   },
   statsCard: {
     backgroundColor: COLORS.white,

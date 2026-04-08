@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Keyboard,
   KeyboardAvoidingView,
   Platform,
@@ -13,8 +12,9 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { Alert } from '../../utils/themedAlert';
 import { Ionicons } from '@expo/vector-icons';
-import { useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../contexts/AuthContext';
@@ -22,9 +22,12 @@ import { COLORS } from '../../constants/colors';
 import type { ProfileStackParamList } from '../../navigation/types';
 import {
   patchUserPhoneOnly,
+  patchUserProfileBio,
+  patchUserRidePreferences,
   patchUserVehicleProfile,
   clearLegacyUserVehicleProfile,
 } from '../../services/userProfile';
+import { RIDE_PREFERENCE_OPTIONS, normalizeRidePreferenceIds } from '../../constants/ridePreferences';
 import { createUserVehicle, deleteUserVehicle, updateUserVehicle } from '../../services/userVehicles';
 import {
   validation,
@@ -33,6 +36,7 @@ import {
   clampPhoneNationalInput,
 } from '../../constants/validation';
 import { vehiclesFromUser } from '../../utils/userVehicle';
+import { showToast } from '../../utils/toast';
 
 /** Scroll padding so last fields clear the fixed save bar (~footer + spacing). */
 const SCROLL_PADDING_ABOVE_FOOTER = 120;
@@ -93,12 +97,18 @@ export default function EditProfileScreen(): React.JSX.Element {
   const [phoneNational, setPhoneNational] = useState(() =>
     clampPhoneNationalInput(normalizePhoneForValidation(user?.phone ?? ''))
   );
+  const [profileBio, setProfileBio] = useState(() => (user?.bio ?? '').trim());
+  const [ridePrefs, setRidePrefs] = useState<string[]>(() =>
+    normalizeRidePreferenceIds(user?.ridePreferences)
+  );
   const [rows, setRows] = useState<VehicleFormRow[]>(() => buildInitialRows(user));
   const [saving, setSaving] = useState(false);
   const [phoneError, setPhoneError] = useState<string | undefined>();
+  const [bioError, setBioError] = useState<string | undefined>();
   /** Lifts the save bar above the keyboard; reset to 0 on hide avoids stuck gap from KeyboardAvoidingView. */
   const [keyboardBottomInset, setKeyboardBottomInset] = useState(0);
   const scrollRef = useRef<ScrollView>(null);
+  const [phoneFocused, setPhoneFocused] = useState(false);
   /** Y of each vehicle card top inside scroll content (from onLayout). */
   const vehicleCardY = useRef<Record<string, number>>({});
 
@@ -118,11 +128,39 @@ export default function EditProfileScreen(): React.JSX.Element {
     }
   }, []);
 
+  const scrollPhoneIntoView = useCallback(() => {
+    const run = () => scrollRef.current?.scrollToEnd({ animated: true });
+    requestAnimationFrame(run);
+    setTimeout(run, Platform.OS === 'ios' ? 140 : 100);
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      setProfileBio((user?.bio ?? '').trim());
+      setRidePrefs(normalizeRidePreferenceIds(user?.ridePreferences));
+      setBioError(undefined);
+    }, [user?.bio, user?.ridePreferences])
+  );
+
+  const toggleRidePreference = useCallback((id: string) => {
+    setRidePrefs((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return normalizeRidePreferenceIds([...next]);
+    });
+  }, []);
+
   useEffect(() => {
     const show = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
     const hide = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
     const subShow = Keyboard.addListener(show, (e) => {
       setKeyboardBottomInset(e.endCoordinates?.height ?? 0);
+      if (phoneFocused) {
+        requestAnimationFrame(() => {
+          scrollRef.current?.scrollToEnd({ animated: true });
+        });
+      }
     });
     const subHide = Keyboard.addListener(hide, () => {
       setKeyboardBottomInset(0);
@@ -149,7 +187,7 @@ export default function EditProfileScreen(): React.JSX.Element {
       if (!canShowVehicleDelete(r, rows) || saving) return;
       Alert.alert(
         'Remove vehicle',
-        'Remove this vehicle from your profile? You can add another one later.',
+        'Remove this vehicle from your profile?',
         [
           { text: 'Cancel', style: 'cancel' },
           {
@@ -171,8 +209,8 @@ export default function EditProfileScreen(): React.JSX.Element {
                   removeVehicleFromState(r.key);
                   await refreshUser();
                 } catch (e) {
-                  const msg = e instanceof Error ? e.message : 'Could not remove vehicle.';
-                  Alert.alert('Remove failed', msg);
+                  const msg = e instanceof Error ? e.message : 'Could not remove vehicle. Please try again.';
+                  Alert.alert('Couldn’t remove vehicle', msg);
                 } finally {
                   setSaving(false);
                 }
@@ -187,8 +225,13 @@ export default function EditProfileScreen(): React.JSX.Element {
 
   const onSave = async () => {
     setPhoneError(undefined);
+    setBioError(undefined);
     if (!validation.phoneNational(phoneNational)) {
       setPhoneError(validationErrors.phone);
+      return;
+    }
+    if (!validation.profileBio(profileBio)) {
+      setBioError(validationErrors.profileBio);
       return;
     }
 
@@ -201,13 +244,13 @@ export default function EditProfileScreen(): React.JSX.Element {
           if (!m || !p) {
             Alert.alert(
               'Vehicle',
-              'Enter both vehicle name and license plate, or leave all fields empty to skip adding a vehicle.'
+              'Enter both vehicle model and plate, or leave all fields empty.'
             );
             return;
           }
         }
       } else if (!m || !p) {
-        Alert.alert('Vehicle', 'Enter vehicle name and license plate for each saved vehicle.');
+        Alert.alert('Vehicle', 'Enter vehicle model and plate for each saved vehicle.');
         return;
       }
     }
@@ -218,6 +261,13 @@ export default function EditProfileScreen(): React.JSX.Element {
       await patchUserPhoneOnly(phoneNational);
       const national = clampPhoneNationalInput(phoneNational);
       patchUser({ phone: national });
+
+      await patchUserProfileBio(profileBio);
+      patchUser({ bio: profileBio.trim() });
+
+      const prefsNormalized = normalizeRidePreferenceIds(ridePrefs);
+      await patchUserRidePreferences(prefsNormalized);
+      patchUser({ ridePreferences: prefsNormalized });
 
       for (const r of rows) {
         const m = r.vehicleModel.trim();
@@ -241,15 +291,44 @@ export default function EditProfileScreen(): React.JSX.Element {
       }
 
       await refreshUser();
+      showToast({
+        variant: 'success',
+        title: 'Profile updated',
+        message: 'Your changes have been saved.',
+      });
       navigation.goBack();
     } catch (e) {
+      const errObj = e as {
+        message?: unknown;
+        status?: unknown;
+        data?: { code?: unknown; message?: unknown; error?: unknown } | unknown;
+      };
+      const rawMsg =
+        e instanceof Error
+          ? e.message
+          : typeof errObj?.message === 'string'
+            ? errObj.message
+            : String(e ?? '');
+      const status = typeof errObj?.status === 'number' ? errObj.status : undefined;
+      const data = errObj?.data && typeof errObj.data === 'object' ? (errObj.data as Record<string, unknown>) : null;
+      const code = typeof data?.code === 'string' ? data.code.toLowerCase() : '';
+      const low = rawMsg.toLowerCase();
+      const duplicatePhone =
+        status === 409 ||
+        code.includes('phone') ||
+        code.includes('duplicate') ||
+        (low.includes('phone') && (low.includes('already') || low.includes('duplicate'))) ||
+        (low.includes('e11000') && low.includes('phone')) ||
+        low.includes('duplicate key');
       const msg =
         e instanceof Error && e.message === 'INVALID_PHONE'
           ? validationErrors.phone
-          : e instanceof Error
-            ? e.message
+          : duplicatePhone
+            ? 'This phone number already exists.'
+            : e instanceof Error
+              ? e.message
             : 'Try again.';
-      Alert.alert('Could not save', msg);
+      Alert.alert('Couldn’t save changes', msg);
     } finally {
       setSaving(false);
     }
@@ -290,30 +369,63 @@ export default function EditProfileScreen(): React.JSX.Element {
             keyboardDismissMode="on-drag"
             showsVerticalScrollIndicator={false}
           >
-        <Text style={styles.hint}>
-          You can update your phone number and vehicle details. Name, email, and date of birth are not editable here.
-        </Text>
+        <Text style={styles.sectionGroupEyebrow}>Public profile</Text>
+        <Text style={styles.sectionLabel}>About you</Text>
+        <Text style={styles.fieldHelp}>Optional. Shown on your profile.</Text>
+        <TextInput
+          style={styles.bioInput}
+          value={profileBio}
+          onChangeText={(t) => {
+            setProfileBio(t);
+            setBioError(undefined);
+          }}
+          placeholder="A short line about you — driving style, interests, or how you use Drivido."
+          placeholder="Write a short bio."
+          placeholderTextColor={COLORS.textMuted}
+          multiline
+          textAlignVertical="top"
+          maxLength={300}
+          editable={!saving}
+        />
+        <Text style={styles.charCount}>{profileBio.length}/300</Text>
+        {bioError ? <Text style={styles.errorText}>{bioError}</Text> : null}
 
-        <Text style={styles.sectionLabel}>Phone</Text>
-        <View style={styles.inputWrap}>
-          <Text style={styles.dial}>+91</Text>
-          <TextInput
-            style={styles.input}
-            value={phoneNational}
-            onChangeText={(t) => {
-              setPhoneNational(clampPhoneNationalInput(t));
-              setPhoneError(undefined);
-            }}
-            placeholder="10-digit mobile"
-            placeholderTextColor={COLORS.textMuted}
-            keyboardType="number-pad"
-            maxLength={10}
-            editable={!saving}
-          />
+        <Text style={[styles.sectionLabel, styles.sectionLabelSpaced]}>Ride preferences</Text>
+        <Text style={styles.fieldHelp}>Optional tags shown on your profile.</Text>
+        <View style={styles.prefChipWrap}>
+          {RIDE_PREFERENCE_OPTIONS.map((o) => {
+            const on = ridePrefs.includes(o.id);
+            return (
+              <Pressable
+                key={o.id}
+                onPress={() => toggleRidePreference(o.id)}
+                disabled={saving}
+                style={({ pressed }) => [
+                  styles.prefChip,
+                  on && styles.prefChipOn,
+                  pressed && !saving && styles.prefChipPressed,
+                ]}
+                accessibilityRole="checkbox"
+                accessibilityState={{ checked: on }}
+                accessibilityLabel={o.label}
+              >
+                <Ionicons
+                  name={o.icon}
+                  size={16}
+                  color={on ? COLORS.white : COLORS.primary}
+                />
+                <Text style={[styles.prefChipLabel, on && styles.prefChipLabelOn]}>{o.label}</Text>
+              </Pressable>
+            );
+          })}
         </View>
-        {phoneError ? <Text style={styles.errorText}>{phoneError}</Text> : null}
 
-        <Text style={[styles.sectionLabel, styles.sectionLabelSpaced]}>Vehicles</Text>
+        <View style={styles.sectionDivider} />
+
+        <Text style={styles.sectionGroupEyebrow}>Vehicles</Text>
+        <Text style={[styles.fieldHelp, styles.fieldHelpAfterEyebrow]}>
+          Vehicles used when you publish rides (up to two).
+        </Text>
         {rows.map((r, index) => (
           <View
             key={r.key}
@@ -350,7 +462,7 @@ export default function EditProfileScreen(): React.JSX.Element {
               value={r.vehicleModel}
               onChangeText={(t) => updateRow(r.key, { vehicleModel: t })}
               onFocus={() => scrollFieldIntoView(r.key, 'model')}
-              placeholder="Toyota Innova"
+              placeholder="Vehicle model"
               placeholderTextColor={COLORS.textMuted}
               editable={!saving}
             />
@@ -362,7 +474,7 @@ export default function EditProfileScreen(): React.JSX.Element {
                   value={r.licensePlate}
                   onChangeText={(t) => updateRow(r.key, { licensePlate: t })}
                   onFocus={() => scrollFieldIntoView(r.key, 'plate')}
-                  placeholder="KA01AB1234"
+                  placeholder="License plate"
                   placeholderTextColor={COLORS.textMuted}
                   autoCapitalize="characters"
                   editable={!saving}
@@ -383,6 +495,33 @@ export default function EditProfileScreen(): React.JSX.Element {
             </View>
           </View>
         ))}
+
+        <View style={styles.sectionDivider} />
+
+        <Text style={styles.sectionGroupEyebrow}>Account</Text>
+        <Text style={[styles.sectionLabel, styles.sectionLabelTight]}>Phone</Text>
+        <Text style={styles.fieldHelp}>Used for booking updates and verification.</Text>
+        <View style={styles.inputWrap}>
+          <Text style={styles.dial}>+91</Text>
+          <TextInput
+            style={styles.input}
+            value={phoneNational}
+            onChangeText={(t) => {
+              setPhoneNational(clampPhoneNationalInput(t));
+              setPhoneError(undefined);
+            }}
+            placeholder="10-digit phone number"
+            placeholderTextColor={COLORS.textMuted}
+            keyboardType="phone-pad"
+            maxLength={10}
+            editable={!saving}
+            onPressIn={scrollPhoneIntoView}
+            onFocus={scrollPhoneIntoView}
+            onFocusCapture={() => setPhoneFocused(true)}
+            onBlur={() => setPhoneFocused(false)}
+          />
+        </View>
+        {phoneError ? <Text style={styles.errorText}>{phoneError}</Text> : null}
           </ScrollView>
         </KeyboardAvoidingView>
 
@@ -472,6 +611,21 @@ const styles = StyleSheet.create({
     color: COLORS.textSecondary,
     marginBottom: 20,
   },
+  sectionGroupEyebrow: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: COLORS.textMuted,
+    letterSpacing: 0.9,
+    textTransform: 'uppercase',
+    marginBottom: 10,
+    marginTop: 2,
+  },
+  sectionDivider: {
+    height: 1,
+    backgroundColor: COLORS.borderLight,
+    marginVertical: 22,
+    marginHorizontal: 2,
+  },
   sectionLabel: {
     fontSize: 13,
     fontWeight: '700',
@@ -482,6 +636,74 @@ const styles = StyleSheet.create({
   },
   sectionLabelSpaced: {
     marginTop: 4,
+  },
+  /** After a group eyebrow, avoid double gap with uppercase label. */
+  sectionLabelTight: {
+    marginTop: 0,
+  },
+  fieldHelp: {
+    fontSize: 13,
+    color: COLORS.textMuted,
+    marginTop: -4,
+    marginBottom: 8,
+    lineHeight: 18,
+  },
+  fieldHelpAfterEyebrow: {
+    marginTop: 0,
+    marginBottom: 12,
+  },
+  bioInput: {
+    borderWidth: 1,
+    borderColor: COLORS.borderLight,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: Platform.OS === 'ios' ? 12 : 10,
+    fontSize: 15,
+    lineHeight: 22,
+    color: COLORS.text,
+    backgroundColor: COLORS.backgroundSecondary,
+    minHeight: 100,
+    maxHeight: 180,
+  },
+  charCount: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: COLORS.textMuted,
+    textAlign: 'right',
+    marginTop: 4,
+    marginBottom: 4,
+  },
+  prefChipWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 4,
+  },
+  prefChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 9,
+    paddingHorizontal: 12,
+    borderRadius: 22,
+    borderWidth: 1.5,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.backgroundSecondary,
+  },
+  prefChipOn: {
+    backgroundColor: COLORS.primary,
+    borderColor: COLORS.primary,
+  },
+  prefChipPressed: {
+    opacity: 0.88,
+  },
+  prefChipLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLORS.text,
+  },
+  prefChipLabelOn: {
+    color: COLORS.white,
   },
   inputWrap: {
     flexDirection: 'row',

@@ -1,5 +1,6 @@
 import { API } from '../constants/API';
 import api from './api';
+import { normalizeRidePreferenceIds } from '../constants/ridePreferences';
 import { clampPhoneNationalInput } from '../constants/validation';
 
 function userUpdatePath(): string {
@@ -57,4 +58,16 @@ export async function patchUserPhoneOnly(phoneInput: string): Promise<void> {
     throw new Error('INVALID_PHONE');
   }
   await api.patch(userUpdatePath(), { phone: `${DEFAULT_DIAL}${national}` });
+}
+
+/** PATCH `/user/update` — public profile description (backend may read `bio` and/or `description`). */
+export async function patchUserProfileBio(bio: string): Promise<void> {
+  const t = bio.trim();
+  await api.patch(userUpdatePath(), { bio: t, description: t });
+}
+
+/** PATCH `/user/update` — driver comfort tags (backend source of truth: `ridePreferences` on User). */
+export async function patchUserRidePreferences(ids: string[]): Promise<void> {
+  const ridePreferences = normalizeRidePreferenceIds(ids);
+  await api.patch(userUpdatePath(), { ridePreferences });
 }

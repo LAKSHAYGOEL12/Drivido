@@ -5,11 +5,11 @@ import {
   View,
   TouchableOpacity,
   ScrollView,
-  Alert,
   ActivityIndicator,
   InteractionManager,
   Linking,
 } from 'react-native';
+import { Alert } from '../../utils/themedAlert';
 import { useFocusEffect, useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -22,7 +22,9 @@ import api from '../../services/api';
 import { API } from '../../constants/API';
 import { getUserRatingsSummary } from '../../services/ratings';
 import UserAvatar from '../../components/common/UserAvatar';
+import { BookingHistoryTimeline } from '../../components/common/BookingHistoryTimeline';
 import { calculateAge } from '../../utils/calculateAge';
+import { buildBookingHistoryTimelineItems } from '../../utils/bookingHistoryDisplay';
 
 type BookPassengerRouteProp =
   | RouteProp<RidesStackParamList, 'BookPassengerDetail'>
@@ -38,18 +40,10 @@ function findMainTabNavigator(navigation: any) {
   return null;
 }
 
-function formatBookingHistoryLineWhen(iso: string): string {
-  const t = iso.trim();
-  if (!t) return '';
-  const d = new Date(t);
-  if (Number.isNaN(d.getTime())) return '';
-  return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-}
-
 export default function BookPassengerDetailScreen(): React.JSX.Element {
   const navigation = useNavigation();
   const route = useRoute<BookPassengerRouteProp>();
-  const { ride, booking, requestMode } = route.params;
+  const { ride, booking, requestMode, ownerBookingHistoryLines } = route.params;
 
   const [avgRating, setAvgRating] = useState<number | null>(null);
   const [ratingCount, setRatingCount] = useState(0);
@@ -89,6 +83,16 @@ export default function BookPassengerDetailScreen(): React.JSX.Element {
 
   const passengerName = bookingPassengerDisplayName(booking);
   const passengerId = booking.userId ?? '';
+
+  /** Structured timeline: nav lines from ride detail merge, else embedded `booking.bookingHistory`. */
+  const bookingHistoryItems = useMemo(
+    () =>
+      buildBookingHistoryTimelineItems({
+        ownerBookingHistoryLines,
+        embedded: booking.bookingHistory,
+      }),
+    [ownerBookingHistoryLines, booking.bookingHistory]
+  );
   const passengerAge = calculateAge(booking.dateOfBirth);
   const { pickup, drop } = bookingPickupDrop(ride, booking);
   /** Owner ride detail uses published stops; match that on confirmed passenger detail. */
@@ -399,23 +403,16 @@ export default function BookPassengerDetailScreen(): React.JSX.Element {
             </View>
           </View>
           <View style={[styles.trustRow, styles.trustRowSecond]}>
-            <Ionicons name="calendar-outline" size={22} color={COLORS.textSecondary} />
+            <Ionicons name="list-outline" size={22} color={COLORS.textSecondary} />
             <View style={styles.trustTextCol}>
-              <Text style={styles.trustTitle}>Booking history</Text>
-              {booking.bookingHistory && booking.bookingHistory.length > 0 ? (
-                <View style={styles.bookingHistoryList}>
-                  {booking.bookingHistory.map((h, idx) => {
-                    const when = formatBookingHistoryLineWhen(h.bookedAt ?? '');
-                    return (
-                      <Text key={idx} style={styles.bookingHistoryLine} numberOfLines={2}>
-                        {h.seats} seat{h.seats !== 1 ? 's' : ''} · {String(h.status ?? '').trim()}
-                        {when ? ` · ${when}` : ''}
-                      </Text>
-                    );
-                  })}
-                </View>
+              <Text style={styles.trustTitle}>Booking activity</Text>
+              <Text style={styles.trustSub}>
+                Bookings and cancellations initiated by the passenger on this ride.
+              </Text>
+              {bookingHistoryItems.length > 0 ? (
+                <BookingHistoryTimeline items={bookingHistoryItems} />
               ) : (
-                <Text style={styles.trustSub}>No booking history yet</Text>
+                <Text style={[styles.trustSub, styles.bookingActivityEmpty]}>Nothing to show yet.</Text>
               )}
             </View>
           </View>
@@ -744,15 +741,8 @@ const styles = StyleSheet.create({
     marginTop: 2,
     lineHeight: 18,
   },
-  bookingHistoryList: {
-    marginTop: 6,
-  },
-  bookingHistoryLine: {
-    fontSize: 12,
-    fontWeight: '500',
-    color: COLORS.textSecondary,
-    marginBottom: 4,
-    lineHeight: 16,
+  bookingActivityEmpty: {
+    marginTop: 8,
   },
   divider: {
     height: StyleSheet.hairlineWidth,

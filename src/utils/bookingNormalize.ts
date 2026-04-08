@@ -249,6 +249,21 @@ export function mapRawToBookingRow(o: Record<string, unknown>): RideBookingRow |
   const partialOwnerRaw =
     (o as Record<string, unknown>).ownerPartialSeatRemoval ??
     (o as Record<string, unknown>).owner_partial_seat_removal;
+  const isPendingRequestRaw =
+    (o as Record<string, unknown>).isPendingRequest ??
+    (o as Record<string, unknown>).is_pending_request;
+  const isAcceptedPassengerRaw =
+    (o as Record<string, unknown>).isAcceptedPassenger ??
+    (o as Record<string, unknown>).is_accepted_passenger;
+  const isCancelledByPassengerRaw =
+    (o as Record<string, unknown>).isCancelledByPassenger ??
+    (o as Record<string, unknown>).is_cancelled_by_passenger;
+  const isCancelledByOwnerRaw =
+    (o as Record<string, unknown>).isCancelledByOwner ??
+    (o as Record<string, unknown>).is_cancelled_by_owner;
+  const canOwnerRemoveRaw =
+    (o as Record<string, unknown>).canOwnerRemove ??
+    (o as Record<string, unknown>).can_owner_remove;
 
   return {
     id: bookingId || `${userId || 'b'}-${toStr(o.bookedAt) ?? ''}`,
@@ -265,6 +280,11 @@ export function mapRawToBookingRow(o: Record<string, unknown>): RideBookingRow |
     ...(ratingCount != null && ratingCount > 0 ? { ratingCount } : {}),
     ...(bookingHistory ? { bookingHistory } : {}),
     ...(partialOwnerRaw === true ? { ownerPartialSeatRemoval: true } : {}),
+    ...(isPendingRequestRaw === true ? { isPendingRequest: true } : {}),
+    ...(isAcceptedPassengerRaw === true ? { isAcceptedPassenger: true } : {}),
+    ...(isCancelledByPassengerRaw === true ? { isCancelledByPassenger: true } : {}),
+    ...(isCancelledByOwnerRaw === true ? { isCancelledByOwner: true } : {}),
+    ...(typeof canOwnerRemoveRaw === 'boolean' ? { canOwnerRemove: canOwnerRemoveRaw } : {}),
     // Extract dateOfBirth - check root first, then nested objects
     ...((): { dateOfBirth?: string } => {
       const dob = toStr(

@@ -22,6 +22,7 @@ class ChatWebSocketManager {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private isManualDisconnect = false;
   private connectionListeners = new Set<(connected: boolean) => void>();
+  private orphanMessageListener: ((msg: WSMessage) => void) | null = null;
   /** Serialize subscribe frames so we do not burst N messages in one tick (some servers/RN stacks choke). */
   private subscribeSendQueue: string[] = [];
   private subscribeSendTimer: ReturnType<typeof setTimeout> | null = null;
@@ -216,6 +217,7 @@ class ChatWebSocketManager {
                 rideId: msg.data?.rideId,
                 senderUserId: msg.data?.senderUserId,
               });
+              this.orphanMessageListener?.(msg);
             }
           }
 
@@ -469,6 +471,10 @@ class ChatWebSocketManager {
     return () => {
       this.connectionListeners.delete(listener);
     };
+  }
+
+  onOrphanMessage(listener: ((msg: WSMessage) => void) | null): void {
+    this.orphanMessageListener = listener;
   }
 }
 

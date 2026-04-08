@@ -1,21 +1,23 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Modal,
   Pressable,
   ScrollView,
   StyleSheet,
   Switch,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { Alert } from '../../utils/themedAlert';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { useFocusEffect, useRoute } from '@react-navigation/native';
+import { CommonActions, useFocusEffect, useRoute } from '@react-navigation/native';
 import type { PublishStackParamList } from '../../navigation/types';
+import { findMainTabNavigator } from '../../navigation/findMainTabNavigator';
 import { COLORS } from '../../constants/colors';
 import { useAuth } from '../../contexts/AuthContext';
 import api from '../../services/api';
@@ -85,6 +87,24 @@ function isSelectedDateTimeTooSoon(
   return chosen.getTime() < now.getTime() + minLeadMinutes * 60 * 1000;
 }
 
+function isSamePickupAndDestination(args: {
+  pickup: string;
+  destination: string;
+  pickupLatitude: number;
+  pickupLongitude: number;
+  destinationLatitude: number;
+  destinationLongitude: number;
+}): boolean {
+  const p = args.pickup.trim().toLowerCase().replace(/\s+/g, ' ');
+  const d = args.destination.trim().toLowerCase().replace(/\s+/g, ' ');
+  if (p.length > 0 && p === d) return true;
+  const eps = 1e-4; // ~11m
+  return (
+    Math.abs(args.pickupLatitude - args.destinationLatitude) < eps &&
+    Math.abs(args.pickupLongitude - args.destinationLongitude) < eps
+  );
+}
+
 function stateFromEntry(e: RecentPublishedEntry) {
   const [y, mo, da] = e.dateYmd.split('-').map(Number);
   const today = new Date();
@@ -108,17 +128,21 @@ function stateFromEntry(e: RecentPublishedEntry) {
     timeLabel: formatTimeLabel(e.hour, e.minute),
     seats: e.seats,
     rate: e.rate,
+    rideDescription: (e.rideDescription ?? '').trim(),
     instantBooking: e.instantBooking,
   };
 }
 
 export default function PublishRecentEditScreen({ navigation }: Props): React.JSX.Element {
+  const insets = useSafeAreaInsets();
   const route = useRoute<Props['route']>();
   const { user, patchUser, refreshUser, isAuthenticated, needsProfileCompletion } = useAuth();
   const sessionReady = isAuthenticated && !needsProfileCompletion;
   const recentUserKey = useMemo(() => (user?.id ?? user?.phone ?? '').trim(), [user?.id, user?.phone]);
 
   const baseEntry = route.params?.entry;
+  const returnToRide = route.params?.returnToRide;
+  const handlingBackRef = useRef(false);
   const initial = useMemo(() => (baseEntry ? stateFromEntry(baseEntry) : null), [baseEntry]);
 
   const [pickup, setPickup] = useState(initial?.pickup ?? '');
@@ -132,6 +156,7 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
   const [timeLabel, setTimeLabel] = useState(() => initial?.timeLabel ?? '09:00');
   const [seats, setSeats] = useState(initial?.seats ?? 1);
   const [rate, setRate] = useState(initial?.rate ?? '');
+  const [rideDescription, setRideDescription] = useState(initial?.rideDescription ?? '');
   const [instantBooking, setInstantBooking] = useState(initial?.instantBooking ?? false);
 
   const [publishLoading, setPublishLoading] = useState(false);
@@ -150,6 +175,36 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
   const [selectedRouteDistanceKm, setSelectedRouteDistanceKm] = useState<number | null>(null);
   const lastRouteFareCoordsKeyRef = useRef<string | null>(null);
 
+  const goBackFromRepublish = useCallback(() => {
+    if (handlingBackRef.current) return;
+    handlingBackRef.current = true;
+    if (returnToRide) {
+      const tabNav = navigation.getParent() as
+        | {
+            navigate?: (config: {
+              name: 'YourRides' | 'SearchStack' | 'Inbox';
+              params: { screen: 'RideDetail'; params: Record<string, unknown> };
+              merge: false;
+            }) => void;
+          }
+        | undefined;
+      tabNav?.navigate?.({
+        name: returnToRide.tab,
+        params: {
+          screen: 'RideDetail',
+          params: returnToRide.params as Record<string, unknown>,
+        },
+        merge: false,
+      });
+      setTimeout(() => {
+        handlingBackRef.current = false;
+      }, 280);
+      return;
+    }
+    navigation.goBack();
+    handlingBackRef.current = false;
+  }, [navigation, returnToRide]);
+
   const dateValueDisplay = useMemo(
     () => formatPublishStyleDateLabel(selectedDate),
     [selectedDate]
@@ -157,9 +212,19 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
 
   useEffect(() => {
     if (!baseEntry) {
-      navigation.goBack();
+      goBackFromRepublish();
     }
-  }, [baseEntry, navigation]);
+  }, [baseEntry, goBackFromRepublish]);
+
+  useEffect(() => {
+    const unsub = navigation.addListener('beforeRemove', (e) => {
+      if (!returnToRide) return;
+      if (handlingBackRef.current) return;
+      e.preventDefault();
+      goBackFromRepublish();
+    });
+    return unsub;
+  }, [navigation, returnToRide, goBackFromRepublish]);
 
   useFocusEffect(
     useCallback(() => {
@@ -381,6 +446,7 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
           0
         ).toISOString();
         const username = (user?.name?.trim() || user?.phone || '').trim() || 'User';
+        const descriptionTrimmed = rideDescription.trim();
         const body: CreateRidePayload = {
           pickupLocationName: pickup.trim(),
           pickupLatitude,
@@ -399,8 +465,24 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
           ...(vc ? { vehicleColor: vc } : {}),
           ...(stableVehicleId ? { vehicleId: stableVehicleId } : {}),
           ...(routeDurationSeconds > 0 ? { estimatedDurationSeconds: routeDurationSeconds } : {}),
+          ...(descriptionTrimmed
+            ? {
+                description: descriptionTrimmed,
+                rideDescription: descriptionTrimmed,
+                ride_description: descriptionTrimmed,
+              }
+            : {}),
         };
-        await api.post(API.endpoints.rides.create, body);
+        const createdRideRes = await api.post<unknown>(API.endpoints.rides.create, body);
+        const createdRideId = (() => {
+          if (!createdRideRes || typeof createdRideRes !== 'object') return '';
+          const payload = createdRideRes as Record<string, unknown>;
+          const nestedRide =
+            payload.ride && typeof payload.ride === 'object'
+              ? (payload.ride as Record<string, unknown>)
+              : undefined;
+          return String(payload.id ?? payload._id ?? payload.rideId ?? nestedRide?.id ?? nestedRide?._id ?? '').trim();
+        })();
         const y = selectedDate.getFullYear();
         const mo = String(selectedDate.getMonth() + 1).padStart(2, '0');
         const da = String(selectedDate.getDate()).padStart(2, '0');
@@ -418,12 +500,35 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
             minute: selectedTime.minute,
             seats,
             rate: rate.trim(),
+            rideDescription: descriptionTrimmed,
             instantBooking,
+            rideId: createdRideId || undefined,
           },
           recentUserKey
         ).then(() => loadRecentPublished(recentUserKey));
-        const tabNav = navigation.getParent();
-        if (tabNav) (tabNav as { navigate: (name: string) => void }).navigate('YourRides');
+        const refreshToken = Date.now();
+        const navState = (navigation as { getState?: () => { routeNames?: string[] } }).getState?.();
+        const routeNames = Array.isArray(navState?.routeNames) ? navState.routeNames : [];
+        const insideRidesStack = routeNames.includes('YourRidesList');
+        if (insideRidesStack) {
+          navigation.dispatch(
+            CommonActions.reset({
+              index: 0,
+              routes: [{ name: 'YourRidesList', params: { _afterBookRefresh: refreshToken } }],
+            })
+          );
+        } else {
+          const mainTabs = findMainTabNavigator(navigation as { getParent?: () => unknown });
+          (mainTabs as { navigate?: (config: Record<string, unknown>) => void } | null)?.navigate?.({
+            name: 'YourRides',
+            params: {
+              screen: 'YourRidesList',
+              params: { _afterBookRefresh: refreshToken },
+            },
+            merge: false,
+          });
+        }
+        Alert.alert('Published', 'Your ride is now live.');
       } catch (e: unknown) {
         const message =
           e && typeof e === 'object' && 'message' in e
@@ -453,6 +558,7 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
       selectedTime,
       seats,
       rate,
+      rideDescription,
       instantBooking,
       navigation,
       recentUserKey,
@@ -532,6 +638,22 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
     }
     if (!pickup.trim() || !destination.trim()) {
       alertMissingPickupDestination();
+      return;
+    }
+    if (
+      isSamePickupAndDestination({
+        pickup,
+        destination,
+        pickupLatitude,
+        pickupLongitude,
+        destinationLatitude,
+        destinationLongitude,
+      })
+    ) {
+      Alert.alert(
+        'Invalid route',
+        'Pickup and destination cannot be the same. Choose a different destination.'
+      );
       return;
     }
     const validLat = (v: number) => typeof v === 'number' && !Number.isNaN(v) && v >= -90 && v <= 90;
@@ -706,7 +828,7 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.headerBack} hitSlop={12}>
+        <TouchableOpacity onPress={goBackFromRepublish} style={styles.headerBack} hitSlop={12}>
           <Ionicons name="arrow-back" size={24} color={COLORS.primary} />
         </TouchableOpacity>
         <View style={styles.headerCenter}>
@@ -720,7 +842,7 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
 
       <ScrollView
         style={styles.scroll}
-        contentContainerStyle={styles.content}
+        contentContainerStyle={[styles.content, { paddingBottom: 120 + Math.max(insets.bottom, 10) }]}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
@@ -880,6 +1002,28 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
           </View>
         </View>
 
+        <View style={styles.card}>
+          <View style={styles.sectionHeaderRow}>
+            <Text style={styles.sectionTitle}>Ride description</Text>
+          </View>
+          <Text style={styles.sectionHint}>
+            Optional - shown to passengers on ride detail.
+          </Text>
+          <TextInput
+            value={rideDescription}
+            onChangeText={setRideDescription}
+            style={styles.rideDescriptionInput}
+            placeholder="Luggage, music, exact pickup spot, tolls..."
+            placeholderTextColor={COLORS.textMuted}
+            multiline
+            textAlignVertical="top"
+            maxLength={500}
+          />
+          <Text style={styles.rideDescriptionCounter}>{rideDescription.length}/500</Text>
+        </View>
+
+      </ScrollView>
+      <View style={[styles.publishFooter, { paddingBottom: Math.max(insets.bottom, 10) }]}>
         <TouchableOpacity
           style={[styles.updateButton, publishLoading && styles.updateButtonDisabled]}
           onPress={() => void handlePublish()}
@@ -895,7 +1039,7 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
             </View>
           )}
         </TouchableOpacity>
-      </ScrollView>
+      </View>
 
       <DatePickerModal
         visible={showDateModal}
@@ -1242,6 +1386,25 @@ const styles = StyleSheet.create({
   bookingToggleText: { flex: 1, minWidth: 0 },
   bookingToggleTitle: { fontSize: 16, fontWeight: '700', color: COLORS.text },
   bookingToggleDesc: { fontSize: 13, color: COLORS.textSecondary, marginTop: 4 },
+  rideDescriptionInput: {
+    minHeight: 112,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 12,
+    backgroundColor: COLORS.backgroundSecondary,
+    color: COLORS.text,
+    fontSize: 15,
+    lineHeight: 22,
+    paddingHorizontal: 12,
+    paddingTop: 10,
+    paddingBottom: 10,
+  },
+  rideDescriptionCounter: {
+    marginTop: 6,
+    fontSize: 12,
+    color: COLORS.textMuted,
+    textAlign: 'right',
+  },
   updateButton: {
     marginTop: 6,
     backgroundColor: COLORS.primary,
@@ -1251,6 +1414,13 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   updateButtonDisabled: { opacity: 0.65 },
+  publishFooter: {
+    borderTopWidth: 1,
+    borderTopColor: COLORS.borderLight,
+    backgroundColor: COLORS.background,
+    paddingHorizontal: 16,
+    paddingTop: 10,
+  },
   updateInner: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   updateText: { color: COLORS.white, fontSize: 15, fontWeight: '800' },
   timeModalOverlay: {

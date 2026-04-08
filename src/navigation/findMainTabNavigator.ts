@@ -29,3 +29,20 @@ export function findMainTabNavigator(navigation: { getParent?: () => unknown } |
   }
   return null;
 }
+
+/** Same walk-up as `findMainTabNavigator`, but also exposes `setOptions` for tab bar visibility. */
+export function findMainTabNavigatorWithOptions(
+  navigation: { getParent?: () => unknown } | undefined
+): {
+  dispatch?: (action: unknown) => void;
+  getState?: () => { routes?: { name?: string }[]; index?: number; routeNames?: string[] };
+  setOptions?: (opts: { tabBarStyle?: unknown }) => void;
+} | null {
+  let current = navigation?.getParent?.() as any | undefined;
+  for (let i = 0; i < 5 && current; i += 1) {
+    const names: string[] | undefined = current?.getState?.()?.routeNames;
+    if (names?.includes('SearchStack') && names?.includes('YourRides')) return current;
+    current = current.getParent?.();
+  }
+  return null;
+}

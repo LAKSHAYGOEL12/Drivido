@@ -1,5 +1,5 @@
-import React from 'react';
-import { StyleSheet, View } from 'react-native';
+import React, { useEffect, useRef } from 'react';
+import { AppState, type AppStateStatus, StyleSheet, View } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { CommonActions, getFocusedRouteNameFromRoute } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
@@ -12,9 +12,11 @@ import InboxStack from './InboxStack';
 import ProfileStack from './ProfileStack';
 import { useInbox } from '../contexts/InboxContext';
 import { useAuth } from '../contexts/AuthContext';
+import { useOwnerPendingRequests } from '../contexts/OwnerPendingRequestsContext';
 import { COLORS } from '../constants/colors';
 import { navigateToGuestLogin } from './navigateToGuestLogin';
 import { findMainTabNavigator } from './findMainTabNavigator';
+import { emitRequestMyRidesListRefresh } from '../services/myRidesListRefreshEvents';
 
 const Tab = createBottomTabNavigator<MainTabParamList>();
 
@@ -60,7 +62,6 @@ function ProfileTabBarIcon({
     <View
       style={[
         styles.profileTabIconRing,
-        focused && styles.profileTabIconRingFocused,
         { width: size + 4, height: size + 4, borderRadius: (size + 4) / 2 },
       ]}
     >
@@ -68,8 +69,8 @@ function ProfileTabBarIcon({
         uri={uri || undefined}
         name={name}
         size={size}
-        backgroundColor={focused ? 'rgba(41, 190, 139, 0.18)' : '#f1f5f9'}
-        fallbackTextColor={focused ? COLORS.primary : color}
+        backgroundColor="#f1f5f9"
+        fallbackTextColor={color}
       />
     </View>
   );
@@ -107,10 +108,97 @@ function resetInboxTabToInboxList(mainTabs: { dispatch: (a: unknown) => void; ge
   );
 }
 
+/** Nested screen at top of Your Rides stack — use live `navigation.getState()`, not tab `route` (can be stale). */
+function getRidesStackFocusedName(navigation: {
+  getState?: () => { routes?: { name?: string }[]; index?: number };
+}): string | undefined {
+  const st = navigation?.getState?.();
+  const routes = st?.routes;
+  if (!routes?.length) return undefined;
+  const idx = typeof st?.index === 'number' ? st.index : routes.length - 1;
+  return routes[idx]?.name;
+}
+
+function resetRidesTabToYourRidesList(mainTabs: {
+  dispatch: (a: unknown) => void;
+  getState: () => { routes?: any[]; index?: number };
+}): void {
+  const tabState = mainTabs.getState();
+  const routes = (tabState?.routes ?? []) as any[];
+  const ridesIndex = routes.findIndex((r: { name?: string }) => r?.name === 'YourRides');
+  if (ridesIndex < 0) return;
+  const nextRoutes = routes.map((r: any) => {
+    if (r?.name !== 'YourRides') return r;
+    return {
+      ...r,
+      state: {
+        routes: [{ name: 'YourRidesList' as const }],
+        index: 0,
+      },
+    };
+  });
+  mainTabs.dispatch(
+    CommonActions.reset({
+      index: ridesIndex,
+      routes: nextRoutes,
+    } as never)
+  );
+}
+
+function RidesTabIconWithDot({
+  focused,
+  color,
+  size,
+  showNotificationDot,
+}: {
+  focused: boolean;
+  color: string;
+  size: number;
+  showNotificationDot: boolean;
+}): React.JSX.Element {
+  return (
+    <View style={styles.ridesTabIconWrap}>
+      <ScaledTabIcon focused={focused}>
+        <Ionicons name={focused ? 'car' : 'car-outline'} size={size} color={color} />
+      </ScaledTabIcon>
+      {showNotificationDot ? <View style={styles.ridesTabNotificationDot} /> : null}
+    </View>
+  );
+}
+
 export default function BottomTabs(): React.JSX.Element {
   const { hasUnread } = useInbox();
+  const { hasOwnerPendingSeatRequests } = useOwnerPendingRequests();
   const { user, isAuthenticated, needsProfileCompletion } = useAuth();
   const sessionReady = isAuthenticated && !needsProfileCompletion;
+  const appStateRef = useRef<AppStateStatus>(AppState.currentState);
+  const prevSignedInUserIdRef = useRef<string | undefined>(undefined);
+
+  /** New session or account switch — refresh driver/passenger list so “My rides” isn’t stale. */
+  useEffect(() => {
+    const uid = user?.id?.trim();
+    if (!sessionReady || !uid) {
+      prevSignedInUserIdRef.current = undefined;
+      return;
+    }
+    if (uid !== prevSignedInUserIdRef.current) {
+      prevSignedInUserIdRef.current = uid;
+      emitRequestMyRidesListRefresh();
+    }
+  }, [sessionReady, user?.id]);
+
+  /** Foreground after background — same refresh (Your Rides may be mounted; listener runs full merge). */
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next: AppStateStatus) => {
+      const prev = appStateRef.current;
+      appStateRef.current = next;
+      if (!sessionReady) return;
+      if ((prev === 'background' || prev === 'inactive') && next === 'active') {
+        emitRequestMyRidesListRefresh();
+      }
+    });
+    return () => sub.remove();
+  }, [sessionReady]);
 
   return (
     <Tab.Navigator
@@ -152,6 +240,7 @@ export default function BottomTabs(): React.JSX.Element {
           const hideTabs =
             name === 'RideDetail' ||
             name === 'RideDetailScreen' ||
+            name === 'EditRide' ||
             name === 'LocationPicker' ||
             name === 'PublishedRideRouteMap' ||
             name === 'BookPassengerDetail' ||
@@ -217,22 +306,41 @@ export default function BottomTabs(): React.JSX.Element {
       <Tab.Screen
         name="YourRides"
         component={RidesStack}
-        listeners={({ navigation, route }) => ({
+        listeners={({ navigation }) => ({
+          /**
+           * Same pattern as Inbox: when returning to this tab, `route` can still report YourRidesList
+           * while RideDetail (etc.) is on the nested stack — a tap would not reset and a stale screen flashes first.
+           */
+          focus: () => {
+            if (!sessionReady) return;
+            const mainTabs = findMainTabNavigator(navigation);
+            if (!mainTabs?.dispatch || !mainTabs?.getState) return;
+            const focused = getRidesStackFocusedName(navigation);
+            if (focused && focused !== 'YourRidesList') {
+              resetRidesTabToYourRidesList(mainTabs);
+            }
+          },
           tabPress: (e) => {
             if (!sessionReady) {
               e.preventDefault();
               navigateToGuestLogin(navigation, { reason: 'tab' });
               return;
             }
-            const currentRoute = getFocusedRouteNameFromRoute(route) ?? 'YourRidesList';
-            if (currentRoute !== 'YourRidesList') {
-              e.preventDefault();
+            const focused = getRidesStackFocusedName(navigation);
+            if (focused === undefined || focused === 'YourRidesList') {
+              return;
+            }
+            e.preventDefault();
+            const mainTabs = findMainTabNavigator(navigation);
+            if (!mainTabs?.dispatch || !mainTabs?.getState) {
               navigation.navigate({
-                name: route.name,
+                name: 'YourRides',
                 params: { screen: 'YourRidesList' as const },
                 merge: false,
-              });
+              } as never);
+              return;
             }
+            resetRidesTabToYourRidesList(mainTabs);
           },
         })}
         options={({ route }) => {
@@ -240,6 +348,8 @@ export default function BottomTabs(): React.JSX.Element {
           const hideTabs =
             name === 'RideDetail' ||
             name === 'RideDetailScreen' ||
+            name === 'PublishRecentEdit' ||
+            name === 'EditRide' ||
             name === 'BookPassengerDetail' ||
             name === 'PublishedRideRouteMap' ||
             name === 'Chat' ||
@@ -251,9 +361,12 @@ export default function BottomTabs(): React.JSX.Element {
             tabBarLabel: 'Rides',
             tabBarStyle: hideTabs ? { display: 'none' } : undefined,
             tabBarIcon: ({ focused, color, size }: { focused: boolean; color: string; size: number }) => (
-              <ScaledTabIcon focused={focused}>
-                <Ionicons name={focused ? 'car' : 'car-outline'} size={size} color={color} />
-              </ScaledTabIcon>
+              <RidesTabIconWithDot
+                focused={focused}
+                color={color}
+                size={size}
+                showNotificationDot={sessionReady && hasOwnerPendingSeatRequests}
+              />
             ),
           };
         }}
@@ -364,6 +477,7 @@ export default function BottomTabs(): React.JSX.Element {
           const hideTabs =
             name === 'ProfileEntry' ||
             name === 'EditProfile' ||
+            name === 'AccountSecurity' ||
             name === 'Trips' ||
             name === 'Ratings' ||
             name === 'RatingsScreen';
@@ -394,10 +508,21 @@ const styles = StyleSheet.create({
   profileTabIconRing: {
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 0,
-    borderColor: COLORS.primary,
   },
-  profileTabIconRingFocused: {
+  ridesTabIconWrap: {
+    position: 'relative',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  ridesTabNotificationDot: {
+    position: 'absolute',
+    top: -2,
+    right: -6,
+    width: 13,
+    height: 13,
+    borderRadius: 6.5,
+    backgroundColor: COLORS.error,
     borderWidth: 2,
+    borderColor: COLORS.backgroundSecondary,
   },
 });

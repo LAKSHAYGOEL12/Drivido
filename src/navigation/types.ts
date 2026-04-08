@@ -72,6 +72,8 @@ export type SearchStackParamList = {
     fromLongitude?: number;
     toLatitude?: number;
     toLongitude?: number;
+    /** Non-blocking warning banner/toast on results screen (e.g. same pickup/destination). */
+    sameRouteWarning?: boolean;
   };
   RideDetail: { ride: RideListItem; passengerSearch?: PassengerSearchParams };
   /** Map + directions for the publisher’s pickup → drop-off (from stored coordinates). */
@@ -94,6 +96,13 @@ export type SearchStackParamList = {
     dateOfBirth?: string;
     /** Driver contact when API includes it on the ride (or pass-through from ride detail). */
     publisherPhone?: string;
+    /**
+     * From ride detail: hide Call / do not load driver phone until passenger has an accepted booking
+     * (not pending/rejected). Omit for other entry points.
+     */
+    hidePublisherPhone?: boolean;
+    /** When true, profile is a minimal “deactivated” placeholder (no PII, no ratings/trips fetch). */
+    peerDeactivated?: boolean;
     /** Set from RideDetail so Trips → back returns to this ride. */
     _returnToRide?: TripsReturnToRideContext;
   } | undefined;
@@ -104,8 +113,21 @@ export type SearchStackParamList = {
     ride: RideListItem;
     booking: NonNullable<RideListItem['bookings']>[number];
     requestMode?: boolean;
+    /**
+     * Pre-rendered lines from ride detail’s merged timeline (multiple booking rows, ride-level
+     * `bookingHistory`, etc.). Used when `booking.bookingHistory` is missing on the active row.
+     */
+    ownerBookingHistoryLines?: string[];
   };
-  Chat: { ride?: RideListItem; rideId?: string; otherUserName: string; otherUserId: string; otherUserAvatarUrl?: string };
+  Chat: {
+    ride?: RideListItem;
+    rideId?: string;
+    otherUserName: string;
+    otherUserId: string;
+    otherUserAvatarUrl?: string;
+    /** Peer account deactivated — mask header and block new messages. */
+    otherUserDeactivated?: boolean;
+  };
 };
 
 /**
@@ -132,6 +154,8 @@ export type PublishStackParamList = {
   } | undefined;
   PublishRecentEdit: {
     entry: RecentPublishedEntry;
+    /** Optional source context: return to originating RideDetail instead of Publish tab root on back. */
+    returnToRide?: TripsReturnToRideContext;
     selectedFrom?: string;
     selectedTo?: string;
     pickupLatitude?: number;
@@ -221,6 +245,9 @@ export type RidesStackParamList = {
     publisherRatingCount?: number;
     dateOfBirth?: string;
     publisherPhone?: string;
+    hidePublisherPhone?: boolean;
+    /** When true, profile is a minimal “deactivated” placeholder (no PII, no ratings/trips fetch). */
+    peerDeactivated?: boolean;
     _returnToRide?: TripsReturnToRideContext;
   } | undefined;
   /** Ratings view for an arbitrary user opened from ride details modal. */
@@ -238,12 +265,25 @@ export type RidesStackParamList = {
     returnScreen?: 'SearchRides' | 'PublishRide';
   } | undefined;
   EditRide: { ride: RideListItem };
+  PublishRecentEdit: {
+    entry: RecentPublishedEntry;
+    returnToRide?: TripsReturnToRideContext;
+  };
   BookPassengerDetail: {
     ride: RideListItem;
     booking: NonNullable<RideListItem['bookings']>[number];
     requestMode?: boolean;
+    ownerBookingHistoryLines?: string[];
   };
-  Chat: { ride?: RideListItem; rideId?: string; otherUserName: string; otherUserId: string; otherUserAvatarUrl?: string };
+  Chat: {
+    ride?: RideListItem;
+    rideId?: string;
+    otherUserName: string;
+    otherUserId: string;
+    otherUserAvatarUrl?: string;
+    /** Peer account deactivated — mask header and block new messages. */
+    otherUserDeactivated?: boolean;
+  };
 };
 
 /**
@@ -251,7 +291,14 @@ export type RidesStackParamList = {
  */
 export type InboxStackParamList = {
   InboxList: undefined;
-  Chat: { ride?: RideListItem; rideId?: string; otherUserName: string; otherUserId: string; otherUserAvatarUrl?: string };
+  Chat: {
+    ride?: RideListItem;
+    rideId?: string;
+    otherUserName: string;
+    otherUserId: string;
+    otherUserAvatarUrl?: string;
+    otherUserDeactivated?: boolean;
+  };
   /** Same screen as other tabs — open the ride this chat belongs to (e.g. from inbox-only stack). */
   RideDetail: { ride: RideListItem; passengerSearch?: PassengerSearchParams };
 } & Pick<
@@ -273,6 +320,8 @@ export type ProfileStackParamList = {
         userId?: string;
         displayName?: string;
         avatarUrl?: string;
+        /** From ride/chat when publisher/passenger is deactivated — skip PII and ratings/trips fetch. */
+        peerDeactivated?: boolean;
         _returnToRideDetail?: {
           tab: string;
           params: unknown;
@@ -304,6 +353,8 @@ export type ProfileStackParamList = {
     | undefined;
   /** Signed-in user: phone + vehicle fields only. */
   EditProfile: undefined;
+  /** Password, deactivate messaging, delete account (email/password Firebase users). */
+  AccountSecurity: undefined;
   /** Trip stats; omit `userId` for the signed-in user. */
   Trips:
     | {
@@ -358,6 +409,10 @@ export type RootStackParamList = {
   /** After email is verified — DOB, gender, phone, terms (optional skip). */
   CompleteProfile: undefined;
   ForgotPassword: undefined;
+  /** After API returns ACCOUNT_DEACTIVATED — user dismissed to guest Main. */
+  AccountDeactivated: undefined;
+  /** Firebase signed in but Mongo user deactivated — reauth + POST /user/reactivate to resume. */
+  ReactivateAccount: undefined;
 };
 
 // Screen prop types for use in components
@@ -374,7 +429,14 @@ export type RootStackScreenProps<T extends keyof RootStackParamList> = NativeSta
 
 /** Auth screens mounted on root stack (modal) — same props shape as old Auth stack. */
 export type RootAuthScreenProps<
-  T extends 'Login' | 'Register' | 'VerifyEmail' | 'CompleteProfile' | 'ForgotPassword',
+  T extends
+    | 'Login'
+    | 'Register'
+    | 'VerifyEmail'
+    | 'CompleteProfile'
+    | 'ForgotPassword'
+    | 'AccountDeactivated'
+    | 'ReactivateAccount',
 > = RootStackScreenProps<T>;
 
 export type MainTabScreenPropsFromRoot<T extends keyof MainTabParamList> = CompositeScreenProps<

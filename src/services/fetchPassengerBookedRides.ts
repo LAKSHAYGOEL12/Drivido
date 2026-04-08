@@ -79,6 +79,22 @@ export function normalizeRideListItemFromApi(raw: Record<string, unknown>): Ride
     typeof rawAvail === 'number' && !Number.isNaN(rawAvail)
       ? Math.max(0, Math.floor(rawAvail))
       : undefined;
+  const rawPendingReq =
+    r.pendingRequests ??
+    r.pending_requests ??
+    r.pendingRequestCount ??
+    r.pending_request_count ??
+    r.requestsPending ??
+    r.requests_pending;
+  const pendingRequestsNum =
+    typeof rawPendingReq === 'number' && !Number.isNaN(rawPendingReq)
+      ? Math.max(0, Math.floor(rawPendingReq))
+      : undefined;
+  const rawHasPending = r.hasPendingRequests ?? r.has_pending_requests;
+  let hasPendingRequestsFlag: boolean | undefined;
+  if (typeof rawHasPending === 'boolean') hasPendingRequestsFlag = rawHasPending;
+  else if (rawHasPending === 'true') hasPendingRequestsFlag = true;
+  else if (rawHasPending === 'false') hasPendingRequestsFlag = false;
   const num = (v: unknown): number | undefined =>
     typeof v === 'number' && !Number.isNaN(v) ? v : v != null && v !== '' ? Number(v) : undefined;
   const nestedUser =
@@ -108,6 +124,8 @@ export function normalizeRideListItemFromApi(raw: Record<string, unknown>): Ride
     ...(bookedSeatsNum !== undefined ? { bookedSeats: bookedSeatsNum } : {}),
     ...(totalBookingsNum !== undefined ? { totalBookings: totalBookingsNum } : {}),
     ...(availableSeatsNum !== undefined ? { availableSeats: availableSeatsNum } : {}),
+    ...(pendingRequestsNum !== undefined ? { pendingRequests: pendingRequestsNum } : {}),
+    ...(hasPendingRequestsFlag !== undefined ? { hasPendingRequests: hasPendingRequestsFlag } : {}),
     rideDate: outDate,
     rideTime: outTime,
     scheduledDate: scheduledDate || outDate,
@@ -162,6 +180,8 @@ export function normalizeRideListItemFromApi(raw: Record<string, unknown>): Ride
   else if (rawVi === 'false') out.viewerIsOwner = false;
   const pubAvatar = pickPublisherAvatarUrl(r);
   if (pubAvatar) out.publisherAvatarUrl = pubAvatar;
+  const rideDesc = toStr(r.description ?? r.rideDescription ?? r.ride_description)?.trim();
+  if (rideDesc) out.description = rideDesc;
   return out;
 }
 

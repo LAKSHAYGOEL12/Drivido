@@ -10,10 +10,10 @@ import {
   Animated,
   ActivityIndicator,
   TouchableOpacity,
-  Alert,
   Keyboard,
   InteractionManager,
 } from 'react-native';
+import { Alert } from '../../utils/themedAlert';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import type { NavigationProp, ParamListBase } from '@react-navigation/native';
@@ -48,12 +48,19 @@ export default function LoginBottomSheet({
   navigation,
 }: LoginBottomSheetProps): React.JSX.Element {
   const insets = useSafeAreaInsets();
-  const { isAwaitingBackendSession, needsEmailVerification, isAuthenticated, needsProfileCompletion } = useAuth();
+  const {
+    isAwaitingBackendSession,
+    needsEmailVerification,
+    isAuthenticated,
+    needsProfileCompletion,
+    needsAccountReactivation,
+  } = useAuth();
   const authGateRef = useRef({
     isAwaitingBackendSession,
     needsEmailVerification,
     isAuthenticated,
     needsProfileCompletion,
+    needsAccountReactivation,
   });
   useEffect(() => {
     authGateRef.current = {
@@ -61,8 +68,15 @@ export default function LoginBottomSheet({
       needsEmailVerification,
       isAuthenticated,
       needsProfileCompletion,
+      needsAccountReactivation,
     };
-  }, [isAwaitingBackendSession, needsEmailVerification, isAuthenticated, needsProfileCompletion]);
+  }, [
+    isAwaitingBackendSession,
+    needsEmailVerification,
+    isAuthenticated,
+    needsProfileCompletion,
+    needsAccountReactivation,
+  ]);
 
   const [phoneOrEmail, setPhoneOrEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -200,6 +214,11 @@ export default function LoginBottomSheet({
           onClose();
           return;
         }
+        if (authGateRef.current.needsAccountReactivation) {
+          setSigningIn(false);
+          onClose();
+          return;
+        }
         if (authed && !nev) {
           finishGuestSuccess({ profileIncomplete: npc });
           return;
@@ -217,6 +236,11 @@ export default function LoginBottomSheet({
         return;
       }
       if (nevFinal) {
+        setSigningIn(false);
+        onClose();
+        return;
+      }
+      if (authGateRef.current.needsAccountReactivation) {
         setSigningIn(false);
         onClose();
         return;

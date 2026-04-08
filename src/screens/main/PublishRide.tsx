@@ -11,9 +11,11 @@ import {
   Pressable,
   ActivityIndicator,
   BackHandler,
-  Alert,
+  TextInput,
+  KeyboardAvoidingView,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { Alert } from '../../utils/themedAlert';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute, useFocusEffect } from '@react-navigation/native';
 import { COLORS } from '../../constants/colors';
@@ -56,6 +58,7 @@ import {
   type RecentPublishedEntry,
 } from '../../services/recent-published-storage';
 import { formatPublishStyleDateLabel } from '../../utils/rideDisplay';
+import { validation, validationErrors } from '../../constants/validation';
 
 const MAX_PASSENGERS = 6;
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -154,6 +157,24 @@ function isSelectedDateTimeTooSoon(
   return chosen.getTime() < now.getTime() + minLeadMinutes * 60 * 1000;
 }
 
+function isSamePickupAndDestination(args: {
+  pickup: string;
+  destination: string;
+  pickupLatitude: number;
+  pickupLongitude: number;
+  destinationLatitude: number;
+  destinationLongitude: number;
+}): boolean {
+  const p = args.pickup.trim().toLowerCase().replace(/\s+/g, ' ');
+  const d = args.destination.trim().toLowerCase().replace(/\s+/g, ' ');
+  if (p.length > 0 && p === d) return true;
+  const eps = 1e-4; // ~11m
+  return (
+    Math.abs(args.pickupLatitude - args.destinationLatitude) < eps &&
+    Math.abs(args.pickupLongitude - args.destinationLongitude) < eps
+  );
+}
+
 function distanceKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const R = 6371;
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
@@ -177,9 +198,12 @@ function getAvailableTimeSlots(selectedDate: Date): { hour: number; minute: numb
   return slots;
 }
 
+const SCROLL_BOTTOM_PADDING = 40;
+
 export default function PublishRide(): React.JSX.Element {
   const navigation = useNavigation<any>();
   const route = useRoute<any>();
+  const insets = useSafeAreaInsets();
   const { user, patchUser, refreshUser, isAuthenticated, needsProfileCompletion } = useAuth();
   const sessionReady = isAuthenticated && !needsProfileCompletion;
   const recentUserKey = useMemo(() => (user?.id ?? user?.phone ?? '').trim(), [user?.id, user?.phone]);
@@ -205,6 +229,7 @@ export default function PublishRide(): React.JSX.Element {
   const [seats, setSeats] = useState(1);
   const [rate, setRate] = useState('');
   const [instantBooking, setInstantBooking] = useState(false);
+  const [rideDescription, setRideDescription] = useState('');
   const [showDateModal, setShowDateModal] = useState(false);
   const [showTimeModal, setShowTimeModal] = useState(false);
   const [showPassengersModal, setShowPassengersModal] = useState(false);
@@ -220,6 +245,7 @@ export default function PublishRide(): React.JSX.Element {
   const [selectedRouteDistanceKm, setSelectedRouteDistanceKm] = useState<number | null>(null);
   /** Coords key when `selectedRouteDistanceKm` was applied — drop stale fare if coords change. */
   const lastRouteFareCoordsKeyRef = useRef<string | null>(null);
+  const scrollRef = useRef<ScrollView>(null);
 
   const calendarDays = useMemo(
     () => getCalendarDays(calendarMonth.getFullYear(), calendarMonth.getMonth()),
@@ -471,6 +497,7 @@ export default function PublishRide(): React.JSX.Element {
     setSeats(d.seats || 1);
     setRate(typeof p.selectedRate === 'string' ? p.selectedRate : d.rate);
     setInstantBooking(d.instantBooking);
+    setRideDescription(typeof d.rideDescription === 'string' ? d.rideDescription : '');
     try {
       setCalendarMonth(new Date(d.calendarMonthIso));
     } catch {
@@ -631,6 +658,7 @@ export default function PublishRide(): React.JSX.Element {
       seats,
       rate,
       instantBooking,
+      rideDescription,
       ladiesOnly: false,
       calendarMonthIso: calendarMonth.toISOString(),
       clockHour24,
@@ -665,6 +693,7 @@ export default function PublishRide(): React.JSX.Element {
     setSeats(1);
     setRate('');
     setInstantBooking(false);
+    setRideDescription('');
     setCalendarMonth(today);
     setClockHour24(defaultTime.hour);
     setClockMinute(Math.round(defaultTime.minute / 5) * 5 % 60);
@@ -706,6 +735,10 @@ export default function PublishRide(): React.JSX.Element {
         Alert.alert('Vehicle required', 'Add your vehicle name and license plate to your profile to publish rides.');
         return;
       }
+      if (!validation.rideDescription(rideDescription)) {
+        Alert.alert('Ride description', validationErrors.rideDescription);
+        return;
+      }
       const vc = (resolved?.vehicleColor ?? user?.vehicleColor ?? '').trim();
       const stableVehicleId =
         rideOpts?.vehicleId ??
@@ -722,6 +755,7 @@ export default function PublishRide(): React.JSX.Element {
           0
         ).toISOString();
         const username = (user?.name?.trim() || user?.phone || '').trim() || 'User';
+        const descriptionTrimmed = rideDescription.trim();
         const body: CreateRidePayload = {
           pickupLocationName: pickup.trim(),
           pickupLatitude: pickupLatitude,
@@ -740,12 +774,28 @@ export default function PublishRide(): React.JSX.Element {
           ...(vc ? { vehicleColor: vc } : {}),
           ...(stableVehicleId ? { vehicleId: stableVehicleId } : {}),
           ...(routeDurationSeconds > 0 ? { estimatedDurationSeconds: routeDurationSeconds } : {}),
+          ...(descriptionTrimmed
+            ? {
+                description: descriptionTrimmed,
+                rideDescription: descriptionTrimmed,
+                ride_description: descriptionTrimmed,
+              }
+            : {}),
         };
         if (__DEV__) {
           console.log('[PublishRide] username:', username);
           console.log('[PublishRide] POST /api/rides body:', JSON.stringify(body, null, 2));
         }
-        await api.post(API.endpoints.rides.create, body);
+        const createdRideRes = await api.post<unknown>(API.endpoints.rides.create, body);
+        const createdRideId = (() => {
+          if (!createdRideRes || typeof createdRideRes !== 'object') return '';
+          const payload = createdRideRes as Record<string, unknown>;
+          const nestedRide =
+            payload.ride && typeof payload.ride === 'object'
+              ? (payload.ride as Record<string, unknown>)
+              : undefined;
+          return String(payload.id ?? payload._id ?? payload.rideId ?? nestedRide?.id ?? nestedRide?._id ?? '').trim();
+        })();
         const y = selectedDate.getFullYear();
         const mo = String(selectedDate.getMonth() + 1).padStart(2, '0');
         const da = String(selectedDate.getDate()).padStart(2, '0');
@@ -763,7 +813,9 @@ export default function PublishRide(): React.JSX.Element {
             minute: selectedTime.minute,
             seats,
             rate: rate.trim(),
+            rideDescription: descriptionTrimmed,
             instantBooking,
+            rideId: createdRideId || undefined,
           },
           recentUserKey
         ).then(setPublishedRecents);
@@ -805,6 +857,7 @@ export default function PublishRide(): React.JSX.Element {
       recentUserKey,
       mergedVehicles,
       selectedVehicleId,
+      rideDescription,
     ]
   );
 
@@ -881,6 +934,22 @@ export default function PublishRide(): React.JSX.Element {
       alertMissingPickupDestination();
       return;
     }
+    if (
+      isSamePickupAndDestination({
+        pickup,
+        destination,
+        pickupLatitude,
+        pickupLongitude,
+        destinationLatitude,
+        destinationLongitude,
+      })
+    ) {
+      Alert.alert(
+        'Invalid route',
+        'Pickup and destination cannot be the same. Choose a different destination.'
+      );
+      return;
+    }
     const validLat = (v: number) => typeof v === 'number' && !Number.isNaN(v) && v >= -90 && v <= 90;
     const validLon = (v: number) => typeof v === 'number' && !Number.isNaN(v) && v >= -180 && v <= 180;
     const pickupSet =
@@ -913,12 +982,22 @@ export default function PublishRide(): React.JSX.Element {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      <ScrollView
-        style={styles.scroll}
-        contentContainerStyle={styles.scrollContent}
-        keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator={false}
+      <KeyboardAvoidingView
+        style={styles.keyboardAvoiding}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? insets.top : 0}
       >
+        <ScrollView
+            ref={scrollRef}
+          style={styles.scroll}
+          contentContainerStyle={[
+            styles.scrollContent,
+            { paddingBottom: SCROLL_BOTTOM_PADDING },
+          ]}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+          showsVerticalScrollIndicator={false}
+        >
         <Text style={styles.publishHeading}>Offer a ride</Text>
         <Text style={styles.publishSubheading}>
           Set your route, time, and fare — passengers can book when you publish.
@@ -1098,6 +1177,26 @@ export default function PublishRide(): React.JSX.Element {
           </View>
         </View>
 
+        <View style={styles.section}>
+          <Text style={styles.cardSectionLabel}>Ride details</Text>
+          <Text style={styles.rideDescriptionHint}>Optional. Add any details passengers should know before booking.</Text>
+          <View style={styles.rideDescriptionCard}>
+            <TextInput
+              value={rideDescription}
+              onChangeText={setRideDescription}
+              style={styles.rideDescriptionInput}
+              placeholder="E.g. luggage space, exact pickup point, route notes, or preferences."
+              placeholderTextColor={COLORS.textMuted}
+              multiline
+              textAlignVertical="top"
+              maxLength={500}
+            />
+            <Text style={styles.rideDescriptionCounter}>
+              {rideDescription.length}/500
+            </Text>
+          </View>
+        </View>
+
         <TouchableOpacity
           style={[styles.publishButton, publishLoading && styles.publishButtonDisabled]}
           onPress={handlePublish}
@@ -1153,7 +1252,8 @@ export default function PublishRide(): React.JSX.Element {
             ))}
           </View>
         ) : null}
-      </ScrollView>
+        </ScrollView>
+      </KeyboardAvoidingView>
 
       <Modal visible={showDateModal} transparent animationType="slide">
         <TouchableOpacity
@@ -1377,8 +1477,11 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: COLORS.background,
   },
+  keyboardAvoiding: {
+    flex: 1,
+  },
   scroll: { flex: 1 },
-  scrollContent: { paddingHorizontal: 20, paddingBottom: 40 },
+  scrollContent: { paddingHorizontal: 20, paddingBottom: SCROLL_BOTTOM_PADDING },
   publishHeading: {
     marginTop: 16,
     marginBottom: 8,
@@ -1409,6 +1512,45 @@ const styles = StyleSheet.create({
   },
   section: {
     marginTop: 20,
+  },
+  rideDescriptionHint: {
+    fontSize: 13,
+    lineHeight: 18,
+    color: COLORS.textSecondary,
+    marginBottom: 8,
+    marginLeft: 2,
+  },
+  rideDescriptionCard: {
+    backgroundColor: COLORS.background,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: COLORS.borderLight,
+    paddingHorizontal: 12,
+    paddingTop: 10,
+    paddingBottom: 8,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.08,
+        shadowRadius: 8,
+      },
+      android: { elevation: 3 },
+      default: {},
+    }),
+  },
+  rideDescriptionInput: {
+    minHeight: 96,
+    fontSize: 16,
+    lineHeight: 22,
+    color: COLORS.text,
+    paddingVertical: 4,
+  },
+  rideDescriptionCounter: {
+    fontSize: 12,
+    color: COLORS.textMuted,
+    textAlign: 'right',
+    marginTop: 4,
   },
   singleCard: {
     marginTop: 0,

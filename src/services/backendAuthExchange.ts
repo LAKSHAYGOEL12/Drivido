@@ -9,6 +9,10 @@ import {
   peekPendingFirebaseProfileForExchange,
   clearPendingFirebaseProfilePatch,
 } from './pendingFirebaseProfile';
+import {
+  ACCOUNT_DEACTIVATED_API_CODE,
+  isAccountDeactivatedApiError,
+} from '../utils/deactivatedAccount';
 
 const API_PREFIX = (process.env.EXPO_PUBLIC_API_PREFIX ?? '/api').replace(/\/$/, '') || '';
 
@@ -48,6 +52,24 @@ export type BackendAuthUser = {
   vehicle_color?: string;
   /** Up to 2 vehicles; same shape as GET /user/vehicles. */
   vehicles?: unknown[];
+  accountDeletionPending?: boolean;
+  account_deletion_pending?: boolean;
+  accountDeletionRequestedAt?: string | null;
+  account_deletion_requested_at?: string | null;
+  accountDeletionEffectiveAt?: string | null;
+  account_deletion_effective_at?: string | null;
+  accountDeletionStatus?: string;
+  accountActive?: boolean;
+  account_active?: boolean;
+  /** Public profile tagline — also `description` / `profileBio` on some payloads. */
+  bio?: string | null;
+  description?: string | null;
+  profileBio?: string | null;
+  profile_bio?: string | null;
+  about?: string | null;
+  /** Driver comfort tags — same ids as `constants/ridePreferences.ts`. */
+  ridePreferences?: string[] | null;
+  ride_preferences?: string[] | null;
 };
 
 export type BackendAuthExchangeResult = {
@@ -142,6 +164,12 @@ export async function exchangeFirebaseIdTokenForBackendSession(
     code?: string;
   };
   if (!res.ok) {
+    if (isAccountDeactivatedApiError(res.status, data)) {
+      throw new AuthExchangeError(
+        typeof data.message === 'string' ? data.message : 'This account has been deactivated.',
+        ACCOUNT_DEACTIVATED_API_CODE
+      );
+    }
     const detail = [data.message, data.hint].filter(Boolean).join(' ');
     const code = typeof data.code === 'string' ? data.code : undefined;
     throw new AuthExchangeError(detail || `Auth exchange failed (${res.status})`, code);

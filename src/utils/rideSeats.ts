@@ -1,5 +1,5 @@
 import type { RideListItem } from '../types/api';
-import { bookingIsCancelled } from './bookingStatus';
+import { bookingRowHoldsOccupiedSeats } from './bookingStatus';
 
 type RideWithAvail = RideListItem & {
   seatsAvailable?: number;
@@ -35,7 +35,7 @@ export function getRideAvailabilityShort(ride: RideListItem): string {
 export function activeBookedSeatsFromBookings(ride: RideListItem): number {
   const bookings = ride.bookings ?? [];
   return bookings
-    .filter((b) => !bookingIsCancelled(b.status))
+    .filter((b) => bookingRowHoldsOccupiedSeats(b))
     .reduce((sum, b) => sum + (b.seats ?? 0), 0);
 }
 
@@ -45,12 +45,12 @@ export function activeBookedSeatsFromBookings(ride: RideListItem): number {
  * Otherwise sum `bookings` (e.g. ride detail with full passenger list).
  */
 export function activeBookedSeats(ride: RideListItem): number {
+  if (ride.bookings && ride.bookings.length > 0) {
+    return activeBookedSeatsFromBookings(ride);
+  }
   const n = ride.bookedSeats;
   if (typeof n === 'number' && !Number.isNaN(n)) {
     return Math.max(0, Math.floor(n));
-  }
-  if (ride.bookings && ride.bookings.length > 0) {
-    return activeBookedSeatsFromBookings(ride);
   }
   return 0;
 }

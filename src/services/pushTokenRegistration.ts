@@ -1,4 +1,5 @@
-import { Alert, Linking, Platform } from 'react-native';
+import { Linking, Platform } from 'react-native';
+import { Alert } from '../utils/themedAlert';
 import Constants from 'expo-constants';
 import * as Device from 'expo-device';
 import * as Notifications from 'expo-notifications';
@@ -243,6 +244,8 @@ export async function unregisterPushTokenWithBackend(): Promise<void> {
     }
   } finally {
     clearLastRegisteredPushToken();
+    /** Same token string after DELETE — must allow POST again or backend never re-stores the device. */
+    lastPostedKey = null;
   }
 }
 

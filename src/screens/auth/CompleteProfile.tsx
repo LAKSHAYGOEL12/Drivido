@@ -6,7 +6,6 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
-  Alert,
   TouchableOpacity,
   Modal,
   Pressable,
@@ -15,6 +14,7 @@ import {
   InteractionManager,
   BackHandler,
 } from 'react-native';
+import { Alert } from '../../utils/themedAlert';
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -184,6 +184,33 @@ export default function CompleteProfile(): React.JSX.Element {
     return true;
   };
 
+  const friendlyProfileSaveError = (err: unknown): string => {
+    const errObj = err as {
+      message?: unknown;
+      status?: unknown;
+      data?: { code?: unknown; message?: unknown; error?: unknown } | unknown;
+    };
+    const msg =
+      err instanceof Error
+        ? err.message
+        : typeof errObj?.message === 'string'
+          ? errObj.message
+          : String(err ?? '');
+    const status = typeof errObj?.status === 'number' ? errObj.status : undefined;
+    const data = errObj?.data && typeof errObj.data === 'object' ? (errObj.data as Record<string, unknown>) : null;
+    const code = typeof data?.code === 'string' ? data.code.toLowerCase() : '';
+    const low = msg.toLowerCase();
+    const duplicatePhone =
+      status === 409 ||
+      code.includes('phone') ||
+      code.includes('duplicate') ||
+      (low.includes('phone') && (low.includes('already') || low.includes('duplicate'))) ||
+      (low.includes('e11000') && low.includes('phone')) ||
+      low.includes('duplicate key');
+    if (duplicatePhone) return 'This phone number already exists.';
+    return msg || 'Couldn’t save changes.';
+  };
+
   const handleContinue = async () => {
     if (!validate() || saving || finishing) return;
     const national = clampPhoneNationalInput(phoneNational);
@@ -209,8 +236,8 @@ export default function CompleteProfile(): React.JSX.Element {
       });
       goMain();
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : 'Could not save profile.';
-      Alert.alert('Error', msg);
+      const msg = friendlyProfileSaveError(e);
+      Alert.alert('Couldn’t save changes', msg);
     } finally {
       setSaving(false);
       setFinishing(false);

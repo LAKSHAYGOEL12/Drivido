@@ -24,6 +24,7 @@ import { resolveOtherParticipantId, normalizeChatRideId } from '../../services/c
 import { fetchRideDetailRaw } from '../../services/rideDetailCache';
 import { unwrapRideFromDetailResponse } from '../../utils/unwrapRideDetail';
 import { isRideCompletedForChat } from '../../utils/rideChat';
+import { isRidePastArrivalWindow } from '../../utils/rideDisplay';
 import {
   setChatRefreshCallback,
   pickNotificationMessageId,
@@ -32,6 +33,10 @@ import {
   type ChatNotificationPayload,
 } from '../../navigation/handleNotificationNavigation';
 import UserAvatar from '../../components/common/UserAvatar';
+import {
+  DEACTIVATED_ACCOUNT_LABEL,
+  ridePeerDeactivated,
+} from '../../utils/deactivatedAccount';
 
 /** Poll thread while this screen is focused so new messages from the other person appear without leaving. */
 const CHAT_THREAD_POLL_MS = 3000; // Legacy - no longer used with WebSocket
@@ -121,14 +126,21 @@ export default function ChatScreen(): React.JSX.Element {
   const navigation = useNavigation();
   const route = useRoute<ChatRouteProp>();
 
-  const { ride: rideParam, rideId: rideIdParam, otherUserName, otherUserId, otherUserAvatarUrl: routePeerAvatar } =
-    route.params as {
-      ride?: RideListItem;
-      rideId?: string;
-      otherUserName: string;
-      otherUserId: string;
-      otherUserAvatarUrl?: string;
-    };
+  const {
+    ride: rideParam,
+    rideId: rideIdParam,
+    otherUserName,
+    otherUserId,
+    otherUserAvatarUrl: routePeerAvatar,
+    otherUserDeactivated: routePeerDeactivatedFlag,
+  } = route.params as {
+    ride?: RideListItem;
+    rideId?: string;
+    otherUserName: string;
+    otherUserId: string;
+    otherUserAvatarUrl?: string;
+    otherUserDeactivated?: boolean;
+  };
 
   // Try to get ride - either from param or from passed rideId
   let rideToUse = rideParam;
@@ -171,6 +183,13 @@ export default function ChatScreen(): React.JSX.Element {
   
   const ride = rideSnapshot;
 
+  const otherUserDeactivated = useMemo(
+    () =>
+      routePeerDeactivatedFlag === true ||
+      ridePeerDeactivated(ride, (otherUserId ?? '').trim()),
+    [routePeerDeactivatedFlag, ride, otherUserId]
+  );
+
   /** Align with persisted thread keys (`normalizeChatRideId` in InboxContext). */
   const rideIdForChat = useMemo(() => normalizeChatRideId(ride.id), [ride.id]);
   const rideForInbox = useMemo(
@@ -192,41 +211,23 @@ export default function ChatScreen(): React.JSX.Element {
     () => resolvePeerAvatarUrl(routePeerAvatar, ride, otherUserId, otherUserName, conversations),
     [routePeerAvatar, ride, otherUserId, otherUserName, conversations]
   );
+  const headerPeerAvatarUrl = otherUserDeactivated ? undefined : peerAvatarUrl || undefined;
   const peerAvatarOpts = useMemo(
     () => (peerAvatarUrl ? { otherUserAvatarUrl: peerAvatarUrl } : undefined),
     [peerAvatarUrl]
   );
   const { user } = useAuth();
-  const [message, setMessage] = useState('');
-  const messages = useMemo(
-    () => getMessages(rideForInbox, otherUserName, otherUserId),
-    [getMessages, rideForInbox, otherUserName, otherUserId, conversations]
-  );
-  /**
-   * `inverted` FlatList draws index 0 at the **bottom** (above the input). `getMessages` is oldest → newest,
-   * so we reverse to newest → first so latest messages sit at the bottom like typical chat apps.
-   */
-  const messagesNewestFirst = useMemo(() => [...messages].reverse(), [messages]);
-  /** FlatList needs more than length (e.g. same count, updated text). */
-  const chatListExtraData = useMemo(() => {
-    if (messages.length === 0) return '0';
-    const last = messages[messages.length - 1];
-    return `${messages.length}:${last?.id ?? ''}:${last?.sentAt ?? 0}:${last?.text?.length ?? 0}`;
-  }, [messages]);
-  const [inputFocused, setInputFocused] = useState(false);
-  const [keyboardVisible, setKeyboardVisible] = useState(false);
-  const [layoutKey, setLayoutKey] = useState(0);
-
   const currentUserId = (user?.id ?? user?.phone ?? '').trim();
-  const otherStoredId = resolveOtherParticipantId(otherUserId, otherUserName);
   const isRideOwner = Boolean(currentUserId && (ride.userId ?? '').trim() === currentUserId);
   /**
    * Notification/deep-link payloads for older completed rides can miss `otherUserId`.
    * Resolve a real peer id so thread fetch still returns existing messages.
+   * Important: inbox may still carry placeholder ids (`name-<displayName>`). Those must not be sent to GET/POST
+   * messages — resolve driver/passenger id from conversations list or ride payload first.
    */
   const threadPeerUserId = useMemo(() => {
     const routePeer = (otherUserId ?? '').trim();
-    if (routePeer) return routePeer;
+    if (routePeer && !routePeer.startsWith('name-')) return routePeer;
 
     const peerFromConversation = conversations.find((c) => {
       if (!c.ride?.id || normalizeChatRideId(c.ride.id) !== rideIdForChat) return false;
@@ -251,8 +252,35 @@ export default function ChatScreen(): React.JSX.Element {
       const bookingPeerId = (fromBooking?.userId ?? '').trim();
       if (bookingPeerId) return bookingPeerId;
     }
-    return '';
+    return routePeer;
   }, [otherUserId, conversations, rideIdForChat, otherUserName, isRideOwner, ride.userId, ride.bookings, currentUserId]);
+
+  /** Canonical peer id for storage + API: real user id when known, else route placeholder (name-*). */
+  const peerIdForThread = useMemo(
+    () => threadPeerUserId.trim() || (otherUserId ?? '').trim(),
+    [threadPeerUserId, otherUserId]
+  );
+
+  const [message, setMessage] = useState('');
+  const messages = useMemo(
+    () => getMessages(rideForInbox, otherUserName, peerIdForThread || undefined),
+    [getMessages, rideForInbox, otherUserName, peerIdForThread, conversations]
+  );
+  /**
+   * `inverted` FlatList draws index 0 at the **bottom** (above the input). `getMessages` is oldest → newest,
+   * so we reverse to newest → first so latest messages sit at the bottom like typical chat apps.
+   */
+  const messagesNewestFirst = useMemo(() => [...messages].reverse(), [messages]);
+  /** FlatList needs more than length (e.g. same count, updated text). */
+  const chatListExtraData = useMemo(() => {
+    if (messages.length === 0) return '0';
+    const last = messages[messages.length - 1];
+    return `${messages.length}:${last?.id ?? ''}:${last?.sentAt ?? 0}:${last?.text?.length ?? 0}`;
+  }, [messages]);
+  const [inputFocused, setInputFocused] = useState(false);
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
+  const [layoutKey, setLayoutKey] = useState(0);
+  const [threadLoading, setThreadLoading] = useState(true);
 
   const myBookingStatusCandidate = (() => {
     if (ride.bookings && currentUserId) {
@@ -262,14 +290,46 @@ export default function ChatScreen(): React.JSX.Element {
     return ride.myBookingStatus;
   })();
 
-  const bookingStatusLabel = !myBookingStatusCandidate
-    ? ''
-    : bookingIsCancelled(myBookingStatusCandidate)
-      ? 'Cancelled'
-      : 'Booked';
-
+  const rideCompletedForDisplay = (() => {
+    const st = String(ride.status ?? '').trim().toLowerCase();
+    if (st === 'completed' || st === 'complete') return true;
+    return isRidePastArrivalWindow(ride);
+  })();
   const chatEndedForRide = isRideCompletedForChat(ride, currentUserId);
-  const canSend = !chatEndedForRide;
+  const backendCanSendChatRaw =
+    (ride as RideListItem & { canSendChat?: unknown; can_send_chat?: unknown }).canSendChat ??
+    (ride as RideListItem & { canSendChat?: unknown; can_send_chat?: unknown }).can_send_chat;
+  const backendCanSendChat =
+    typeof backendCanSendChatRaw === 'boolean' ? backendCanSendChatRaw : undefined;
+  const backendChatClosedRaw =
+    (ride as RideListItem & { chatClosed?: unknown; chat_closed?: unknown }).chatClosed ??
+    (ride as RideListItem & { chatClosed?: unknown; chat_closed?: unknown }).chat_closed;
+  const backendChatClosed =
+    typeof backendChatClosedRaw === 'boolean' ? backendChatClosedRaw : undefined;
+  const backendChatClosedReason = String(
+    (ride as RideListItem & { chatClosedReason?: unknown; chat_closed_reason?: unknown }).chatClosedReason ??
+      (ride as RideListItem & { chatClosedReason?: unknown; chat_closed_reason?: unknown }).chat_closed_reason ??
+      ''
+  )
+    .trim()
+    .toLowerCase();
+  const chatClosedByPolicy =
+    backendCanSendChat === false ||
+    backendChatClosed === true;
+  const bookingStatusLabel = rideCompletedForDisplay
+    ? 'Ride completed'
+    : !myBookingStatusCandidate
+      ? ''
+      : String(myBookingStatusCandidate).trim().toLowerCase() === 'pending' ||
+          String(myBookingStatusCandidate).trim().toLowerCase() === 'requested' ||
+          String(myBookingStatusCandidate).trim().toLowerCase() === 'request_pending' ||
+          String(myBookingStatusCandidate).trim().toLowerCase() === 'awaiting_approval'
+        ? 'Approval pending'
+      : bookingIsCancelled(myBookingStatusCandidate)
+        ? 'Cancelled'
+        : 'Booked';
+
+  const canSend = !chatClosedByPolicy && !otherUserDeactivated;
 
   useEffect(() => {
     if (rideParam) {
@@ -312,12 +372,12 @@ export default function ChatScreen(): React.JSX.Element {
   }, [navigation]);
 
   useEffect(() => {
-    addOrUpdateConversation(rideForInbox, otherUserName, otherUserId, undefined, peerAvatarOpts);
-  }, [rideForInbox, otherUserName, otherUserId, addOrUpdateConversation, peerAvatarOpts]);
+    addOrUpdateConversation(rideForInbox, otherUserName, peerIdForThread, undefined, peerAvatarOpts);
+  }, [rideForInbox, otherUserName, peerIdForThread, addOrUpdateConversation, peerAvatarOpts]);
 
   const markThisConversationRead = useCallback(() => {
-    markConversationAsRead(rideIdForChat, otherUserId, otherUserName);
-  }, [markConversationAsRead, rideIdForChat, otherUserId, otherUserName]);
+    markConversationAsRead(rideIdForChat, peerIdForThread, otherUserName);
+  }, [markConversationAsRead, rideIdForChat, peerIdForThread, otherUserName]);
 
   // Load fresh messages when chat screen opens (ensures we have latest data from API)
   useFocusEffect(
@@ -330,6 +390,7 @@ export default function ChatScreen(): React.JSX.Element {
 
       /** Opening chat = read (inbox row tap does this; notification deep-link does not — clear badge here). */
       markThisConversationRead();
+      setThreadLoading(true);
 
       void loadThreadMessages(rideIdForChat, oid ?? '', oname, rideForInbox, {
         cancelled: () => cancelled,
@@ -340,6 +401,9 @@ export default function ChatScreen(): React.JSX.Element {
         })
         .catch(() => {
           console.error('[Chat] Failed to load initial messages');
+        })
+        .finally(() => {
+          if (!cancelled) setThreadLoading(false);
         });
 
       return () => {
@@ -354,9 +418,11 @@ export default function ChatScreen(): React.JSX.Element {
     const oid = threadPeerUserId.trim();
     const oname = otherUserName?.trim() || 'User';
     if (!oid && !oname) return;
+    setThreadLoading(true);
     void loadThreadMessages(rideIdForChat, oid ?? '', oname, rideForInbox, { force: true })
       .then(() => markThisConversationRead())
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setThreadLoading(false));
   }, [currentUserId, rideIdForChat, threadPeerUserId, otherUserName, loadThreadMessages, rideForInbox, markThisConversationRead]);
 
   /** Register callback for immediate refresh when a chat notification arrives while this screen is open. */
@@ -377,7 +443,7 @@ export default function ChatScreen(): React.JSX.Element {
       const text = pickNotificationMessageText(payload.raw);
       const senderId = pickNotificationSenderId(payload.raw) ?? payload.otherUserId;
       if (mid && text && senderId) {
-        ingestIncomingMessage(rideForInbox, otherUserName, otherUserId, {
+        ingestIncomingMessage(rideForInbox, otherUserName, peerIdForThread, {
           id: mid,
           text,
           sentAt: Date.now(),
@@ -396,6 +462,7 @@ export default function ChatScreen(): React.JSX.Element {
     rideIdForChat,
     otherUserId,
     otherUserName,
+    peerIdForThread,
     rideForInbox,
     loadThreadMessages,
     ingestIncomingMessage,
@@ -429,12 +496,15 @@ export default function ChatScreen(): React.JSX.Element {
   const destinationShort = shortLabel(destinationLabel, ROUTE_LABEL_MAX);
   const shortRoute = `${pickupShort} → ${destinationShort}`;
   const rideDateTimeStr = formatRideDateTime(ride);
-  const displayName = otherUserName?.trim() || 'Driver';
+  const displayName = otherUserDeactivated
+    ? DEACTIVATED_ACCOUNT_LABEL
+    : otherUserName?.trim() || 'Driver';
 
   const handleSend = async () => {
     const trimmed = message.trim();
     if (!trimmed) return;
-    if (chatEndedForRide) return;
+    if (!canSend) return;
+    if (otherUserDeactivated) return;
 
     const clientId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
     const sentAt = Date.now();
@@ -445,12 +515,13 @@ export default function ChatScreen(): React.JSX.Element {
       isFromMe: true,
       status: 'sent',
     };
-    addMessage(rideForInbox, otherUserName, otherUserId, optimistic);
+    const sendPeer = peerIdForThread.trim();
+    addMessage(rideForInbox, otherUserName, sendPeer || otherUserId, optimistic);
     setMessage('');
     addOrUpdateConversation(
       rideForInbox,
       otherUserName,
-      otherUserId,
+      sendPeer || otherUserId,
       {
         lastMessage: trimmed,
         lastMessageAt: sentAt,
@@ -459,29 +530,18 @@ export default function ChatScreen(): React.JSX.Element {
       peerAvatarOpts
     );
 
-    const otherId = (otherUserId ?? '').trim();
-    if (!otherId) {
-      addOrUpdateConversation(
-        rideForInbox,
-        otherUserName,
-        otherUserId,
-        {
-          lastMessage: trimmed,
-          lastMessageAt: sentAt,
-          messageStatus: 'sent',
-        },
-        peerAvatarOpts
-      );
+    if (!sendPeer || sendPeer.startsWith('name-')) {
+      updateMessageStatus(rideForInbox, otherUserName, sendPeer || otherUserId, clientId, 'pending');
       return;
     }
 
     try {
       const res = await sendChatMessage({
         rideId: rideForInbox.id,
-        otherUserId: otherId,
+        otherUserId: sendPeer,
         text: trimmed,
       });
-      reconcileOutboundMessage(rideForInbox, otherUserName, otherUserId, clientId, {
+      reconcileOutboundMessage(rideForInbox, otherUserName, sendPeer || otherUserId, clientId, {
         id: res.id,
         text: res.text,
         sentAt: res.sentAt,
@@ -489,7 +549,7 @@ export default function ChatScreen(): React.JSX.Element {
       addOrUpdateConversation(
         rideForInbox,
         otherUserName,
-        otherUserId,
+        sendPeer || otherUserId,
         {
           lastMessage: res.text,
           lastMessageAt: res.sentAt,
@@ -499,9 +559,54 @@ export default function ChatScreen(): React.JSX.Element {
       );
     } catch {
       /** Keep the bubble in the thread; mark unsynced so we don't treat it as server-confirmed. */
-      updateMessageStatus(rideForInbox, otherUserName, otherUserId, clientId, 'pending');
+      updateMessageStatus(rideForInbox, otherUserName, sendPeer || otherUserId, clientId, 'pending');
     }
   };
+
+  const handleRetryPendingMessage = useCallback(
+    async (msg: PersistedChatMessage) => {
+      if (!msg.isFromMe || msg.status !== 'pending') return;
+      if (!canSend) return;
+      const sendPeer = peerIdForThread.trim();
+      if (!sendPeer || sendPeer.startsWith('name-')) return;
+      try {
+        const res = await sendChatMessage({
+          rideId: rideForInbox.id,
+          otherUserId: sendPeer,
+          text: msg.text,
+        });
+        reconcileOutboundMessage(rideForInbox, otherUserName, sendPeer || otherUserId, msg.id, {
+          id: res.id,
+          text: res.text,
+          sentAt: res.sentAt,
+        });
+        addOrUpdateConversation(
+          rideForInbox,
+          otherUserName,
+          sendPeer || otherUserId,
+          {
+            lastMessage: res.text,
+            lastMessageAt: res.sentAt,
+            messageStatus: 'sent',
+          },
+          peerAvatarOpts
+        );
+      } catch {
+        updateMessageStatus(rideForInbox, otherUserName, sendPeer || otherUserId, msg.id, 'pending');
+      }
+    },
+    [
+      canSend,
+      peerIdForThread,
+      rideForInbox,
+      otherUserName,
+      otherUserId,
+      reconcileOutboundMessage,
+      addOrUpdateConversation,
+      peerAvatarOpts,
+      updateMessageStatus,
+    ]
+  );
 
   const renderMessage = useCallback(({ item: msg }: { item: PersistedChatMessage }) => {
     return (
@@ -526,11 +631,16 @@ export default function ChatScreen(): React.JSX.Element {
             >
               {formatMessageTime(msg.sentAt)}
             </Text>
+            {msg.isFromMe && msg.status === 'pending' ? (
+              <TouchableOpacity onPress={() => void handleRetryPendingMessage(msg)} hitSlop={8}>
+                <Text style={[styles.bubblePendingText, styles.bubblePendingTextMe]}>Retry</Text>
+              </TouchableOpacity>
+            ) : null}
           </View>
         </View>
       </View>
     );
-  }, []);
+  }, [handleRetryPendingMessage]);
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
@@ -548,7 +658,7 @@ export default function ChatScreen(): React.JSX.Element {
           </TouchableOpacity>
           <View style={styles.headerCenter}>
             <UserAvatar
-              uri={peerAvatarUrl || undefined}
+              uri={headerPeerAvatarUrl}
               name={displayName}
               size={40}
               backgroundColor={COLORS.primary}
@@ -593,11 +703,20 @@ export default function ChatScreen(): React.JSX.Element {
           </TouchableOpacity>
         </View>
 
-        {chatEndedForRide ? (
+        {chatClosedByPolicy ? (
           <View style={styles.chatEndedBanner}>
             <Ionicons name="lock-closed-outline" size={18} color={COLORS.textSecondary} />
             <Text style={styles.chatEndedBannerText}>
-              This ride is completed. This chat is read-only.
+              {backendChatClosedReason === 'grace_window_elapsed'
+                ? 'Chat closed more than 2 hours after this ride was completed.'
+                : 'This ride is completed. This chat is read-only.'}
+            </Text>
+          </View>
+        ) : otherUserDeactivated ? (
+          <View style={styles.chatEndedBanner}>
+            <Ionicons name="person-remove-outline" size={18} color={COLORS.textSecondary} />
+            <Text style={styles.chatEndedBannerText}>
+              This user’s account is deactivated. New messages are disabled.
             </Text>
           </View>
         ) : null}
@@ -622,9 +741,14 @@ export default function ChatScreen(): React.JSX.Element {
               !canSend ? { paddingBottom: 26 } : null,
             ]}
           />
+          {threadLoading && messages.length === 0 ? (
+            <View style={styles.emptyChatOverlay} pointerEvents="none">
+              <Text style={styles.emptyChatHint}>Loading messages...</Text>
+            </View>
+          ) : null}
           {messages.length === 0 ? (
             <View style={styles.emptyChatOverlay} pointerEvents="none">
-              <Text style={styles.emptyChatHint}>No messages yet</Text>
+              <Text style={styles.emptyChatHint}>No messages yet. Say hello to start.</Text>
             </View>
           ) : null}
         </View>
@@ -667,11 +791,19 @@ export default function ChatScreen(): React.JSX.Element {
                 <Ionicons name="send" size={20} color={message.trim() ? COLORS.white : COLORS.textMuted} />
               </TouchableOpacity>
             </View>
-          ) : (
+          ) : chatClosedByPolicy ? (
             <View style={styles.chatClosedRow}>
-              <Text style={styles.chatClosedText}>This ride is completed. Chat is closed.</Text>
+              <Text style={styles.chatClosedText}>
+                {backendChatClosedReason === 'grace_window_elapsed'
+                  ? 'Chat closed more than 2 hours after this ride was completed.'
+                  : 'This ride is completed. Chat is closed.'}
+              </Text>
             </View>
-          )}
+          ) : otherUserDeactivated ? (
+            <View style={styles.chatClosedRow}>
+              <Text style={styles.chatClosedText}>Chat is closed for deactivated accounts.</Text>
+            </View>
+          ) : null}
         </View>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -866,6 +998,15 @@ const styles = StyleSheet.create({
   },
   bubbleTimeMe: {
     color: 'rgba(255,255,255,0.85)',
+  },
+  bubblePendingText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.primary,
+  },
+  bubblePendingTextMe: {
+    color: 'rgba(255,255,255,0.92)',
+    textDecorationLine: 'underline',
   },
   chatClosedBanner: {
     flexDirection: 'row',

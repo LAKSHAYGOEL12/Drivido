@@ -5,6 +5,10 @@ import {
   sendEmailVerification,
   sendPasswordResetEmail,
   updateProfile,
+  EmailAuthProvider,
+  reauthenticateWithCredential,
+  updatePassword,
+  deleteUser,
 } from '@firebase/auth';
 import { getFirebaseAuth, isFirebaseAuthConfigured } from '../config/firebase';
 
@@ -36,6 +40,8 @@ export function firebaseAuthErrorToMessage(e: unknown): string {
     case 'auth/invalid-action-code':
     case 'auth/expired-action-code':
       return 'This link has expired. Request a new email from the app.';
+    case 'auth/requires-recent-login':
+      return 'For security, sign out and sign in again, then try this action.';
     default:
       if (e instanceof Error && e.message) return e.message;
       return 'Something went wrong. Try again.';
@@ -98,4 +104,35 @@ export async function sendPasswordResetEmailToAddress(email: string): Promise<vo
   requireFirebaseAuthConfigured();
   const auth = getFirebaseAuth()!;
   await sendPasswordResetEmail(auth, email.trim().toLowerCase());
+}
+
+/** Email/password accounts only: re-authenticate, then set a new password. */
+export async function changePasswordForCurrentUser(args: {
+  currentPassword: string;
+  newPassword: string;
+}): Promise<void> {
+  requireFirebaseAuthConfigured();
+  const auth = getFirebaseAuth()!;
+  const u = auth.currentUser;
+  const email = u?.email?.trim();
+  if (!u || !email) {
+    throw new Error('Password change requires an email and password sign-in.');
+  }
+  const credential = EmailAuthProvider.credential(email, args.currentPassword);
+  await reauthenticateWithCredential(u, credential);
+  await updatePassword(u, args.newPassword);
+}
+
+/** Email/password accounts only: re-authenticate, then delete the Firebase user. */
+export async function deleteFirebaseUserWithPassword(currentPassword: string): Promise<void> {
+  requireFirebaseAuthConfigured();
+  const auth = getFirebaseAuth()!;
+  const u = auth.currentUser;
+  const email = u?.email?.trim();
+  if (!u || !email) {
+    throw new Error('Account deletion requires an email and password sign-in.');
+  }
+  const credential = EmailAuthProvider.credential(email, currentPassword);
+  await reauthenticateWithCredential(u, credential);
+  await deleteUser(u);
 }

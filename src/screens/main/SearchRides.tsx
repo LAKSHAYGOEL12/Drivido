@@ -5,9 +5,9 @@ import {
   View,
   TouchableOpacity,
   BackHandler,
-  Alert,
   ScrollView,
 } from 'react-native';
+import { Alert } from '../../utils/themedAlert';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute, useFocusEffect } from '@react-navigation/native';
@@ -69,6 +69,70 @@ function formatRecentSubline(dateStr: string, passengersStr: string): string {
   const n = Math.min(6, Math.max(1, parseInt(passengersStr, 10) || 1));
   const pax = n === 1 ? '1 pax' : `${n} pax`;
   return `${label} • ${pax}`;
+}
+
+function isSamePickupAndDestination(args: {
+  from: string;
+  to: string;
+  fromLat?: number;
+  fromLon?: number;
+  toLat?: number;
+  toLon?: number;
+}): boolean {
+  const normalize = (v: string) =>
+    v
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .replace(/\s+/g, ' ');
+  const toTokens = (v: string): string[] =>
+    normalize(v)
+      .split(' ')
+      .filter((t) => t.length > 1);
+  const fromNorm = normalize(args.from);
+  const toNorm = normalize(args.to);
+  if (fromNorm.length > 0 && fromNorm === toNorm) return true;
+  const fromTokens = toTokens(args.from);
+  const toTokensArr = toTokens(args.to);
+  if (fromTokens.length >= 2 && toTokensArr.length >= 2) {
+    const fromSet = new Set(fromTokens);
+    const toSet = new Set(toTokensArr);
+    let overlap = 0;
+    fromSet.forEach((t) => {
+      if (toSet.has(t)) overlap += 1;
+    });
+    const minSize = Math.min(fromSet.size, toSet.size);
+    // Treat strong token overlap as same place (e.g. "modinagar sonda road" formatting variants).
+    if (overlap >= 2 && overlap / Math.max(1, minSize) >= 0.66) return true;
+  }
+  const hasFromCoords =
+    typeof args.fromLat === 'number' &&
+    !Number.isNaN(args.fromLat) &&
+    typeof args.fromLon === 'number' &&
+    !Number.isNaN(args.fromLon);
+  const hasToCoords =
+    typeof args.toLat === 'number' &&
+    !Number.isNaN(args.toLat) &&
+    typeof args.toLon === 'number' &&
+    !Number.isNaN(args.toLon);
+  if (hasFromCoords && hasToCoords) {
+    const toRad = (deg: number) => (deg * Math.PI) / 180;
+    const aLat = args.fromLat as number;
+    const aLon = args.fromLon as number;
+    const bLat = args.toLat as number;
+    const bLon = args.toLon as number;
+    const dLat = toRad(bLat - aLat);
+    const dLon = toRad(bLon - aLon);
+    const lat1 = toRad(aLat);
+    const lat2 = toRad(bLat);
+    const h =
+      Math.sin(dLat / 2) ** 2 +
+      Math.sin(dLon / 2) ** 2 * Math.cos(lat1) * Math.cos(lat2);
+    const km = 6371 * (2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h)));
+    // <=250m is operationally same stop for search.
+    return km <= 0.25;
+  }
+  return false;
 }
 
 export default function SearchRides(): React.JSX.Element {
@@ -170,14 +234,12 @@ export default function SearchRides(): React.JSX.Element {
         toLatitude !== undefined ||
         toLongitude !== undefined
       ) {
-        if (selectedFrom !== undefined) setFrom(selectedFrom ?? '');
-        if (selectedTo !== undefined) setTo(selectedTo ?? '');
+        if (selectedFrom !== undefined) setFrom(String(selectedFrom ?? ''));
+        if (selectedTo !== undefined) setTo(String(selectedTo ?? ''));
         if (preservedDate !== undefined) setDate(preservedDate ?? null);
         if (preservedPassengers !== undefined) {
           const n = parseInt(String(preservedPassengers), 10);
-          setPassengers(
-            Number.isNaN(n) ? '1' : String(Math.min(4, Math.max(1, n)))
-          );
+          setPassengers(Number.isNaN(n) ? '1' : String(Math.min(4, Math.max(1, n))));
         }
         if (fromLatitude !== undefined) setFromLat(fromLatitude);
         if (fromLongitude !== undefined) setFromLon(fromLongitude);
@@ -233,10 +295,28 @@ export default function SearchRides(): React.JSX.Element {
       Alert.alert('Select date', 'Please select a date for your trip.');
       return;
     }
+    const fromSelectedOnMap = fromLat != null && fromLon != null;
+    const toSelectedOnMap = toLat != null && toLon != null;
+    if (!fromSelectedOnMap || !toSelectedOnMap) {
+      Alert.alert(
+        'Select from map',
+        'Choose pickup and destination from the location picker so we can match routes correctly.'
+      );
+      return;
+    }
+    const sameRoute = isSamePickupAndDestination({
+      from: fromTrim,
+      to: toTrim,
+      fromLat,
+      fromLon,
+      toLat,
+      toLon,
+    });
     navigation.navigate('SearchResults', {
       from: fromTrim,
       to: toTrim,
       date,
+      sameRouteWarning: sameRoute,
       passengers,
       ...(fromLat != null && fromLon != null && { fromLatitude: fromLat, fromLongitude: fromLon }),
       ...(toLat != null && toLon != null && { toLatitude: toLat, toLongitude: toLon }),
@@ -244,6 +324,14 @@ export default function SearchRides(): React.JSX.Element {
   };
 
   const applyRecentSearch = (e: RecentSearchEntry) => {
+    const sameRoute = isSamePickupAndDestination({
+      from: e.from,
+      to: e.to,
+      fromLat: e.fromLatitude,
+      fromLon: e.fromLongitude,
+      toLat: e.toLatitude,
+      toLon: e.toLongitude,
+    });
     setFrom(e.from);
     setTo(e.to);
     const resolvedDate = resolveDateForRecent(e.date);
@@ -257,6 +345,7 @@ export default function SearchRides(): React.JSX.Element {
       from: e.from.trim(),
       to: e.to.trim(),
       date: resolvedDate,
+      sameRouteWarning: sameRoute,
       passengers: e.passengers,
       ...(e.fromLatitude != null &&
         e.fromLongitude != null && {
@@ -316,7 +405,7 @@ export default function SearchRides(): React.JSX.Element {
               activeOpacity={0.7}
             >
               <Text style={[styles.pickupText, !from && styles.placeholder]} numberOfLines={1}>
-                {from || 'Where from?'}
+                {from || 'Add pickup'}
               </Text>
               <Text style={styles.label}>Pickup</Text>
             </TouchableOpacity>

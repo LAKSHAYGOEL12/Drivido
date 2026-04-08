@@ -1,21 +1,23 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Modal,
   Platform,
   Pressable,
   ScrollView,
   StatusBar,
   StyleSheet,
+  Switch,
   Text,
   View,
 } from 'react-native';
+import { Alert } from '../../utils/themedAlert';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect, useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useAuth } from '../../contexts/AuthContext';
+import { useNotificationPreferences } from '../../contexts/NotificationPreferencesContext';
 import { COLORS } from '../../constants/colors';
 import type { ProfileStackParamList } from '../../navigation/types';
 import { getUserRatingsSummary } from '../../services/ratings';
@@ -32,10 +34,18 @@ import { uploadUserAvatar, deleteUserAvatar } from '../../services/userAvatar';
 import { ratingQualitativeColor, ratingQualitativeLabel } from '../../utils/ratingQualitativeLabel';
 import { formatMemberSinceLabel } from '../../utils/formatMemberSinceLabel';
 import { vehiclesFromUser, type UserVehicleEntry } from '../../utils/userVehicle';
+import { unregisterPushTokenWithBackend } from '../../services/pushTokenRegistration';
+import RidePreferenceChips from '../../components/profile/RidePreferenceChips';
+import { normalizeRidePreferenceIds } from '../../constants/ridePreferences';
+import SkeletonBlock from '../../components/common/SkeletonBlock';
 
 export default function Profile(): React.JSX.Element {
   const insets = useSafeAreaInsets();
   const { user, logout, refreshUser, patchUser, isAuthenticated, needsProfileCompletion } = useAuth();
+  const { pushNotificationsAllowed, setPushNotificationsAllowed } = useNotificationPreferences();
+  /** Keeps Switch visually ON while the enable confirmation alert is open (avoids controlled-value snap-back). */
+  const [pushEnableConfirmPending, setPushEnableConfirmPending] = useState(false);
+  const notificationsSwitchVisualOn = pushNotificationsAllowed || pushEnableConfirmPending;
   const sessionReady = isAuthenticated && !needsProfileCompletion;
   const { pickFromGallery, takePhoto } = useImagePicker();
   const navigation = useNavigation<NativeStackNavigationProp<ProfileStackParamList>>();
@@ -49,11 +59,16 @@ export default function Profile(): React.JSX.Element {
   const [tripsCompletedThisMonth, setTripsCompletedThisMonth] = useState(0);
   const [memberSinceLabel, setMemberSinceLabel] = useState('—');
   const [loading, setLoading] = useState(true);
+  const [backgroundRefreshing, setBackgroundRefreshing] = useState(false);
+  const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
   const [avatarUploading, setAvatarUploading] = useState(false);
   const [photoMenuVisible, setPhotoMenuVisible] = useState(false);
   const [tripsBreakdownVisible, setTripsBreakdownVisible] = useState(false);
+  const [subjectBioFromApi, setSubjectBioFromApi] = useState('');
+  const [subjectRidePrefsFromApi, setSubjectRidePrefsFromApi] = useState<string[]>([]);
   /** Avoid flashing “—” on Trips when refocusing the same profile (e.g. back from Trips screen). */
   const prevTripsSubjectIdRef = useRef<string | null>(null);
+  const prevProfileSubjectIdRef = useRef<string | null>(null);
 
   const routeUserId = route.params?.userId?.trim();
   const routeDisplayName = route.params?.displayName?.trim();
@@ -119,6 +134,50 @@ export default function Profile(): React.JSX.Element {
 
   const closePhotoMenu = useCallback(() => setPhotoMenuVisible(false), []);
 
+  useEffect(() => {
+    if (pushNotificationsAllowed) {
+      setPushEnableConfirmPending(false);
+    }
+  }, [pushNotificationsAllowed]);
+
+  const onPushNotificationsSwitch = useCallback(
+    (value: boolean) => {
+      const uid = user?.id?.trim();
+      if (!uid) return;
+      if (value) {
+        setPushEnableConfirmPending(true);
+        const resetPending = () => setPushEnableConfirmPending(false);
+        requestAnimationFrame(() => {
+          Alert.alert(
+            'Allow notifications',
+            'You will receive push alerts for ride updates and new messages on this device.',
+            [
+              { text: 'Cancel', style: 'cancel', onPress: resetPending },
+              {
+                text: 'Allow',
+                onPress: () => {
+                  void setPushNotificationsAllowed(true);
+                },
+              },
+            ],
+            { cancelable: true, onDismiss: resetPending }
+          );
+        });
+        return;
+      }
+      setPushEnableConfirmPending(false);
+      void setPushNotificationsAllowed(false);
+      void (async () => {
+        try {
+          await unregisterPushTokenWithBackend();
+        } catch {
+          // Preference already off; backend unregister is best-effort.
+        }
+      })();
+    },
+    [user?.id, setPushNotificationsAllowed]
+  );
+
   const handleProfileHeaderBack = useCallback(() => {
     const returnTo = route.params?._returnToRideDetail;
     const parentNav = (navigation as { getParent?: () => { navigate?: (name: string, params?: object) => void } })
@@ -152,11 +211,17 @@ export default function Profile(): React.JSX.Element {
         setTripsCancelled(0);
         setTripsCompletedThisMonth(0);
         setMemberSinceLabel('—');
+        setSubjectBioFromApi('');
+        setSubjectRidePrefsFromApi([]);
         return () => {};
       }
 
       let cancelled = false;
-      setLoading(true);
+      const profileSubjectChanged = prevProfileSubjectIdRef.current !== targetUserId;
+      prevProfileSubjectIdRef.current = targetUserId;
+      const showBlockingLoader = profileSubjectChanged || !hasLoadedOnce;
+      setLoading(showBlockingLoader);
+      setBackgroundRefreshing(!showBlockingLoader);
       setMemberSinceLabel(formatMemberSinceLabel(isSelf ? user?.createdAt : undefined));
       void (async () => {
         try {
@@ -166,6 +231,15 @@ export default function Profile(): React.JSX.Element {
           setProfileName(targetDisplayName);
           setAvgRating(summary.avgRating);
           setTotalRatings(summary.totalRatings);
+          if (summary.subjectDeactivated) {
+            setSubjectBioFromApi('');
+            setSubjectRidePrefsFromApi([]);
+          } else {
+            setSubjectBioFromApi((summary.subjectBio ?? '').trim());
+            setSubjectRidePrefsFromApi(
+              normalizeRidePreferenceIds(summary.subjectRidePreferences ?? [])
+            );
+          }
           setMemberSinceLabel(
             formatMemberSinceLabel(
               summary.subjectCreatedAt ?? (isSelf ? user?.createdAt : undefined)
@@ -176,9 +250,15 @@ export default function Profile(): React.JSX.Element {
           setProfileName(targetDisplayName);
           setAvgRating(0);
           setTotalRatings(0);
+          setSubjectBioFromApi('');
+          setSubjectRidePrefsFromApi([]);
           setMemberSinceLabel(formatMemberSinceLabel(isSelf ? user?.createdAt : undefined));
         } finally {
-          if (!cancelled) setLoading(false);
+          if (!cancelled) {
+            setLoading(false);
+            setBackgroundRefreshing(false);
+            setHasLoadedOnce(true);
+          }
         }
         if (!cancelled && targetUserId) {
           const tripsSubjectChanged = prevTripsSubjectIdRef.current !== targetUserId;
@@ -196,7 +276,7 @@ export default function Profile(): React.JSX.Element {
               const { completed, cancelled: cx } = tripCountsFromAggregate(agg);
               setTripsCompleted(completed);
               setTripsCancelled(cx);
-              setTripsCompletedThisMonth(Math.max(0, agg.completedThisMonth ?? 0));
+              setTripsCompletedThisMonth(Math.max(0, agg?.completedThisMonth ?? 0));
             }
           } catch {
             if (!cancelled) {
@@ -221,7 +301,7 @@ export default function Profile(): React.JSX.Element {
       return () => {
         cancelled = true;
       };
-    }, [targetUserId, targetDisplayName, isProfileEntryScreen, isSelf, refreshUser, user?.id, user?.createdAt])
+    }, [targetUserId, targetDisplayName, isProfileEntryScreen, isSelf, refreshUser, user?.id, user?.createdAt, hasLoadedOnce])
   );
 
   /** During logout, RootNavigator shows the single “Shutting down” overlay — avoid a second full-screen spinner here. */
@@ -239,9 +319,41 @@ export default function Profile(): React.JSX.Element {
       <View style={styles.rootFill}>
         <StatusBar barStyle="dark-content" backgroundColor={COLORS.white} />
         <View style={[styles.statusBarFill, { height: insets.top }]} />
-        <View style={[styles.loaderWrap, styles.rootBelowStatus]}>
-          <ActivityIndicator size="large" color={COLORS.primary} />
-        </View>
+        <ScrollView
+          style={styles.screen}
+          contentContainerStyle={styles.skeletonContent}
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={styles.skeletonHeaderCard}>
+            <SkeletonBlock width={72} height={72} borderRadius={36} />
+            <SkeletonBlock width="50%" height={20} />
+            <SkeletonBlock width="80%" height={12} />
+            <SkeletonBlock width="65%" height={12} />
+          </View>
+          <View style={styles.skeletonStatsRow}>
+            <SkeletonBlock width="30%" height={52} />
+            <SkeletonBlock width="30%" height={52} />
+            <SkeletonBlock width="30%" height={52} />
+          </View>
+          <SkeletonBlock width="100%" height={48} borderRadius={12} />
+          <View style={styles.skeletonCard}>
+            <SkeletonBlock width="40%" height={14} />
+            <SkeletonBlock width="100%" height={16} />
+            <SkeletonBlock width="70%" height={14} />
+          </View>
+          <View style={styles.skeletonCard}>
+            <SkeletonBlock width="34%" height={14} />
+            <SkeletonBlock width="92%" height={38} borderRadius={10} />
+            <SkeletonBlock width="92%" height={38} borderRadius={10} />
+          </View>
+          <View style={styles.skeletonCard}>
+            <SkeletonBlock width="42%" height={14} />
+            <SkeletonBlock width="100%" height={40} borderRadius={10} />
+            <SkeletonBlock width="100%" height={40} borderRadius={10} />
+            <SkeletonBlock width="100%" height={40} borderRadius={10} />
+          </View>
+          <View style={styles.skeletonFooterSpacer} />
+        </ScrollView>
       </View>
     );
   }
@@ -261,6 +373,12 @@ export default function Profile(): React.JSX.Element {
         contentInsetAdjustmentBehavior={Platform.OS === 'ios' ? 'never' : undefined}
       >
       <View style={styles.headerCard}>
+        {backgroundRefreshing ? (
+          <View style={styles.offlineHintRow}>
+            <Ionicons name="cloud-offline-outline" size={14} color={COLORS.textSecondary} />
+            <Text style={styles.offlineHintText}>Updating when network is available</Text>
+          </View>
+        ) : null}
         <View style={styles.headerTopRow}>
           {isSelf ? (
             <View style={styles.headerLeftSpacer} />
@@ -270,7 +388,7 @@ export default function Profile(): React.JSX.Element {
               accessibilityRole="button"
               onPress={handleProfileHeaderBack}
             >
-              <Ionicons name="arrow-back" size={18} color={COLORS.textSecondary} />
+              <Ionicons name="arrow-back" size={18} color={COLORS.primary} />
             </Pressable>
           )}
           <View style={styles.headerTitleWrap}>
@@ -308,7 +426,28 @@ export default function Profile(): React.JSX.Element {
           </View>
         </View>
         <Text style={styles.name}>{displayName}</Text>
-        <Text style={styles.bio}>Top-rated urban navigator and tech enthusiast.</Text>
+        {(() => {
+          const bioLine = isSelf
+            ? (user?.bio ?? '').trim() || subjectBioFromApi
+            : subjectBioFromApi;
+          if (bioLine) {
+            return <Text style={styles.bio}>{bioLine}</Text>;
+          }
+          if (isSelf) {
+            return (
+              <Text style={styles.bioHint}>Add a short bio from Edit profile.</Text>
+            );
+          }
+          return null;
+        })()}
+        <RidePreferenceChips
+          ids={
+            isSelf
+              ? normalizeRidePreferenceIds(user?.ridePreferences ?? subjectRidePrefsFromApi)
+              : subjectRidePrefsFromApi
+          }
+          style={styles.ridePrefChips}
+        />
       </View>
 
       <View style={styles.statsCard}>
@@ -360,7 +499,9 @@ export default function Profile(): React.JSX.Element {
                 {ratingQualitativeLabel(avgRating)}
               </Text>
             </View>
-            <Text style={styles.reviewText}>Based on {totalRatings} reviews</Text>
+            <Text style={styles.reviewText}>
+              {totalRatings > 0 ? `Based on ${totalRatings} ratings` : 'No ratings yet'}
+            </Text>
           </View>
 
           <Pressable
@@ -374,7 +515,7 @@ export default function Profile(): React.JSX.Element {
               })
             }
           >
-            <Ionicons name="chevron-forward" size={16} color={COLORS.success} />
+            <Ionicons name="chevron-forward" size={16} color={COLORS.primary} />
           </Pressable>
         </View>
       </View>
@@ -420,17 +561,15 @@ export default function Profile(): React.JSX.Element {
 
           <View style={styles.vehicleInfoCard}>
             <View style={styles.vehicleInfoHeader}>
-              <Ionicons name="car-outline" size={22} color={COLORS.secondary} />
+              <Ionicons name="car-outline" size={18} color={COLORS.primary} />
               <Text style={styles.vehicleInfoTitle}>Vehicle Information</Text>
             </View>
             {mergedVehicles.length === 0 ? (
-              <View style={styles.vehicleInfoBlock}>
-                <View style={styles.vehicleEmptyRow}>
-                  <View style={styles.vehicleInfoThumb}>
-                    <Ionicons name="car-outline" size={20} color={COLORS.textMuted} />
-                  </View>
-                  <Text style={styles.vehicleEmptyMuted}>No vehicle added</Text>
+              <View style={styles.vehicleEmptyCompact}>
+                <View style={styles.rowIcon}>
+                  <Ionicons name="car-outline" size={16} color={COLORS.primary} />
                 </View>
+                <Text style={styles.vehicleEmptyCompactText}>No vehicle added yet</Text>
               </View>
             ) : (
               mergedVehicles.map((v, index) => (
@@ -445,14 +584,21 @@ export default function Profile(): React.JSX.Element {
           </View>
 
           <View style={styles.menuCard}>
-            <MenuRow icon="settings-outline" title="Settings & Privacy" />
-            <MenuRow icon="shield-checkmark-outline" title="Account Security" />
+            <NotificationsToggleRow
+              value={notificationsSwitchVisualOn}
+              onValueChange={onPushNotificationsSwitch}
+            />
+            <MenuRow
+              icon="shield-checkmark-outline"
+              title="Account & Security"
+              onPress={() => navigation.navigate('AccountSecurity')}
+            />
             <Pressable style={styles.menuRow} onPress={logout} accessibilityRole="button">
               <View style={[styles.rowIcon, styles.logoutIconBg]}>
                 <Ionicons name="log-out-outline" size={16} color={COLORS.error} />
               </View>
               <Text style={styles.logoutText}>Log Out</Text>
-              <Ionicons name="chevron-forward" size={16} color={COLORS.textMuted} />
+              <Ionicons name="chevron-forward" size={16} color={COLORS.primary} />
             </Pressable>
           </View>
         </>
@@ -567,7 +713,7 @@ function StatItem({
   onPress?: () => void;
   accessibilityHint?: string;
 }): React.JSX.Element {
-  const iconColor = icon === 'star-outline' || icon === 'star' ? COLORS.warning : COLORS.secondary;
+  const iconColor = icon === 'star-outline' || icon === 'star' ? COLORS.warning : COLORS.primary;
   const body = (
     <>
       <Ionicons name={icon} size={14} color={iconColor} />
@@ -605,7 +751,7 @@ function InfoRow({
   return (
     <View style={styles.infoRow}>
       <View style={styles.rowIcon}>
-        <Ionicons name={icon} size={16} color={COLORS.secondary} />
+        <Ionicons name={icon} size={16} color={COLORS.primary} />
       </View>
       <View style={styles.infoTextWrap}>
         <Text style={styles.infoLabel}>{label}</Text>
@@ -622,7 +768,7 @@ function VehicleInformationRow({ vehicle }: { vehicle: UserVehicleEntry }): Reac
   return (
     <View style={styles.vehicleInfoRow}>
       <View style={styles.vehicleInfoThumb}>
-        <Ionicons name="car-outline" size={20} color={COLORS.textSecondary} />
+        <Ionicons name="car-outline" size={20} color={COLORS.primary} />
       </View>
       <View style={styles.vehicleInfoBody}>
         <Text style={styles.vehicleInfoModel} numberOfLines={1} ellipsizeMode="tail">
@@ -649,21 +795,62 @@ function VehicleInformationRow({ vehicle }: { vehicle: UserVehicleEntry }): Reac
   );
 }
 
+function NotificationsToggleRow({
+  value,
+  onValueChange,
+}: {
+  value: boolean;
+  onValueChange: (next: boolean) => void;
+}): React.JSX.Element {
+  return (
+    <View style={styles.menuRow}>
+      <View style={styles.rowIcon}>
+        <Ionicons name="notifications-outline" size={16} color={COLORS.primary} />
+      </View>
+      <View style={styles.menuToggleTextCol}>
+        <Text style={styles.menuToggleTitle}>Allow notifications</Text>
+        <Text style={styles.menuHint}>When off, ride and message alerts are not sent to this device.</Text>
+      </View>
+      <Switch
+        value={value}
+        onValueChange={onValueChange}
+        trackColor={{ false: COLORS.border, true: COLORS.primaryLight }}
+        thumbColor={value ? COLORS.primary : COLORS.white}
+        ios_backgroundColor={COLORS.border}
+      />
+    </View>
+  );
+}
+
 function MenuRow({
   icon,
   title,
+  onPress,
 }: {
   icon: keyof typeof Ionicons.glyphMap;
   title: string;
+  onPress?: () => void;
 }): React.JSX.Element {
-  return (
-    <Pressable style={styles.menuRow} accessibilityRole="button">
+  const inner = (
+    <>
       <View style={styles.rowIcon}>
-        <Ionicons name={icon} size={16} color={COLORS.secondary} />
+        <Ionicons name={icon} size={16} color={COLORS.primary} />
       </View>
       <Text style={styles.menuText}>{title}</Text>
-      <Ionicons name="chevron-forward" size={16} color={COLORS.textMuted} />
-    </Pressable>
+      <Ionicons name="chevron-forward" size={16} color={COLORS.primary} />
+    </>
+  );
+  if (onPress) {
+    return (
+      <Pressable style={styles.menuRow} onPress={onPress} accessibilityRole="button">
+        {inner}
+      </Pressable>
+    );
+  }
+  return (
+    <View style={styles.menuRow} accessibilityRole="text">
+      {inner}
+    </View>
   );
 }
 
@@ -688,21 +875,49 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  skeletonContent: {
+    padding: 16,
+    gap: 12,
+  },
+  skeletonHeaderCard: {
+    backgroundColor: COLORS.backgroundSecondary,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: COLORS.borderLight,
+    padding: 16,
+    alignItems: 'center',
+    gap: 10,
+  },
+  skeletonStatsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  skeletonCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: COLORS.borderLight,
+    padding: 12,
+    gap: 10,
+  },
+  skeletonFooterSpacer: {
+    height: 24,
+  },
   guestPlaceholder: {
     backgroundColor: COLORS.backgroundSecondary,
   },
   content: {
     padding: 16,
     paddingBottom: 30,
-    paddingTop: 12,
-    gap: 12,
+    paddingTop: 8,
+    gap: 10,
   },
   headerTopRow: {
     width: '100%',
     flexDirection: 'row',
     justifyContent: 'flex-start',
     alignItems: 'center',
-    marginBottom: 10,
+    marginBottom: 6,
   },
   headerTitleWrap: {
     flex: 1,
@@ -725,7 +940,8 @@ const styles = StyleSheet.create({
     width: '100%',
     backgroundColor: COLORS.primary,
     borderRadius: 12,
-    paddingVertical: 14,
+    minHeight: 48,
+    paddingVertical: 12,
     alignItems: 'center',
     justifyContent: 'center',
     ...Platform.select({
@@ -874,16 +1090,18 @@ const styles = StyleSheet.create({
     letterSpacing: 0.35,
     color: COLORS.text,
   },
-  vehicleEmptyRow: {
+  vehicleEmptyCompact: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: 10,
     paddingVertical: 2,
+    minHeight: 36,
   },
-  vehicleEmptyMuted: {
+  vehicleEmptyCompactText: {
+    flex: 1,
     fontSize: 14,
     fontWeight: '600',
-    color: COLORS.textMuted,
+    color: COLORS.textSecondary,
   },
   headerCard: {
     backgroundColor: COLORS.backgroundSecondary,
@@ -891,7 +1109,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.borderLight,
     paddingHorizontal: 16,
-    paddingVertical: 14,
+    paddingVertical: 12,
     alignItems: 'center',
   },
   circleIconButton: {
@@ -905,7 +1123,7 @@ const styles = StyleSheet.create({
   },
   avatarBlock: {
     marginTop: 4,
-    marginBottom: 10,
+    marginBottom: 8,
     alignItems: 'center',
   },
   avatarWithFab: {
@@ -1045,8 +1263,8 @@ const styles = StyleSheet.create({
     color: COLORS.textSecondary,
   },
   name: {
-    fontSize: 26,
-    fontWeight: '800',
+    fontSize: 24,
+    fontWeight: '700',
     color: COLORS.text,
   },
   bio: {
@@ -1054,6 +1272,35 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     fontSize: 14,
     color: COLORS.textSecondary,
+    lineHeight: 20,
+    paddingHorizontal: 8,
+  },
+  ridePrefChips: {
+    marginTop: 12,
+    justifyContent: 'center',
+    paddingHorizontal: 4,
+  },
+  bioHint: {
+    marginTop: 4,
+    textAlign: 'center',
+    fontSize: 14,
+    color: COLORS.textMuted,
+    fontStyle: 'italic',
+    lineHeight: 20,
+    paddingHorizontal: 12,
+  },
+  offlineHintRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 8,
+    alignSelf: 'stretch',
+    justifyContent: 'center',
+  },
+  offlineHintText: {
+    fontSize: 12,
+    color: COLORS.textSecondary,
+    fontWeight: '500',
   },
   statsCard: {
     backgroundColor: COLORS.white,
@@ -1061,7 +1308,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.borderLight,
     flexDirection: 'row',
-    paddingVertical: 12,
+    paddingVertical: 10,
   },
   statItem: {
     flex: 1,
@@ -1069,13 +1316,13 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   statValue: {
-    fontSize: 16,
+    fontSize: 18,
     fontWeight: '800',
     color: COLORS.text,
   },
   statValueCenter: { textAlign: 'center' as const },
   statLabel: {
-    fontSize: 12,
+    fontSize: 11,
     color: COLORS.textSecondary,
   },
   performanceCard: {
@@ -1106,8 +1353,8 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   ratingValue: {
-    fontSize: 34,
-    lineHeight: 36,
+    fontSize: 30,
+    lineHeight: 32,
     fontWeight: '800',
     color: COLORS.text,
   },
@@ -1240,7 +1487,7 @@ const styles = StyleSheet.create({
     width: 28,
     height: 28,
     borderRadius: 8,
-    backgroundColor: '#eff6ff',
+    backgroundColor: 'rgba(41, 190, 139, 0.12)',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -1277,6 +1524,22 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
     color: COLORS.text,
+  },
+  menuToggleTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLORS.text,
+  },
+  menuToggleTextCol: {
+    flex: 1,
+    minWidth: 0,
+    paddingRight: 4,
+  },
+  menuHint: {
+    fontSize: 12,
+    color: COLORS.textMuted,
+    marginTop: 2,
+    lineHeight: 16,
   },
   logoutIconBg: {
     backgroundColor: '#fef2f2',

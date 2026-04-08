@@ -6,6 +6,8 @@ import {
   setRefreshToken,
   clearAuth,
   setOnSessionExpired,
+  setOnAccountDeactivated,
+  hasAuthAccessToken,
   api,
 } from '../services/api';
 import { clearStoredTokens, setStoredTokens } from '../services/token-storage';
@@ -16,14 +18,21 @@ import { getFirebaseAuth, isFirebaseAuthConfigured } from '../config/firebase';
 import { API } from '../constants/API';
 import { phoneDigitsFromFirebasePhone } from '../services/firestoreUser';
 import { firebaseSignOutSafe } from '../services/firebaseAuthBridge';
+import { requestAccountReactivate } from '../services/accountDeactivate';
+import { getFreshFirebaseIdToken } from '../services/firebaseIdToken';
 import {
   AuthExchangeError,
   exchangeFirebaseIdTokenForBackendSession,
   parseAuthMePayload,
   type BackendAuthUser,
 } from '../services/backendAuthExchange';
+import {
+  ACCOUNT_DEACTIVATED_API_CODE,
+  backendUserRecordInactive,
+} from '../utils/deactivatedAccount';
 import { pickAvatarUrlFromRecord } from '../utils/avatarUrl';
 import { normalizeVehiclesFromRecord, type UserProfileVehicle } from '../utils/userVehicle';
+import { normalizeRidePreferenceIds } from '../constants/ridePreferences';
 import { validation, normalizePhoneForValidation } from '../constants/validation';
 
 export type User = {
@@ -38,6 +47,13 @@ export type User = {
   createdAt?: string;
   /** Profile photo URL from Firebase Auth or Firestore. */
   avatarUrl?: string;
+  /** Short public description (PATCH `/user/update` as `bio` / `description`). */
+  bio?: string;
+  /**
+   * Driver / ride comfort tags from GET `/auth/me` (PATCH via `ridePreferences`).
+   * Canonical ids: see `constants/ridePreferences.ts`.
+   */
+  ridePreferences?: string[];
   /** Vehicle display name / model (e.g. Toyota Innova). */
   vehicleModel?: string;
   /** Alias some APIs use for model name */
@@ -46,6 +62,14 @@ export type User = {
   vehicleColor?: string;
   /** From GET /auth/me — up to 2 vehicles (see POST /user/vehicles). */
   vehicles?: UserProfileVehicle[];
+  /** Backend scheduled deletion; user can cancel until `accountDeletionEffectiveAt`. */
+  accountDeletionPending?: boolean;
+  /** ISO-8601 — when deletion was requested (audit / UI). */
+  accountDeletionRequestedAt?: string;
+  /** ISO-8601 — account will be purged by backend job after this time if not cancelled. */
+  accountDeletionEffectiveAt?: string;
+  /** Backend `accountActive`; when `false`, session must end (see deactivate flow). */
+  accountActive?: boolean;
 };
 
 type AuthState = {
@@ -60,6 +84,10 @@ type AuthState = {
   pendingVerificationEmail: string | null;
   /** JWT is valid but required profile fields (DOB, gender, phone) are missing — block main app until Complete Profile. */
   needsProfileCompletion: boolean;
+  /** Set after 403 ACCOUNT_DEACTIVATED or inactive user payload — show gate screen until dismissed. */
+  accountDeactivated: boolean;
+  /** Firebase session OK but backend user deactivated — show ReactivateAccount (like Verify Email). */
+  needsAccountReactivation: boolean;
 };
 
 type AuthContextValue = AuthState & {
@@ -72,6 +100,13 @@ type AuthContextValue = AuthState & {
   patchUser: (patch: Partial<User>) => void;
   /** After user taps the Firebase verification link, reload + exchange for JWT. */
   retrySessionAfterEmailVerified: () => Promise<{ ok: boolean; message?: string }>;
+  /** Clears the post-deactivation full-screen notice (user returned to guest Main). */
+  clearAccountDeactivationNotice: () => void;
+  /** POST /user/reactivate + exchange — used from ReactivateAccount screen. */
+  reactivateAccountAndResumeSession: (args?: {
+    password?: string;
+    idToken?: string;
+  }) => Promise<{ ok: boolean; needsProfileCompletion?: boolean; message?: string }>;
 };
 
 const initialState: AuthState = {
@@ -83,6 +118,8 @@ const initialState: AuthState = {
   needsEmailVerification: false,
   pendingVerificationEmail: null,
   needsProfileCompletion: false,
+  accountDeactivated: false,
+  needsAccountReactivation: false,
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -101,6 +138,14 @@ function syncAuthBackendUserIdRef(user: User | null): void {
 /** Merge GET /auth/me into local user; drop mirrored legacy vehicle fields when the API reports no vehicles. */
 function mergeUserWithMe(prev: User, next: User): User {
   const user: User = { ...prev, ...next, id: prev.id };
+  if (next.accountDeletionPending !== true) {
+    user.accountDeletionPending = false;
+    delete user.accountDeletionEffectiveAt;
+    delete user.accountDeletionRequestedAt;
+  }
+  if (next.accountActive !== false) {
+    delete user.accountActive;
+  }
   if (Array.isArray(next.vehicles) && next.vehicles.length === 0) {
     return {
       ...user,
@@ -163,11 +208,40 @@ function buildSessionUser(fbUser: FirebaseUser, backendUser: BackendAuthUser): U
     strField(rec.vehicle_number) ||
     '';
   const beVehicleColor = strField(rec.vehicleColor) || strField(rec.vehicle_color) || '';
+  const bioKeyPresent =
+    Object.prototype.hasOwnProperty.call(rec, 'bio') ||
+    Object.prototype.hasOwnProperty.call(rec, 'description') ||
+    Object.prototype.hasOwnProperty.call(rec, 'profileBio') ||
+    Object.prototype.hasOwnProperty.call(rec, 'profile_bio') ||
+    Object.prototype.hasOwnProperty.call(rec, 'about');
+  const beBioCombined =
+    strField(rec.bio) ||
+    strField(rec.description) ||
+    strField(rec.profileBio) ||
+    strField(rec.profile_bio) ||
+    strField(rec.about);
+  const ridePrefsRaw = rec.ridePreferences ?? rec.ride_preferences ?? rec.driverPreferences ?? rec.driver_preferences;
   const vehicleListKeyPresent =
     Object.prototype.hasOwnProperty.call(rec, 'vehicles') ||
     Object.prototype.hasOwnProperty.call(rec, 'userVehicles') ||
     Object.prototype.hasOwnProperty.call(rec, 'user_vehicles');
   const beVehicles = vehicleListKeyPresent ? normalizeVehiclesFromRecord(rec) : [];
+
+  const accountDeletionEffectiveAtRaw =
+    strField(rec.accountDeletionEffectiveAt) ||
+    strField(rec.account_deletion_effective_at) ||
+    strField(rec.deletionEffectiveAt);
+  const accountDeletionRequestedAtRaw =
+    strField(rec.accountDeletionRequestedAt) || strField(rec.account_deletion_requested_at);
+  const accountDeletionExplicitPending =
+    rec.accountDeletionPending === true || rec.account_deletion_pending === true;
+  const effMs = accountDeletionEffectiveAtRaw
+    ? new Date(accountDeletionEffectiveAtRaw).getTime()
+    : NaN;
+  const accountDeletionPendingByDate =
+    Number.isFinite(effMs) && effMs > Date.now();
+  const accountDeletionPending =
+    accountDeletionExplicitPending || accountDeletionPendingByDate;
 
   const baseUser: User = {
     id: mongoId,
@@ -176,9 +250,21 @@ function buildSessionUser(fbUser: FirebaseUser, backendUser: BackendAuthUser): U
     name: beName || fbName || undefined,
     ...(beDob ? { dateOfBirth: beDob } : {}),
     ...(beGender ? { gender: beGender } : {}),
+    ...(bioKeyPresent || beBioCombined ? { bio: beBioCombined } : {}),
+    ...(Array.isArray(ridePrefsRaw)
+      ? { ridePreferences: normalizeRidePreferenceIds(ridePrefsRaw) }
+      : {}),
     createdAt: beCreated || fbUser.metadata.creationTime || undefined,
     /** Only backend/Mongo avatar — Firebase `photoURL` was overwriting uploaded profile photos on refresh. */
     ...(beAvatar ? { avatarUrl: beAvatar } : {}),
+    accountDeletionPending,
+    ...(accountDeletionPending && accountDeletionRequestedAtRaw
+      ? { accountDeletionRequestedAt: accountDeletionRequestedAtRaw }
+      : {}),
+    ...(accountDeletionPending && accountDeletionEffectiveAtRaw
+      ? { accountDeletionEffectiveAt: accountDeletionEffectiveAtRaw }
+      : {}),
+    ...(backendUserRecordInactive(backendUser) ? { accountActive: false } : {}),
   };
 
   /** No `vehicles` array on payload — legacy flat fields only (do not set `vehicles`; Profile uses them). */
@@ -222,6 +308,55 @@ export function isUserProfileComplete(user: User | null): boolean {
 export function AuthProvider({ children }: { children: React.ReactNode }): React.JSX.Element {
   const [state, setState] = useState<AuthState>(initialState);
 
+  const applyAccountDeactivatedFromServer = useCallback((): Promise<void> => {
+    return (async () => {
+      try {
+        await unregisterPushTokenWithBackend();
+      } catch {
+        // Endpoint may be missing or session already invalid.
+      }
+      await firebaseSignOutSafe();
+      clearRideDetailCache();
+      clearAuth();
+      await clearStoredTokens();
+      clearLocationDeniedFlags();
+      syncAuthBackendUserIdRef(null);
+      setState({
+        user: null,
+        token: null,
+        isAuthenticated: false,
+        isLoading: false,
+        isAwaitingBackendSession: false,
+        needsEmailVerification: false,
+        pendingVerificationEmail: null,
+        needsProfileCompletion: false,
+        accountDeactivated: true,
+        needsAccountReactivation: false,
+      });
+    })();
+  }, []);
+
+  const enterAccountReactivationGate = useCallback((): Promise<void> => {
+    return (async () => {
+      clearAuth();
+      await clearStoredTokens();
+      clearRideDetailCache();
+      syncAuthBackendUserIdRef(null);
+      setState({
+        user: null,
+        token: null,
+        isAuthenticated: false,
+        isLoading: false,
+        isAwaitingBackendSession: false,
+        needsEmailVerification: false,
+        pendingVerificationEmail: null,
+        needsProfileCompletion: false,
+        accountDeactivated: false,
+        needsAccountReactivation: true,
+      });
+    })();
+  }, []);
+
   const logout = useCallback((): Promise<void> => {
     return (async () => {
       try {
@@ -244,6 +379,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
         needsEmailVerification: false,
         pendingVerificationEmail: null,
         needsProfileCompletion: false,
+        accountDeactivated: false,
+        needsAccountReactivation: false,
       });
     })();
   }, []);
@@ -266,6 +403,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
       needsEmailVerification: false,
       pendingVerificationEmail: null,
       needsProfileCompletion: !profileComplete,
+      accountDeactivated: false,
+      needsAccountReactivation: false,
     });
   }, []);
 
@@ -285,6 +424,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
     });
   }, []);
 
+  const clearAccountDeactivationNotice = useCallback(() => {
+    setState((s) => (s.accountDeactivated ? { ...s, accountDeactivated: false } : s));
+  }, []);
+
   const refreshUser = useCallback(async () => {
     const auth = getFirebaseAuth();
     const u = auth?.currentUser;
@@ -297,6 +440,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
       const body = await api.get<unknown>(path);
       const me = parseAuthMePayload(body);
       if (!me || !(String(me.id ?? me._id ?? '').trim())) return;
+      if (backendUserRecordInactive(me)) {
+        await enterAccountReactivationGate();
+        return;
+      }
       const next = buildSessionUser(u, me);
       setState((prev) => {
         if (!prev.isAuthenticated || !prev.token || !prev.user) return prev;
@@ -311,7 +458,69 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
     } catch {
       // Leave existing user snapshot
     }
-  }, []);
+  }, [enterAccountReactivationGate]);
+
+  const reactivateAccountAndResumeSession = useCallback(
+    async (args?: { password?: string; idToken?: string }): Promise<{
+      ok: boolean;
+      needsProfileCompletion?: boolean;
+      message?: string;
+    }> => {
+      const auth = getFirebaseAuth();
+      const fbUser = auth?.currentUser;
+      if (!fbUser) {
+        return { ok: false, message: 'Sign in again first.' };
+      }
+      try {
+        const idTok = (args?.idToken?.trim() || (await getFreshFirebaseIdToken())) ?? '';
+        const password = args?.password?.trim();
+        if (!password && !idTok) {
+          return { ok: false, message: 'Password or sign-in is required.' };
+        }
+        await requestAccountReactivate({
+          ...(password ? { password } : {}),
+          ...(idTok ? { idToken: idTok } : {}),
+        });
+        await reload(fbUser);
+        const fresh = await fbUser.getIdToken(true);
+        const exchanged = await exchangeFirebaseIdTokenForBackendSession(fresh);
+        await setStoredTokens(exchanged.token, exchanged.refreshToken);
+        setAuthToken(exchanged.token);
+        setRefreshToken(exchanged.refreshToken);
+        const user = buildSessionUser(fbUser, exchanged.user);
+        if (user.accountActive === false) {
+          return { ok: false, message: 'Account is still inactive. Try again or contact support.' };
+        }
+        syncAuthBackendUserIdRef(user);
+        const profileComplete = isUserProfileComplete(user);
+        setState({
+          user,
+          token: exchanged.token,
+          isAuthenticated: true,
+          isLoading: false,
+          isAwaitingBackendSession: false,
+          needsEmailVerification: false,
+          pendingVerificationEmail: null,
+          needsProfileCompletion: !profileComplete,
+          accountDeactivated: false,
+          needsAccountReactivation: false,
+        });
+        return { ok: true, needsProfileCompletion: !profileComplete };
+      } catch (e) {
+        if (e instanceof AuthExchangeError && e.code?.toUpperCase() === ACCOUNT_DEACTIVATED_API_CODE) {
+          return { ok: false, message: e.message || 'Still deactivated.' };
+        }
+        const status =
+          e && typeof e === 'object' && 'status' in e ? (e as { status?: number }).status : undefined;
+        if (status === 404) {
+          return { ok: false, message: 'Reactivation is not available on the server yet.' };
+        }
+        const msg = e instanceof Error ? e.message : 'Something went wrong.';
+        return { ok: false, message: msg };
+      }
+    },
+    []
+  );
 
   const retrySessionAfterEmailVerified = useCallback(async (): Promise<{
     ok: boolean;
@@ -330,6 +539,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
       setAuthToken(exchanged.token);
       setRefreshToken(exchanged.refreshToken);
       const user = buildSessionUser(fbUser, exchanged.user);
+      if (user.accountActive === false) {
+        await enterAccountReactivationGate();
+        return { ok: false, message: 'This account has been deactivated. Use Reactivate on the next screen.' };
+      }
       syncAuthBackendUserIdRef(user);
       const profileComplete = isUserProfileComplete(user);
       setState({
@@ -341,9 +554,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
         needsEmailVerification: false,
         pendingVerificationEmail: null,
         needsProfileCompletion: !profileComplete,
+        accountDeactivated: false,
+        needsAccountReactivation: false,
       });
       return { ok: true };
     } catch (e) {
+      if (e instanceof AuthExchangeError && e.code?.toUpperCase() === ACCOUNT_DEACTIVATED_API_CODE) {
+        await enterAccountReactivationGate();
+        return { ok: false, message: e.message || 'This account has been deactivated.' };
+      }
       if (e instanceof AuthExchangeError && e.code === 'EMAIL_NOT_VERIFIED') {
         return {
           ok: false,
@@ -353,7 +572,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
       const msg = e instanceof Error ? e.message : 'Could not sign in.';
       return { ok: false, message: msg };
     }
-  }, []);
+  }, [enterAccountReactivationGate]);
 
   useEffect(() => {
     let cancelled = false;
@@ -377,6 +596,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
         needsEmailVerification: false,
         pendingVerificationEmail: null,
         needsProfileCompletion: false,
+        accountDeactivated: false,
+        needsAccountReactivation: false,
       }));
       return () => {
         cancelled = true;
@@ -391,6 +612,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
         isLoading: false,
         isAwaitingBackendSession: false,
         needsProfileCompletion: false,
+        accountDeactivated: false,
+        needsAccountReactivation: false,
       }));
       return () => {
         cancelled = true;
@@ -403,7 +626,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
         clearAuth();
         clearRideDetailCache();
         syncAuthBackendUserIdRef(null);
-        setState({
+        setState((prev) => ({
           user: null,
           token: null,
           isAuthenticated: false,
@@ -412,7 +635,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
           needsEmailVerification: false,
           pendingVerificationEmail: null,
           needsProfileCompletion: false,
-        });
+          accountDeactivated: prev.accountDeactivated,
+          needsAccountReactivation: false,
+        }));
         return;
       }
       setState((s) => ({
@@ -427,6 +652,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
         setRefreshToken(exchanged.refreshToken);
 
         const user = buildSessionUser(fbUser, exchanged.user);
+        if (user.accountActive === false) {
+          await enterAccountReactivationGate();
+          return;
+        }
         syncAuthBackendUserIdRef(user);
         const profileComplete = isUserProfileComplete(user);
         setState({
@@ -438,8 +667,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
           needsEmailVerification: false,
           pendingVerificationEmail: null,
           needsProfileCompletion: !profileComplete,
+          accountDeactivated: false,
+          needsAccountReactivation: false,
         });
       } catch (e) {
+        if (e instanceof AuthExchangeError && e.code?.toUpperCase() === ACCOUNT_DEACTIVATED_API_CODE) {
+          await enterAccountReactivationGate();
+          return;
+        }
         if (e instanceof AuthExchangeError && e.code === 'EMAIL_NOT_VERIFIED') {
           if (__DEV__) {
             console.warn('[Auth] Email not verified — open Firebase verification link, then Continue.');
@@ -456,6 +691,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
             needsEmailVerification: true,
             pendingVerificationEmail: fbUser.email ?? null,
             needsProfileCompletion: false,
+            accountDeactivated: false,
+            needsAccountReactivation: false,
           });
           return;
         }
@@ -479,6 +716,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
           needsEmailVerification: false,
           pendingVerificationEmail: null,
           needsProfileCompletion: false,
+          accountDeactivated: false,
+          needsAccountReactivation: false,
         });
       }
     });
@@ -487,7 +726,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
       cancelled = true;
       unsub();
     };
-  }, [logout]);
+  }, [logout, enterAccountReactivationGate]);
+
+  useEffect(() => {
+    setOnAccountDeactivated(() => {
+      if (hasAuthAccessToken()) {
+        void applyAccountDeactivatedFromServer();
+      }
+    });
+    return () => setOnAccountDeactivated(null);
+  }, [applyAccountDeactivatedFromServer]);
 
   const value: AuthContextValue = {
     ...state,
@@ -497,6 +745,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
     refreshUser,
     patchUser,
     retrySessionAfterEmailVerified,
+    clearAccountDeactivationNotice,
+    reactivateAccountAndResumeSession,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

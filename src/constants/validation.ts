@@ -81,6 +81,12 @@ export const validation = {
 
   /** Exactly 10 national digits (same rules as {@link clampPhoneNationalInput}). */
   phoneNational: (value: string): boolean => /^\d{10}$/.test(clampPhoneNationalInput(value)),
+
+  /** Public profile tagline / about text (optional). */
+  profileBio: (value: string): boolean => value.trim().length <= 300,
+
+  /** Optional ride notes from publisher (POST /rides `description`). */
+  rideDescription: (value: string): boolean => value.trim().length <= 500,
 } as const;
 
 export const validationErrors = {
@@ -91,4 +97,6 @@ export const validationErrors = {
   gender: 'Select a gender option',
   phone: 'Enter a valid 10-digit mobile number',
   otp: (length: number) => `Enter ${length} digit OTP`,
+  profileBio: 'Description must be 300 characters or less',
+  rideDescription: 'Ride description must be 500 characters or less',
 } as const;

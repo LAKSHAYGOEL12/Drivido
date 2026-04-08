@@ -6,11 +6,11 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
-  Alert,
   TouchableOpacity,
   ActivityIndicator,
   Modal,
 } from 'react-native';
+import { Alert } from '../../utils/themedAlert';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
@@ -30,18 +30,26 @@ import { requestForegroundLocationAfterAuth } from '../../services/location-perm
 import { useAuth } from '../../contexts/AuthContext';
 import { resetNavigationToCompleteProfile } from '../../navigation/navigateToCompleteProfile';
 import { rootNavigationRef } from '../../navigation/rootNavigationRef';
+import { resetMainTabsToSearchFromRoot } from '../../navigation/navigateAfterBook';
 
 type Props = RootStackScreenProps<'Login'>;
 
 export default function Login(): React.JSX.Element {
   const navigation = useNavigation<Props['navigation']>();
   const postSignInNavTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const { isAwaitingBackendSession, needsEmailVerification, isAuthenticated, needsProfileCompletion } = useAuth();
+  const {
+    isAwaitingBackendSession,
+    needsEmailVerification,
+    isAuthenticated,
+    needsProfileCompletion,
+    needsAccountReactivation,
+  } = useAuth();
   const authGateRef = useRef({
     isAwaitingBackendSession,
     needsEmailVerification,
     isAuthenticated,
     needsProfileCompletion,
+    needsAccountReactivation,
   });
   useEffect(() => {
     authGateRef.current = {
@@ -49,8 +57,15 @@ export default function Login(): React.JSX.Element {
       needsEmailVerification,
       isAuthenticated,
       needsProfileCompletion,
+      needsAccountReactivation,
     };
-  }, [isAwaitingBackendSession, needsEmailVerification, isAuthenticated, needsProfileCompletion]);
+  }, [
+    isAwaitingBackendSession,
+    needsEmailVerification,
+    isAuthenticated,
+    needsProfileCompletion,
+    needsAccountReactivation,
+  ]);
 
   useEffect(
     () => () => {
@@ -62,6 +77,23 @@ export default function Login(): React.JSX.Element {
     []
   );
 
+  useEffect(() => {
+    if (isAwaitingBackendSession || needsEmailVerification || needsAccountReactivation) return;
+    if (!isAuthenticated) return;
+    if (needsProfileCompletion) {
+      resetNavigationToCompleteProfile();
+      return;
+    }
+    resetMainTabsToSearchFromRoot();
+  }, [
+    isAuthenticated,
+    isAwaitingBackendSession,
+    needsEmailVerification,
+    needsAccountReactivation,
+    needsProfileCompletion,
+    navigation,
+  ]);
+
   const schedulePostSignInNavigation = () => {
     if (postSignInNavTimeoutRef.current) clearTimeout(postSignInNavTimeoutRef.current);
     postSignInNavTimeoutRef.current = setTimeout(() => {
@@ -70,10 +102,8 @@ export default function Login(): React.JSX.Element {
       const snap = authGateRef.current;
       if (snap.needsProfileCompletion) {
         resetNavigationToCompleteProfile();
-      } else if (navigation.canGoBack()) {
-        navigation.goBack();
       } else if (rootNavigationRef.isReady()) {
-        rootNavigationRef.reset({ index: 0, routes: [{ name: 'Main' }] });
+        resetMainTabsToSearchFromRoot();
       }
       setSigningIn(false);
       setOverlaySuccess(false);
@@ -137,6 +167,10 @@ export default function Login(): React.JSX.Element {
           setSigningIn(false);
           return;
         }
+        if (authGateRef.current.needsAccountReactivation) {
+          setSigningIn(false);
+          return;
+        }
         if (authed && !nev) {
           setOverlaySuccess(true);
           schedulePostSignInNavigation();
@@ -152,6 +186,10 @@ export default function Login(): React.JSX.Element {
         return;
       }
       if (nevFinal) {
+        setSigningIn(false);
+        return;
+      }
+      if (authGateRef.current.needsAccountReactivation) {
         setSigningIn(false);
         return;
       }

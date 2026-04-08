@@ -11,12 +11,15 @@ import {
 import { NavigationContainer } from '@react-navigation/native';
 import { rootNavigationRef } from './rootNavigationRef';
 import { useAuth } from '../contexts/AuthContext';
+import { useNotificationPreferences } from '../contexts/NotificationPreferencesContext';
 import { useLocation } from '../contexts/LocationContext';
 import { usePushNotifications } from '../hooks/usePushNotifications';
 import RootStack from './RootStack';
 import { COLORS } from '../constants/colors';
 import { resetNavigationToVerifyEmail } from './navigateToVerifyEmail';
 import { resetNavigationToCompleteProfile } from './navigateToCompleteProfile';
+import { resetNavigationToAccountDeactivated } from './navigateToAccountDeactivated';
+import { resetNavigationToReactivateAccount } from './navigateToReactivateAccount';
 import { resetMainTabsToSearchFromRoot } from './navigateAfterBook';
 import { chatWSManager } from '../services/chatWebSocketManager';
 import { resolveApiBaseOrigin } from '../config/apiBaseUrl';
@@ -35,16 +38,25 @@ export default function RootNavigator(): React.JSX.Element | null {
     needsEmailVerification,
     pendingVerificationEmail,
     needsProfileCompletion,
+    accountDeactivated,
+    needsAccountReactivation,
   } = useAuth();
+  const { pushNotificationsAllowed } = useNotificationPreferences();
   const sessionReady =
-    isAuthenticated && !needsEmailVerification && !needsProfileCompletion;
+    isAuthenticated &&
+    !needsEmailVerification &&
+    !needsProfileCompletion &&
+    !needsAccountReactivation;
   const { prefetchLocation } = useLocation();
   const [navReady, setNavReady] = useState(false);
   const verifyRedirectedRef = useRef(false);
+  const accountDeactivatedRedirectedRef = useRef(false);
+  const reactivateRedirectedRef = useRef(false);
   /** Latest auth flags for navigation `state` listener (avoid stale closures). */
   const profileGateAuthRef = useRef({
     needsProfileCompletion: false,
     needsEmailVerification: false,
+    needsAccountReactivation: false,
     isAuthenticated: false,
   });
   const lastCompleteProfileResetAtRef = useRef(0);
@@ -56,13 +68,16 @@ export default function RootNavigator(): React.JSX.Element | null {
   const logoutOverlayOpacity = useRef(new Animated.Value(0)).current;
   const logoutHoldTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const wasAuthenticatedRef = useRef(false);
+  const prevAuthForLoginResetRef = useRef<boolean>(isAuthenticated);
+  const prevSessionReadyForLoginResetRef = useRef<boolean>(sessionReady);
+  const didPostLoginSearchResetRef = useRef(false);
   const LOGOUT_HOLD_AFTER_RESET_MS = 480;
   const LOGOUT_FADE_OUT_MS = 320;
 
   usePushNotifications(
     rootNavigationRef,
     navReady,
-    sessionReady && !isLoading,
+    sessionReady && !isLoading && pushNotificationsAllowed,
     user?.id ?? null
   );
 
@@ -137,13 +152,51 @@ export default function RootNavigator(): React.JSX.Element | null {
     resetNavigationToVerifyEmail(pendingVerificationEmail ?? undefined);
   }, [navReady, isLoading, needsEmailVerification, pendingVerificationEmail]);
 
+  /** Firebase signed in, backend user deactivated — offer reactivate (after email gate). */
+  useEffect(() => {
+    if (!needsAccountReactivation || needsEmailVerification) {
+      reactivateRedirectedRef.current = false;
+      return;
+    }
+    if (!navReady || isLoading) return;
+    if (rootNavigationRef.isReady()) {
+      const r = rootNavigationRef.getCurrentRoute();
+      if (r?.name === 'ReactivateAccount') {
+        reactivateRedirectedRef.current = true;
+        return;
+      }
+    }
+    if (reactivateRedirectedRef.current) return;
+    reactivateRedirectedRef.current = true;
+    resetNavigationToReactivateAccount();
+  }, [navReady, isLoading, needsAccountReactivation, needsEmailVerification]);
+
+  useEffect(() => {
+    if (!accountDeactivated) {
+      accountDeactivatedRedirectedRef.current = false;
+      return;
+    }
+    if (!navReady || isLoading) return;
+    if (rootNavigationRef.isReady()) {
+      const r = rootNavigationRef.getCurrentRoute();
+      if (r?.name === 'AccountDeactivated') {
+        accountDeactivatedRedirectedRef.current = true;
+        return;
+      }
+    }
+    if (accountDeactivatedRedirectedRef.current) return;
+    accountDeactivatedRedirectedRef.current = true;
+    resetNavigationToAccountDeactivated();
+  }, [navReady, isLoading, accountDeactivated]);
+
   useEffect(() => {
     profileGateAuthRef.current = {
       needsProfileCompletion,
       needsEmailVerification,
+      needsAccountReactivation,
       isAuthenticated,
     };
-  }, [needsProfileCompletion, needsEmailVerification, isAuthenticated]);
+  }, [needsProfileCompletion, needsEmailVerification, needsAccountReactivation, isAuthenticated]);
 
   /**
    * Keep Complete Profile on screen whenever the session needs it.
@@ -155,7 +208,14 @@ export default function RootNavigator(): React.JSX.Element | null {
 
     const enforceCompleteProfile = () => {
       const g = profileGateAuthRef.current;
-      if (!g.needsProfileCompletion || g.needsEmailVerification || !g.isAuthenticated) return;
+      if (
+        !g.needsProfileCompletion ||
+        g.needsEmailVerification ||
+        g.needsAccountReactivation ||
+        !g.isAuthenticated
+      ) {
+        return;
+      }
       if (!rootNavigationRef.isReady()) return;
       const r = rootNavigationRef.getCurrentRoute();
       if (r?.name === 'CompleteProfile') return;
@@ -172,7 +232,51 @@ export default function RootNavigator(): React.JSX.Element | null {
     return () => {
       unsub();
     };
-  }, [navReady, isLoading, needsProfileCompletion, needsEmailVerification, isAuthenticated]);
+  }, [
+    navReady,
+    isLoading,
+    needsProfileCompletion,
+    needsEmailVerification,
+    needsAccountReactivation,
+    isAuthenticated,
+  ]);
+
+  useEffect(() => {
+    const prev = prevAuthForLoginResetRef.current;
+    prevAuthForLoginResetRef.current = isAuthenticated;
+    const becameAuthenticated = !prev && isAuthenticated;
+    if (!becameAuthenticated) return;
+    if (!navReady || isLoading) return;
+    if (needsEmailVerification || needsProfileCompletion || needsAccountReactivation) return;
+    InteractionManager.runAfterInteractions(() => {
+      resetMainTabsToSearchFromRoot();
+    });
+  }, [
+    isAuthenticated,
+    navReady,
+    isLoading,
+    needsEmailVerification,
+    needsProfileCompletion,
+    needsAccountReactivation,
+  ]);
+
+  useEffect(() => {
+    if (!sessionReady) {
+      didPostLoginSearchResetRef.current = false;
+      prevSessionReadyForLoginResetRef.current = false;
+      return;
+    }
+    const prevSessionReady = prevSessionReadyForLoginResetRef.current;
+    prevSessionReadyForLoginResetRef.current = sessionReady;
+    const becameSessionReady = !prevSessionReady && sessionReady;
+    if (!becameSessionReady) return;
+    if (!navReady || isLoading) return;
+    if (didPostLoginSearchResetRef.current) return;
+    didPostLoginSearchResetRef.current = true;
+    InteractionManager.runAfterInteractions(() => {
+      resetMainTabsToSearchFromRoot();
+    });
+  }, [sessionReady, navReady, isLoading]);
 
   useEffect(() => {
     const loggingOut = wasAuthenticatedRef.current && !isAuthenticated && !isLoading;

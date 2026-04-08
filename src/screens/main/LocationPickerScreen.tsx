@@ -5,7 +5,6 @@ import {
   Text,
   View,
   TouchableOpacity,
-  Alert,
   ActivityIndicator,
   TextInput,
   Dimensions,
@@ -14,6 +13,7 @@ import {
   Keyboard,
   ScrollView,
 } from 'react-native';
+import { Alert } from '../../utils/themedAlert';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { SearchStackParamList } from '../../navigation/types';
@@ -53,6 +53,8 @@ const PUBLISH_MIN_MOVE_FOR_GEOCODE_DEG = 0.00042;
 const PUBLISH_REVERSE_GEOCODE_DEBOUNCE_MS = 1750;
 /** Ignore region events right after programmatic `animateToRegion` (no extra geocode). */
 const PUBLISH_SKIP_GEOCODE_AFTER_ANIM_MS = 950;
+/** Treat stops as same place when within this radius (handles tiny coordinate jitter). */
+const SAME_STOP_MAX_KM = 0.25;
 
 function centerRegion(lat: number, lng: number, delta = STREET_DELTA) {
   return {
@@ -66,6 +68,47 @@ function centerRegion(lat: number, lng: number, delta = STREET_DELTA) {
 function newPlacesSessionToken(): string {
   // Places Autocomplete accepts any opaque token string for session billing.
   return `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function normalizePlaceLabel(v: string | undefined): string {
+  return (v ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function hasCoords(v?: { latitude?: number; longitude?: number } | null): v is { latitude: number; longitude: number } {
+  return (
+    !!v &&
+    typeof v.latitude === 'number' &&
+    !Number.isNaN(v.latitude) &&
+    typeof v.longitude === 'number' &&
+    !Number.isNaN(v.longitude)
+  );
+}
+
+function distanceKm(a: { latitude: number; longitude: number }, b: { latitude: number; longitude: number }): number {
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const dLat = toRad(b.latitude - a.latitude);
+  const dLon = toRad(b.longitude - a.longitude);
+  const lat1 = toRad(a.latitude);
+  const lat2 = toRad(b.latitude);
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.sin(dLon / 2) ** 2 * Math.cos(lat1) * Math.cos(lat2);
+  return 6371 * (2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h)));
+}
+
+function stopsAreSamePlace(args: {
+  fromLabel?: string;
+  toLabel?: string;
+  fromCoords?: { latitude?: number; longitude?: number } | null;
+  toCoords?: { latitude?: number; longitude?: number } | null;
+}): boolean {
+  const fromNorm = normalizePlaceLabel(args.fromLabel);
+  const toNorm = normalizePlaceLabel(args.toLabel);
+  if (fromNorm.length > 0 && fromNorm === toNorm) return true;
+  if (hasCoords(args.fromCoords) && hasCoords(args.toCoords)) {
+    return distanceKm(args.fromCoords, args.toCoords) <= SAME_STOP_MAX_KM;
+  }
+  return false;
 }
 
 let MapView: React.ComponentType<any> | null = null;
@@ -328,6 +371,34 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
 
   const navigateBackWithValue = useCallback(
     (value: string | undefined, coords?: { latitude: number; longitude: number }) => {
+      const nextFromLabel = field === 'from' ? value : currentFrom;
+      const nextToLabel = field === 'to' ? value : currentTo;
+      const fallbackFromCoords =
+        returnScreen === 'SearchRides'
+          ? { latitude: currentFromLat, longitude: currentFromLon }
+          : { latitude: currentPickupLat, longitude: currentPickupLon };
+      const fallbackToCoords =
+        returnScreen === 'SearchRides'
+          ? { latitude: currentToLat, longitude: currentToLon }
+          : { latitude: currentDestLat, longitude: currentDestLon };
+      const nextFromCoords = field === 'from' ? (coords ?? fallbackFromCoords) : fallbackFromCoords;
+      const nextToCoords = field === 'to' ? (coords ?? fallbackToCoords) : fallbackToCoords;
+      if (
+        (returnScreen === 'PublishRide' || returnScreen === 'PublishRecentEdit') &&
+        stopsAreSamePlace({
+          fromLabel: String(nextFromLabel ?? ''),
+          toLabel: String(nextToLabel ?? ''),
+          fromCoords: nextFromCoords,
+          toCoords: nextToCoords,
+        })
+      ) {
+        Alert.alert(
+          'Invalid route',
+          'Pickup and destination cannot be the same. Choose a different destination.'
+        );
+        return;
+      }
+
       const params: Record<string, unknown> = {
         selectedFrom: field === 'from' ? value : currentFrom,
         selectedTo: field === 'to' ? value : currentTo,

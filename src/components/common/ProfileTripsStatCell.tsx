@@ -29,7 +29,7 @@ export function ProfileTripsStatCell({
 
   const inner = (
     <View style={styles.inner}>
-      <Ionicons name="car-outline" size={14} color={COLORS.secondary} />
+      <Ionicons name="car-outline" size={14} color={COLORS.primary} />
       <Text style={styles.value} numberOfLines={1}>
         {valueText}
       </Text>

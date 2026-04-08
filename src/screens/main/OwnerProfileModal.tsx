@@ -1,7 +1,6 @@
 import React, { useCallback, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Linking,
   Pressable,
   ScrollView,
@@ -9,6 +8,7 @@ import {
   Text,
   View,
 } from 'react-native';
+import { Alert } from '../../utils/themedAlert';
 import UserAvatar from '../../components/common/UserAvatar';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -31,6 +31,9 @@ import type { SearchStackParamList as TypesSearchStackParamList } from '../../na
 import type { RidesStackParamList as TypesRidesStackParamList } from '../../navigation/types';
 import { calculateAge } from '../../utils/calculateAge';
 import { pickPublisherPhoneFromRide } from '../../utils/rideDisplay';
+import { DEACTIVATED_ACCOUNT_LABEL } from '../../utils/deactivatedAccount';
+import RidePreferenceChips from '../../components/profile/RidePreferenceChips';
+import { normalizeRidePreferenceIds } from '../../constants/ridePreferences';
 
 type OwnerProfileRoute =
   | RouteProp<TypesRidesStackParamList, 'OwnerProfileModal'>
@@ -42,17 +45,23 @@ export default function OwnerProfileModal(): React.JSX.Element {
   const { user } = useAuth();
 
   const targetUserId = route.params?.userId?.trim() ?? '';
-  const targetDisplayName = route.params?.displayName?.trim() ?? 'User';
+  const peerDeactivated = route.params?.peerDeactivated === true;
+  const targetDisplayName = peerDeactivated
+    ? DEACTIVATED_ACCOUNT_LABEL
+    : route.params?.displayName?.trim() ?? 'User';
   const paramAvatarUrl = route.params?.avatarUrl?.trim();
   const paramPublisherAvg = route.params?.publisherAvgRating;
   const paramPublisherCount = route.params?.publisherRatingCount;
   const paramDateOfBirth = route.params?.dateOfBirth?.trim();
+  /** Ride detail: true until passenger has an accepted booking — block Call and profile phone fetch. */
+  const hidePublisherPhone = route.params?.hidePublisherPhone === true;
   const targetAge = paramDateOfBirth ? calculateAge(paramDateOfBirth) : null;
   const isSelf = Boolean(user?.id?.trim() && targetUserId === user.id.trim());
   /** No session: ratings are loaded via GET /ratings/:userId when this screen opens (see backend notes below). */
   const isGuest = !(user?.id ?? '').trim();
-  const headerPhotoUri =
-    (isSelf ? (user?.avatarUrl ?? '').trim() || paramAvatarUrl : paramAvatarUrl) || undefined;
+  const headerPhotoUri = peerDeactivated
+    ? undefined
+    : (isSelf ? (user?.avatarUrl ?? '').trim() || paramAvatarUrl : paramAvatarUrl) || undefined;
 
   const [loading, setLoading] = useState(true);
   const [avgRating, setAvgRating] = useState(0);
@@ -109,9 +118,14 @@ export default function OwnerProfileModal(): React.JSX.Element {
   const [tripsBreakdownVisible, setTripsBreakdownVisible] = useState(false);
   /** Filled from GET /ratings/:userId (or profile probes) when backend exposes `subjectContactPhone`. */
   const [contactPhoneFromApi, setContactPhoneFromApi] = useState('');
+  const [subjectBioFromApi, setSubjectBioFromApi] = useState('');
+  const [subjectRidePrefsFromApi, setSubjectRidePrefsFromApi] = useState<string[]>([]);
 
   useFocusEffect(
     useCallback(() => {
+      if (peerDeactivated) {
+        return () => {};
+      }
       if (!targetUserId) {
         setLoading(true);
         setTripsLoading(true);
@@ -120,12 +134,15 @@ export default function OwnerProfileModal(): React.JSX.Element {
         setTripsCompletedThisMonth(0);
         setSinceLabel('—');
         setContactPhoneFromApi('');
+        setSubjectBioFromApi('');
+        setSubjectRidePrefsFromApi([]);
         return () => {};
       }
 
       let cancelled = false;
       const runId = ++ratingsFetchSeqRef.current;
       setContactPhoneFromApi('');
+      setSubjectBioFromApi('');
       setLoading(true);
       setSinceLabel(formatMemberSinceLabel(isSelf ? user?.createdAt : undefined));
       setTripsLoading(true);
@@ -136,7 +153,7 @@ export default function OwnerProfileModal(): React.JSX.Element {
             const { completed, cancelled: cx } = tripCountsFromAggregate(agg);
             setTripsCompleted(completed);
             setTripsCancelled(cx);
-            setTripsCompletedThisMonth(Math.max(0, agg.completedThisMonth ?? 0));
+            setTripsCompletedThisMonth(Math.max(0, agg?.completedThisMonth ?? 0));
           }
         })
         .catch(() => {
@@ -186,15 +203,30 @@ export default function OwnerProfileModal(): React.JSX.Element {
           setAvgRating(summary.avgRating ?? 0);
           setTotalRatings(summary.totalRatings ?? 0);
           setRatingKnown(true);
-          setContactPhoneFromApi((summary.subjectContactPhone ?? '').trim());
+          if (!hidePublisherPhone) {
+            setContactPhoneFromApi((summary.subjectContactPhone ?? '').trim());
+          } else {
+            setContactPhoneFromApi('');
+          }
           setSinceLabel(
             formatMemberSinceLabel(
               summary.subjectCreatedAt ?? (isSelf ? user?.createdAt : undefined)
             )
           );
+          if (summary.subjectDeactivated) {
+            setSubjectBioFromApi('');
+            setSubjectRidePrefsFromApi([]);
+          } else {
+            setSubjectBioFromApi((summary.subjectBio ?? '').trim());
+            setSubjectRidePrefsFromApi(
+              normalizeRidePreferenceIds(summary.subjectRidePreferences ?? [])
+            );
+          }
         } catch {
           if (cancelled || runId !== ratingsFetchSeqRef.current) return;
           setContactPhoneFromApi('');
+          setSubjectBioFromApi('');
+          setSubjectRidePrefsFromApi([]);
           if (!hadEmbeddedFromRide) {
             setAvgRating(0);
             setTotalRatings(0);
@@ -212,14 +244,25 @@ export default function OwnerProfileModal(): React.JSX.Element {
         cancelled = true;
         ratingsFetchSeqRef.current += 1;
       };
-    }, [targetUserId, isGuest, isSelf, paramPublisherAvg, paramPublisherCount, user?.id, user?.createdAt])
+    }, [
+      targetUserId,
+      isGuest,
+      isSelf,
+      paramPublisherAvg,
+      paramPublisherCount,
+      user?.id,
+      user?.createdAt,
+      hidePublisherPhone,
+      peerDeactivated,
+    ])
   );
 
-  const phoneFromRouteOrRide =
-    (route.params?.publisherPhone ?? '').trim() ||
-    pickPublisherPhoneFromRide(route.params?._returnToRide?.params?.ride) ||
-    '';
-  const dialPhone = phoneFromRouteOrRide || contactPhoneFromApi.trim();
+  const phoneFromRouteOrRide = hidePublisherPhone
+    ? ''
+    : (route.params?.publisherPhone ?? '').trim() ||
+      pickPublisherPhoneFromRide(route.params?._returnToRide?.params?.ride) ||
+      '';
+  const dialPhone = hidePublisherPhone ? '' : phoneFromRouteOrRide || contactPhoneFromApi.trim();
   const canCall = !isSelf && dialPhone.length > 0;
 
   const handleCall = useCallback(async () => {
@@ -241,12 +284,43 @@ export default function OwnerProfileModal(): React.JSX.Element {
     }
   }, [dialPhone]);
 
-  if (loading) {
+  if (!peerDeactivated && loading) {
     return (
       <SafeAreaView style={styles.screen} edges={['top']}>
         <View style={styles.loaderWrap}>
           <ActivityIndicator size="large" color={COLORS.primary} />
         </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (peerDeactivated) {
+    return (
+      <SafeAreaView style={styles.screen} edges={['top']}>
+        <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+          <View style={[styles.headerCard, styles.headerCardOther]}>
+            <View style={[styles.headerTopRow, styles.headerTopRowOther]}>
+              <Pressable
+                onPress={() => navigation.goBack()}
+                style={styles.circleIconButton}
+                accessibilityRole="button"
+              >
+                <Ionicons name="arrow-back" size={18} color={COLORS.textSecondary} />
+              </Pressable>
+              <View style={[styles.headerTitleWrap, styles.headerTitleWrapOther]}>
+                <Text style={styles.headerTitle}>Profile</Text>
+              </View>
+              <View style={styles.headerRightSpacer} />
+            </View>
+            <View style={styles.avatarWrap}>
+              <UserAvatar uri={undefined} name={DEACTIVATED_ACCOUNT_LABEL} size={72} />
+            </View>
+            <Text style={styles.name}>{DEACTIVATED_ACCOUNT_LABEL}</Text>
+            <Text style={styles.bioMuted}>
+              This account is no longer active. Ratings, trip history, and contact details are hidden.
+            </Text>
+          </View>
+        </ScrollView>
       </SafeAreaView>
     );
   }
@@ -281,7 +355,26 @@ export default function OwnerProfileModal(): React.JSX.Element {
           </View>
 
           <Text style={styles.name}>{targetDisplayName}</Text>
-          <Text style={styles.bio}>Top-rated urban navigator and tech enthusiast.</Text>
+          {(() => {
+            const bioLine = isSelf
+              ? (user?.bio ?? '').trim() || subjectBioFromApi
+              : subjectBioFromApi;
+            if (bioLine) {
+              return <Text style={styles.bio}>{bioLine}</Text>;
+            }
+            if (isSelf) {
+              return <Text style={styles.bioHint}>Add a short description in Edit profile.</Text>;
+            }
+            return null;
+          })()}
+          <RidePreferenceChips
+            ids={
+              isSelf
+                ? normalizeRidePreferenceIds(user?.ridePreferences ?? subjectRidePrefsFromApi)
+                : subjectRidePrefsFromApi
+            }
+            style={styles.ridePrefChips}
+          />
           {canCall ? (
             <Pressable
               onPress={handleCall}
@@ -491,7 +584,36 @@ const styles = StyleSheet.create({
   },
 
   name: { fontSize: 26, fontWeight: '800', color: COLORS.text, textAlign: 'center' },
-  bio: { marginTop: 4, textAlign: 'center', fontSize: 14, color: COLORS.textSecondary },
+  bio: {
+    marginTop: 4,
+    textAlign: 'center',
+    fontSize: 14,
+    color: COLORS.textSecondary,
+    lineHeight: 20,
+    paddingHorizontal: 8,
+  },
+  bioHint: {
+    marginTop: 4,
+    textAlign: 'center',
+    fontSize: 14,
+    color: COLORS.textMuted,
+    fontStyle: 'italic',
+    lineHeight: 20,
+    paddingHorizontal: 12,
+  },
+  ridePrefChips: {
+    marginTop: 12,
+    justifyContent: 'center',
+    paddingHorizontal: 4,
+  },
+  bioMuted: {
+    marginTop: 8,
+    textAlign: 'center',
+    fontSize: 14,
+    lineHeight: 20,
+    color: COLORS.textMuted,
+    paddingHorizontal: 8,
+  },
 
   callButton: {
     marginTop: 14,

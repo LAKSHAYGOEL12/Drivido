@@ -133,6 +133,11 @@ export interface CreateRidePayload {
   vehicleColor?: string;
   /** Stable id from GET /user/vehicles — for ride traceability when backend supports it. */
   vehicleId?: string;
+  /**
+   * Optional: notes for passengers (luggage, pickup detail, music, etc.).
+   * Backend: persist on `Ride` and return on GET `/rides` / `/rides/:id` as `description` (and/or snake_case).
+   */
+  description?: string;
 }
 
 /** Owner-only timeline from GET /api/rides/:id (ride-level `bookingHistory` in API). */
@@ -197,8 +202,18 @@ export interface RideListItem {
   availableSeats?: number;
   /** Count of all booking rows for this ride (any status); use when bookedSeats is 0 but history exists. */
   totalBookings?: number;
+  /** Owner-facing count of pending seat requests (when API sends a number). */
+  pendingRequests?: number;
+  /**
+   * Owner-only: true if at least one pending seat request (list/detail may send boolean without count).
+   * Aliases: `has_pending_requests`.
+   */
+  hasPendingRequests?: boolean;
   /** Fare; include in GET /rides for list/detail cards. */
   price?: string;
+  /** When false, driver has deactivated — UI must not show PII (use “Deactivated user”). */
+  publisherAccountActive?: boolean;
+  publisher_account_active?: boolean;
   /** Publisher/driver profile image when API provides it (list or detail). */
   publisherAvatarUrl?: string;
   /** Publisher/driver date of birth when API provides it. */
@@ -219,6 +234,14 @@ export interface RideListItem {
   /** When ride was published with a profile vehicle id (GET /rides detail may return it). */
   vehicleId?: string;
   /**
+   * Publisher notes (POST /rides). Shown on ride detail after payment section.
+   * Alias: `rideDescription` if backend uses that name.
+   */
+  description?: string;
+  rideDescription?: string;
+  /** Snake_case alias from some APIs. */
+  ride_description?: string;
+  /**
    * When the ride (or trip) is completed — used to close chat after a grace period.
    * Prefer ISO 8601 from GET /rides or ride detail.
    */
@@ -234,6 +257,12 @@ export interface RideListItem {
    * (e.g. cancelled) for list filters and badges.
    */
   myBookingStatus?: string;
+  /** Optional reason/details for my booking status (e.g. ride_started auto-reject). */
+  myBookingStatusReason?: string;
+  /** Backend chat access policy (single source of truth). */
+  canSendChat?: boolean;
+  chatClosed?: boolean;
+  chatClosedReason?: string | null;
   /**
    * When GET /api/rides/:id (or wrapped payload) includes copy because the viewer already has
    * an active booking on this ride. Backend-owned string; app shows it once as a toast on detail.
@@ -256,6 +285,11 @@ export interface RideListItem {
     ratingCount?: number;
     /** Passenger date of birth when API provides it. */
     dateOfBirth?: string;
+    /** When false, passenger account is deactivated — mask name/avatar in UI. */
+    passengerAccountActive?: boolean;
+    passenger_account_active?: boolean;
+    accountActive?: boolean;
+    account_active?: boolean;
     /** Passenger phone when API includes it for ride owner (see `pickPassengerPhoneFromBooking`). */
     phone?: string;
     passengerPhone?: string;
@@ -274,6 +308,12 @@ export interface RideListItem {
      * even if `seats` is non-zero for display.
      */
     ownerPartialSeatRemoval?: boolean;
+    /** Backend-computed flags (v2/v3 owner contract). */
+    isPendingRequest?: boolean;
+    isAcceptedPassenger?: boolean;
+    isCancelledByPassenger?: boolean;
+    isCancelledByOwner?: boolean;
+    canOwnerRemove?: boolean;
   }>;
   /**
    * Populated from ride detail: `bookingHistory` array grouped by `userId` (owner view).
@@ -366,6 +406,9 @@ export interface ChatConversationResponse {
   ride: RideListItem;
   otherUserId: string;
   otherUserName: string;
+  /** When false, peer is deactivated — client masks PII. */
+  otherUserAccountActive?: boolean;
+  other_user_account_active?: boolean;
   /** When backend includes peer profile image for inbox / chat headers. */
   otherUserAvatarUrl?: string;
   lastMessage: string;

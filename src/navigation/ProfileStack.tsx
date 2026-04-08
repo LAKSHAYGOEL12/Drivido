@@ -5,6 +5,7 @@ import type { ProfileStackParamList } from './types';
 import { COLORS } from '../constants/colors';
 import Profile from '../screens/main/Profile';
 import EditProfileScreen from '../screens/main/EditProfileScreen';
+import AccountSecurityScreen from '../screens/main/AccountSecurityScreen';
 import TripsScreen from '../screens/main/TripsScreen';
 import RatingsScreen from '../screens/main/RatingsScreen';
 import UserProfileEntry from '../screens/main/UserProfileEntry';
@@ -28,6 +29,11 @@ export default function ProfileStack(): React.JSX.Element {
       <Stack.Screen name="ProfileHome" component={Profile} />
       <Stack.Screen name="ProfileEntry" component={UserProfileEntry} />
       <Stack.Screen name="EditProfile" component={EditProfileScreen} />
+      <Stack.Screen
+        name="AccountSecurity"
+        component={AccountSecurityScreen}
+        options={{ keyboardHandlingEnabled: true }}
+      />
       <Stack.Screen name="Trips" component={TripsScreen} />
       <Stack.Screen name="Ratings" component={RatingsScreen} />
     </Stack.Navigator>

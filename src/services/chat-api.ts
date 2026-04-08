@@ -18,6 +18,14 @@ export async function fetchConversations(): Promise<ChatConversationsResponse['c
   return res?.conversations ?? [];
 }
 
+/** Zeros server-side unread for this thread so other devices see read state after GET /chat/conversations. */
+export async function markChatThreadReadOnServer(rideId: string, otherUserId: string): Promise<void> {
+  const rid = String(rideId ?? '').trim();
+  const oid = String(otherUserId ?? '').trim();
+  if (!rid || !oid) return;
+  await api.post(API.endpoints.chat.read, { rideId: rid, otherUserId: oid }, { timeout: 12000 });
+}
+
 export async function fetchThreadMessages(
   rideId: string,
   otherUserId: string

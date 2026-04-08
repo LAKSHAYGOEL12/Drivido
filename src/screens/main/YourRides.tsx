@@ -13,17 +13,25 @@ import {
   Pressable,
   TextInput,
   Platform,
-  Alert,
   Keyboard,
   BackHandler,
+  DeviceEventEmitter,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Alert } from '../../utils/themedAlert';
 import { useFocusEffect, useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RidesStackParamList } from '../../navigation/types';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../contexts/AuthContext';
+import { useOwnerPendingRequests } from '../../contexts/OwnerPendingRequestsContext';
 import api from '../../services/api';
 import { clearRideDetailCache, fetchRideDetailRaw } from '../../services/rideDetailCache';
+import {
+  mergeRideListRowWithDetailSnapshot,
+  RIDE_LIST_MERGE_FROM_DETAIL,
+} from '../../services/rideListFromDetailSync';
+import { REQUEST_MY_RIDES_LIST_REFRESH } from '../../services/myRidesListRefreshEvents';
 import { loadOwnerCancelledRides } from '../../services/ownerCancelledRidesStorage';
 import { API } from '../../constants/API';
 import type { RideListItem } from '../../types/api';
@@ -46,6 +54,7 @@ import {
 import {
   bookingIsCancelled,
   bookingIsCancelledByOwner,
+  bookingIsPendingLike,
   pickPreferredBookingStatus,
 } from '../../utils/bookingStatus';
 import { isRideSeatsFull } from '../../utils/rideSeats';
@@ -69,6 +78,9 @@ import {
   mergePassengerRatedRide,
 } from '../../services/ratedRidesStorage';
 import { pickPublisherAvatarUrl } from '../../utils/avatarUrl';
+import { findMainTabNavigatorWithOptions } from '../../navigation/findMainTabNavigator';
+import RideCardSkeleton from '../../components/rides/RideCardSkeleton';
+import type { RecentPublishedEntry } from '../../services/recent-published-storage';
 
 type FilterTab = YourRidesFilterTab;
 
@@ -115,6 +127,22 @@ function normalizeRideItem(raw: Record<string, unknown>): RideListItem {
     typeof rawAvail === 'number' && !Number.isNaN(rawAvail)
       ? Math.max(0, Math.floor(rawAvail))
       : undefined;
+  const rawPendingReq =
+    r.pendingRequests ??
+    r.pending_requests ??
+    r.pendingRequestCount ??
+    r.pending_request_count ??
+    r.requestsPending ??
+    r.requests_pending;
+  const pendingRequestsNum =
+    typeof rawPendingReq === 'number' && !Number.isNaN(rawPendingReq)
+      ? Math.max(0, Math.floor(rawPendingReq))
+      : undefined;
+  const rawHasPending = r.hasPendingRequests ?? r.has_pending_requests;
+  let hasPendingRequestsFlag: boolean | undefined;
+  if (typeof rawHasPending === 'boolean') hasPendingRequestsFlag = rawHasPending;
+  else if (rawHasPending === 'true') hasPendingRequestsFlag = true;
+  else if (rawHasPending === 'false') hasPendingRequestsFlag = false;
   const num = (v: unknown): number | undefined =>
     typeof v === 'number' && !Number.isNaN(v) ? v : v != null && v !== '' ? Number(v) : undefined;
   const nestedUser =
@@ -143,6 +171,8 @@ function normalizeRideItem(raw: Record<string, unknown>): RideListItem {
     seats: outSeats,
     ...(bookedSeatsNum !== undefined ? { bookedSeats: bookedSeatsNum } : {}),
     ...(totalBookingsNum !== undefined ? { totalBookings: totalBookingsNum } : {}),
+    ...(pendingRequestsNum !== undefined ? { pendingRequests: pendingRequestsNum } : {}),
+    ...(hasPendingRequestsFlag !== undefined ? { hasPendingRequests: hasPendingRequestsFlag } : {}),
     ...(availableSeatsNum !== undefined ? { availableSeats: availableSeatsNum } : {}),
     rideDate: outDate,
     rideTime: outTime,
@@ -174,6 +204,13 @@ function normalizeRideItem(raw: Record<string, unknown>): RideListItem {
       }
       return undefined;
     })(),
+    myBookingStatus: toStr(r.myBookingStatus ?? r.my_booking_status),
+    myBookingStatusReason: toStr(
+      r.myBookingStatusReason ??
+        r.my_booking_status_reason ??
+        r.statusReason ??
+        r.status_reason
+    ),
   };
   const estDur = num(r.estimatedDurationSeconds ?? r.estimated_duration_seconds);
   if (estDur !== undefined && estDur > 0) {
@@ -192,6 +229,15 @@ function normalizeRideItem(raw: Record<string, unknown>): RideListItem {
   else if (rawVi === 'false') out.viewerIsOwner = false;
   const pubAvatar = pickPublisherAvatarUrl(r);
   if (pubAvatar) out.publisherAvatarUrl = pubAvatar;
+  const rideDesc = toStr(
+    r.description ??
+      r.rideDescription ??
+      r.ride_description ??
+      r.driverNotes ??
+      r.driver_notes ??
+      r.notes
+  )?.trim();
+  if (rideDesc) out.description = rideDesc;
   return out;
 }
 
@@ -268,6 +314,8 @@ function mergePublishedAndBookedRideLists(
   published: RideListItem[],
   bookedAsPassenger: RideListItem[]
 ): RideListItem[] {
+  const pickDescription = (row: RideListItem): string =>
+    String(row.description ?? row.rideDescription ?? row.ride_description ?? '').trim();
   const map = new Map<string, RideListItem>();
   for (const r of published) {
     if (!r.id) continue;
@@ -282,6 +330,9 @@ function mergePublishedAndBookedRideLists(
       map.set(r.id, fromBooked);
       continue;
     }
+    const existingDescription = pickDescription(existing);
+    const bookedDescription = pickDescription(fromBooked);
+    const mergedDescription = existingDescription || bookedDescription;
     map.set(r.id, {
       ...existing,
       totalBookings: fromBooked.totalBookings ?? existing.totalBookings,
@@ -291,6 +342,13 @@ function mergePublishedAndBookedRideLists(
           ? existing.bookings
           : fromBooked.bookings,
       viewerIsOwner: existing.viewerIsOwner === true || fromBooked.viewerIsOwner === true,
+      ...(mergedDescription
+        ? {
+            description: mergedDescription,
+            rideDescription: mergedDescription,
+            ride_description: mergedDescription,
+          }
+        : {}),
     });
   }
   return Array.from(map.values());
@@ -361,6 +419,8 @@ function YourRidesRideCard({
   ratedTargetsByRide,
   onNavigateDetail,
   onRateRide,
+  showRepublishAction,
+  onRepublishPress,
 }: {
   item: RideListItem;
   filter: FilterTab;
@@ -372,10 +432,18 @@ function YourRidesRideCard({
   ratedTargetsByRide: Record<string, string[]>;
   onNavigateDetail: (ride: RideListItem) => void;
   onRateRide: (ride: RideListItem) => void;
+  showRepublishAction?: boolean;
+  onRepublishPress?: (ride: RideListItem) => void;
 }): React.JSX.Element {
   const isPassengerContext =
     (item.userId ?? '').trim() !== currentUserId && bookedRideIds.has(item.id);
   const isOwnerView = isViewerRideOwner(item, currentUserId);
+  const isDrivingRideByUserId =
+    currentUserId.length > 0 && (item.userId ?? '').trim() === currentUserId;
+  const isDrivingPastCancelledOrCompleted =
+    filter === 'pastRides' &&
+    (isOwnerView || isDrivingRideByUserId) &&
+    (isRideCancelledByOwner(item) || String(item.status ?? '').trim().toLowerCase() === 'completed');
   const hasMyActiveBooking =
     (item.bookings ?? []).some(
       (b) => (b.userId ?? '').trim() === currentUserId && !bookingIsCancelled(b.status)
@@ -397,15 +465,23 @@ function YourRidesRideCard({
     filter === 'pastRides' &&
     isPassengerContext &&
     String(item.myBookingStatus ?? '').trim().toLowerCase() === 'rejected';
+  const myBookingStatusReasonLower = String(item.myBookingStatusReason ?? '').trim().toLowerCase();
+  const rejectedDueToRideStarted = rejectedByYouInPast && myBookingStatusReasonLower === 'ride_started';
+  const hideRatingForNoAcceptedTrip =
+    isPassengerContext &&
+    (String(item.myBookingStatus ?? '').trim().toLowerCase() === 'rejected' ||
+      bookingIsPendingLike(item.myBookingStatus));
   const showCancelledBadgePast =
     filter === 'pastRides' &&
     !removedByDriverInPast &&
     (bookingIsCancelled(item.myBookingStatus) ||
       (isRideCancelledByOwner(item) && (isOwnerView || bookedRideIds.has(item.id))));
   const isCompletedByBackendStatus = String(item.status ?? '').trim().toLowerCase() === 'completed';
+  const isCompletedByTimeWindow = isRideCompletedForDisplay(item);
   const showRatePromptPast =
     filter === 'pastRides' &&
-    isCompletedByBackendStatus &&
+    isCompletedByTimeWindow &&
+    !hideRatingForNoAcceptedTrip &&
     !bookingIsCancelled(item.myBookingStatus) &&
     !isRideCancelledByOwner(item) &&
     (() => {
@@ -420,7 +496,8 @@ function YourRidesRideCard({
     })();
   const showRatedStatePast =
     filter === 'pastRides' &&
-    isCompletedByBackendStatus &&
+    isCompletedByTimeWindow &&
+    !hideRatingForNoAcceptedTrip &&
     !bookingIsCancelled(item.myBookingStatus) &&
     !isRideCancelledByOwner(item) &&
     (() => {
@@ -434,41 +511,115 @@ function YourRidesRideCard({
       return activePassengerIds.every((uid) => ratedSet.has(uid));
     })();
   const pastCancelledAndRideFull = cancelledByYouInPast && isRideSeatsFull(item);
+  if (showRepublishAction) {
+    const from = (item.pickupLocationName ?? item.from ?? 'Pickup').trim();
+    const to = (item.destinationLocationName ?? item.to ?? 'Destination').trim();
+    return (
+      <TouchableOpacity
+        style={styles.republishOnlyCard}
+        activeOpacity={0.85}
+        onPress={() => onRepublishPress?.(item)}
+      >
+        <View style={styles.republishOnlyTop}>
+          <Ionicons name="refresh-circle-outline" size={18} color={COLORS.primary} />
+          <Text style={styles.republishOnlyTitle}>Republish this ride</Text>
+        </View>
+        <Text style={styles.republishOnlyRoute} numberOfLines={1}>
+          {from} -> {to}
+        </Text>
+        <Text style={styles.republishOnlyHint}>
+          Update details and publish as a new ride
+        </Text>
+      </TouchableOpacity>
+    );
+  }
+
   return (
-    <RideListCard
-      ride={item}
-      currentUserId={currentUserId}
-      currentUserName={currentUserName}
-      viewerAvatarUrl={viewerAvatarUrl}
-      showCancelledBadge={showCancelledBadgePast}
-      showRejectedBadge={rejectedByYouInPast}
-      showRemovedByDriverBadge={removedByDriverInPast}
-      showCompletedBadge={filter === 'pastRides' && isCompletedByBackendStatus}
-      seatFullUnavailable={seatFullBlocked || pastCancelledAndRideFull}
-      hideSeatAvailability={filter === 'pastRides'}
-      myRidesOwnerSummary={filter === 'myRides'}
-      showRatePrompt={showRatePromptPast}
-      showRatedState={showRatedStatePast}
-      onRatePress={() => onRateRide(item)}
-      onPress={() => {
-        if (seatFullBlocked || pastCancelledAndRideFull) {
-          showToast({
-            title: 'Ride full',
-            message: 'All seats on this ride are booked.',
-            variant: 'info',
-          });
-          return;
-        }
-        onNavigateDetail(item);
-      }}
-    />
+    <View>
+      <RideListCard
+        ride={item}
+        currentUserId={currentUserId}
+        currentUserName={currentUserName}
+        viewerAvatarUrl={viewerAvatarUrl}
+        showCancelledBadge={showCancelledBadgePast}
+        showRejectedBadge={rejectedByYouInPast}
+        rejectedBadgeText={rejectedDueToRideStarted ? 'Not approved' : undefined}
+        showRemovedByDriverBadge={removedByDriverInPast}
+        showCompletedBadge={filter === 'pastRides' && isCompletedByTimeWindow}
+        seatFullUnavailable={seatFullBlocked || pastCancelledAndRideFull}
+        hideSeatAvailability={filter === 'pastRides'}
+        myRidesOwnerSummary={filter === 'myRides'}
+        ownerUseSelfIdentity={isDrivingPastCancelledOrCompleted}
+        showRatePrompt={showRatePromptPast}
+        showRatedState={showRatedStatePast}
+        onRatePress={() => onRateRide(item)}
+        onPress={() => {
+          if (seatFullBlocked || pastCancelledAndRideFull) {
+            showToast({
+              title: 'Ride full',
+              message: 'All seats on this ride are booked.',
+              variant: 'info',
+            });
+            return;
+          }
+          onNavigateDetail(item);
+        }}
+      />
+    </View>
   );
+}
+
+function rideToRepublishEntry(ride: RideListItem): RecentPublishedEntry | null {
+  const pickup = (ride.pickupLocationName ?? ride.from ?? '').trim();
+  const destination = (ride.destinationLocationName ?? ride.to ?? '').trim();
+  const plat = ride.pickupLatitude;
+  const plon = ride.pickupLongitude;
+  const dlat = ride.destinationLatitude;
+  const dlon = ride.destinationLongitude;
+  if (!pickup || !destination) return null;
+  if ([plat, plon, dlat, dlon].some((n) => typeof n !== 'number' || Number.isNaN(n))) return null;
+  const scheduled = ride.scheduledAt ? new Date(ride.scheduledAt) : null;
+  const dateYmd =
+    scheduled && !Number.isNaN(scheduled.getTime())
+      ? `${scheduled.getFullYear()}-${String(scheduled.getMonth() + 1).padStart(2, '0')}-${String(scheduled.getDate()).padStart(2, '0')}`
+      : String(ride.scheduledDate ?? ride.rideDate ?? '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateYmd)) return null;
+  const hour =
+    scheduled && !Number.isNaN(scheduled.getTime())
+      ? scheduled.getHours()
+      : Math.max(0, Math.min(23, parseInt(String(ride.scheduledTime ?? ride.rideTime ?? '09:00').split(':')[0] ?? '9', 10) || 9));
+  const minute =
+    scheduled && !Number.isNaN(scheduled.getTime())
+      ? scheduled.getMinutes()
+      : Math.max(0, Math.min(59, parseInt(String(ride.scheduledTime ?? ride.rideTime ?? '09:00').split(':')[1] ?? '0', 10) || 0));
+  const seats = Math.max(1, Math.min(6, Math.floor(Number(ride.seats) || 1)));
+  const bookingModeRaw = String((ride as RideListItem & { bookingMode?: string; booking_mode?: string; instantBooking?: boolean }).bookingMode ?? '').trim().toLowerCase();
+  const instantBooking = bookingModeRaw ? bookingModeRaw === 'instant' : Boolean((ride as RideListItem & { instantBooking?: boolean }).instantBooking ?? true);
+  return {
+    id: `republish-${ride.id}`,
+    pickup,
+    destination,
+    pickupLatitude: plat as number,
+    pickupLongitude: plon as number,
+    destinationLatitude: dlat as number,
+    destinationLongitude: dlon as number,
+    dateYmd,
+    hour,
+    minute,
+    seats,
+    rate: String(ride.price ?? '').trim(),
+    rideDescription: String(ride.description ?? '').trim(),
+    description: String(ride.description ?? '').trim(),
+    instantBooking,
+  };
 }
 
 export default function YourRides(): React.JSX.Element {
   const navigation = useNavigation<YourRidesNavProp>();
   const route = useRoute<RouteProp<RidesStackParamList, 'YourRidesList'>>();
+  const insets = useSafeAreaInsets();
   const { user } = useAuth();
+  const { syncFromRideList } = useOwnerPendingRequests();
   const currentUserId = (user?.id ?? '').trim();
   const currentUserName = (user?.name ?? '').trim();
   const viewerAvatarUrl = user?.avatarUrl?.trim();
@@ -490,6 +641,30 @@ export default function YourRides(): React.JSX.Element {
   const [ratingStars, setRatingStars] = useState(0);
   const [ratingReview, setRatingReview] = useState('');
   const [ratingSubmitting, setRatingSubmitting] = useState(false);
+  const ratingBehaviorCheckpoints = ['Safe driving', 'Punctual', 'Polite', 'Clean vehicle'];
+  const ratingExperienceCheckpoints = useMemo(() => {
+    if (ratingStars >= 5) return ['Outstanding', 'Excellent ride', 'Highly recommended'];
+    if (ratingStars === 4) return ['Good driving experience', 'Comfortable ride', 'Smooth route'];
+    if (ratingStars === 3) return ['Average experience', 'Can improve timing', 'Okay overall'];
+    if (ratingStars === 2) return ['Needs improvement', 'Driving can be smoother', 'Better communication needed'];
+    if (ratingStars === 1) return ['Poor experience', 'Very late', 'Unsafe behavior'];
+    return [];
+  }, [ratingStars]);
+  const addRatingCheckpoint = useCallback(
+    (label: string) => {
+      if (ratingSubmitting) return;
+      const nextLabel = label.trim();
+      if (!nextLabel) return;
+      const tokens = ratingReview
+        .split('•')
+        .map((t) => t.trim())
+        .filter(Boolean);
+      if (tokens.some((t) => t.toLowerCase() === nextLabel.toLowerCase())) return;
+      const next = [...tokens, nextLabel].join(' • ');
+      setRatingReview(next);
+    },
+    [ratingReview, ratingSubmitting]
+  );
   const [selectedRateTargetUserId, setSelectedRateTargetUserId] = useState('');
   const [selectedRateTargetName, setSelectedRateTargetName] = useState('');
   const [ratedTargetsByRide, setRatedTargetsByRide] = useState<Record<string, string[]>>({});
@@ -520,6 +695,24 @@ export default function YourRides(): React.JSX.Element {
     setCachedAllRidesCount(0);
   }, [currentUserId]);
 
+  useEffect(() => {
+    syncFromRideList(rides, currentUserId);
+  }, [rides, currentUserId, syncFromRideList]);
+
+  /** Detail screen GET is authoritative after approve/reject — merge before list refetch catches up. */
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener(
+      RIDE_LIST_MERGE_FROM_DETAIL,
+      (detail: RideListItem) => {
+        if (!detail?.id) return;
+        setRides((prev) =>
+          prev.map((r) => (r.id === detail.id ? mergeRideListRowWithDetailSnapshot(r, detail) : r))
+        );
+      }
+    );
+    return () => sub.remove();
+  }, []);
+
   /** Restore “already rated” from device so past rides don’t prompt again after app reload (GET /ratings/check still confirms). */
   useEffect(() => {
     if (!currentUserId) return;
@@ -547,17 +740,6 @@ export default function YourRides(): React.JSX.Element {
       cancelled = true;
     };
   }, [currentUserId]);
-
-  useEffect(() => {
-    const tabNav = navigation.getParent();
-    if (!tabNav) return;
-    tabNav.setOptions({
-      tabBarStyle: filter === 'pastRides' ? { display: 'none' } : undefined,
-    });
-    return () => {
-      tabNav.setOptions({ tabBarStyle: undefined });
-    };
-  }, [navigation, filter]);
 
   useEffect(() => {
     if (!currentUserId || filter !== 'pastRides') return;
@@ -925,8 +1107,33 @@ export default function YourRides(): React.JSX.Element {
     }
   }, [currentUserId]);
 
+  /** Login/sign-up/session restore and app foreground — reload merged list (My rides driver + booked data). */
+  const myRidesExternalRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (!currentUserId) return;
+    const sub = DeviceEventEmitter.addListener(REQUEST_MY_RIDES_LIST_REFRESH, () => {
+      if (myRidesExternalRefreshTimerRef.current) {
+        clearTimeout(myRidesExternalRefreshTimerRef.current);
+      }
+      myRidesExternalRefreshTimerRef.current = setTimeout(() => {
+        myRidesExternalRefreshTimerRef.current = null;
+        void fetchRides(ridesRef.current.length > 0);
+      }, 150);
+    });
+    return () => {
+      sub.remove();
+      if (myRidesExternalRefreshTimerRef.current) {
+        clearTimeout(myRidesExternalRefreshTimerRef.current);
+      }
+    };
+  }, [currentUserId, fetchRides]);
+
   useFocusEffect(
     useCallback(() => {
+      // Main list screen should always show bottom tabs.
+      const mainTabs = findMainTabNavigatorWithOptions(navigation as { getParent?: () => unknown });
+      mainTabs?.setOptions?.({ tabBarStyle: undefined });
+
       const afterBook = route.params?._afterBookRefresh;
       if (afterBook != null) {
         setJustBookedWelcome(true);
@@ -946,7 +1153,34 @@ export default function YourRides(): React.JSX.Element {
 
   const goRideDetail = useCallback(
     (ride: RideListItem) => {
-      navigation.navigate('RideDetail', { ride });
+      (
+        navigation as unknown as {
+          push: (name: 'RideDetail', params: { ride: RideListItem }) => void;
+        }
+      ).push('RideDetail', { ride });
+    },
+    [navigation]
+  );
+
+  const republishFromPastRide = useCallback(
+    (ride: RideListItem) => {
+      const entry = rideToRepublishEntry(ride);
+      if (!entry) {
+        showToast({
+          title: 'Cannot republish',
+          message: 'Ride data is incomplete. Open ride detail and try again.',
+          variant: 'info',
+        });
+        return;
+      }
+      const mainTabs = findMainTabNavigatorWithOptions(navigation as { getParent?: () => unknown });
+      (mainTabs as { navigate?: (name: string, params?: object) => void } | null)?.navigate?.(
+        'PublishStack',
+        {
+          screen: 'PublishRecentEdit',
+          params: { entry },
+        }
+      );
     },
     [navigation]
   );
@@ -1286,13 +1520,12 @@ export default function YourRides(): React.JSX.Element {
 
   const initialLoadBlock =
     loading && rides.length === 0 && !error ? (
-      <View style={styles.listBody}>
-        <View style={styles.loaderInner}>
-          <ActivityIndicator size="large" color={COLORS.primary} />
-          <Text style={styles.loadingTitle}>
-            {justBookedWelcome ? "You're in" : 'Your rides'}
-          </Text>
-          <Text style={styles.loadingText}>
+      <View style={styles.skeletonListWrap}>
+        {Array.from({ length: 4 }).map((_, idx) => (
+          <RideCardSkeleton key={`your-rides-skeleton-${idx}`} />
+        ))}
+        <View style={styles.skeletonHint}>
+          <Text style={styles.skeletonHintText}>
             {justBookedWelcome ? 'Syncing your bookings…' : 'Loading your rides…'}
           </Text>
         </View>
@@ -1319,6 +1552,7 @@ export default function YourRides(): React.JSX.Element {
   return (
     <View style={styles.wrapper}>
       <View style={styles.filterRow}>
+      <View style={styles.filterTabsInner}>
         <TouchableOpacity
           style={[styles.filterTab, filter === 'myRides' && styles.filterTabActive]}
           onPress={() => setFilter('myRides')}
@@ -1352,6 +1586,7 @@ export default function YourRides(): React.JSX.Element {
             Past rides{tabCounts.pastRides > 0 ? ` (${tabCounts.pastRides})` : ''}
           </Text>
         </TouchableOpacity>
+      </View>
       </View>
       {initialLoadBlock ?? initialErrorBlock ?? (
         filter === 'allRides' ? (
@@ -1397,6 +1632,8 @@ export default function YourRides(): React.JSX.Element {
                 ratedTargetsByRide={ratedTargetsByRide}
                 onNavigateDetail={goRideDetail}
                 onRateRide={openRateSheet}
+                showRepublishAction={false}
+                onRepublishPress={republishFromPastRide}
               />
             )}
           />
@@ -1455,6 +1692,8 @@ export default function YourRides(): React.JSX.Element {
                 ratedTargetsByRide={ratedTargetsByRide}
                 onNavigateDetail={goRideDetail}
                 onRateRide={openRateSheet}
+                showRepublishAction={false}
+                onRepublishPress={republishFromPastRide}
               />
             )}
           />
@@ -1468,6 +1707,7 @@ export default function YourRides(): React.JSX.Element {
           <Animated.View
             style={[
               styles.ratingSheet,
+              { paddingBottom: 16 + Math.max(insets.bottom, 10) },
               { transform: [{ translateY: Animated.multiply(ratingKeyboardOffset, -1) }] },
             ]}
           >
@@ -1561,6 +1801,38 @@ export default function YourRides(): React.JSX.Element {
                     </TouchableOpacity>
                   ))}
                 </View>
+                {ratingStars > 0 ? (
+                  <View style={styles.ratingCheckpointBlock}>
+                    <Text style={styles.ratingCheckpointHeading}>Experience</Text>
+                    <View style={styles.ratingCheckpointWrap}>
+                      {ratingExperienceCheckpoints.map((label) => (
+                        <TouchableOpacity
+                          key={`exp-${label}`}
+                          style={styles.ratingCheckpointChip}
+                          onPress={() => addRatingCheckpoint(label)}
+                          disabled={ratingSubmitting}
+                          activeOpacity={0.85}
+                        >
+                          <Text style={styles.ratingCheckpointChipText}>{label}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                    <Text style={styles.ratingCheckpointHeading}>Behavior</Text>
+                    <View style={styles.ratingCheckpointWrap}>
+                      {ratingBehaviorCheckpoints.map((label) => (
+                        <TouchableOpacity
+                          key={`beh-${label}`}
+                          style={styles.ratingCheckpointChip}
+                          onPress={() => addRatingCheckpoint(label)}
+                          disabled={ratingSubmitting}
+                          activeOpacity={0.85}
+                        >
+                          <Text style={styles.ratingCheckpointChipText}>{label}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  </View>
+                ) : null}
 
                 <Text style={styles.ratingInputLabel}>Write your review (optional)</Text>
                 <TextInput
@@ -1600,17 +1872,9 @@ export default function YourRides(): React.JSX.Element {
                   >
                     <Text style={styles.ratingCancelText}>Back to passengers</Text>
                   </TouchableOpacity>
-                ) : (
-                  <TouchableOpacity style={styles.ratingCancelBtn} onPress={() => void handleSkipRating()}>
-                    <Text style={styles.ratingCancelText}>Cancel</Text>
-                  </TouchableOpacity>
-                )}
+                ) : null}
               </>
-            ) : (
-              <TouchableOpacity style={styles.ratingCancelBtn} onPress={() => void handleSkipRating()}>
-                <Text style={styles.ratingCancelText}>Cancel</Text>
-              </TouchableOpacity>
-            )}
+            ) : null}
           </Animated.View>
         </View>
       </Modal>
@@ -1631,13 +1895,28 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.background,
     padding: 24,
   },
+  skeletonListWrap: {
+    flex: 1,
+    padding: 16,
+    backgroundColor: COLORS.background,
+  },
+  skeletonHint: {
+    marginTop: 6,
+    alignItems: 'center',
+  },
+  skeletonHintText: {
+    fontSize: 14,
+    color: COLORS.textSecondary,
+  },
   filterRow: {
+    backgroundColor: COLORS.background,
+  },
+  filterTabsInner: {
     flexDirection: 'row',
     paddingHorizontal: 12,
-    paddingTop: 12,
+    paddingTop: 6,
     paddingBottom: 8,
     gap: 6,
-    backgroundColor: COLORS.background,
   },
   sectionHeader: {
     fontSize: 13,
@@ -1739,6 +2018,35 @@ const styles = StyleSheet.create({
     color: COLORS.textSecondary,
     marginTop: 4,
   },
+  republishOnlyCard: {
+    marginBottom: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.backgroundSecondary,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    gap: 6,
+  },
+  republishOnlyTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  republishOnlyTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: COLORS.primary,
+  },
+  republishOnlyRoute: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: COLORS.text,
+  },
+  republishOnlyHint: {
+    fontSize: 12,
+    color: COLORS.textSecondary,
+  },
   ratingOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.45)',
@@ -1754,7 +2062,7 @@ const styles = StyleSheet.create({
     padding: 16,
     borderTopWidth: 1,
     borderTopColor: COLORS.borderLight,
-    maxHeight: '68%',
+    maxHeight: '84%',
   },
   ratingHandle: {
     width: 44,
@@ -1796,6 +2104,33 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: COLORS.text,
     marginBottom: 8,
+  },
+  ratingCheckpointBlock: {
+    marginBottom: 10,
+    gap: 8,
+  },
+  ratingCheckpointHeading: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: COLORS.textSecondary,
+  },
+  ratingCheckpointWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  ratingCheckpointChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: '#eef8f4',
+    borderWidth: 1,
+    borderColor: '#d7efe4',
+  },
+  ratingCheckpointChipText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: COLORS.primary,
   },
   rateTargetBlock: {
     marginTop: 10,
@@ -1879,7 +2214,7 @@ const styles = StyleSheet.create({
     color: COLORS.primary,
   },
   ratingInput: {
-    minHeight: 100,
+    minHeight: 92,
     borderWidth: 1,
     borderColor: COLORS.borderLight,
     borderRadius: 16,

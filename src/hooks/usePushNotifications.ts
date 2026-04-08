@@ -12,14 +12,21 @@ import {
   resetPushPermissionDeniedAlertFlag,
 } from '../services/pushTokenRegistration';
 
+/** When false, foreground notifications are suppressed (user turned off push in Profile). */
+let foregroundPushPresentationEnabled = true;
+
+function setForegroundPushPresentationEnabled(enabled: boolean): void {
+  foregroundPushPresentationEnabled = enabled;
+}
+
 // Foreground presentation (Expo SDK 50+)
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: true,
-    shouldShowBanner: true,
-    shouldShowList: true,
+    shouldShowAlert: foregroundPushPresentationEnabled,
+    shouldPlaySound: foregroundPushPresentationEnabled,
+    shouldSetBadge: foregroundPushPresentationEnabled,
+    shouldShowBanner: foregroundPushPresentationEnabled,
+    shouldShowList: foregroundPushPresentationEnabled,
   }),
 });
 
@@ -43,6 +50,10 @@ export function usePushNotifications(
     // Do not clear pushTokenMemory here — logout runs DELETE first; clearing here caused races
     // with in-flight registration and wrong user–token mapping.
   }, [userId]);
+
+  useEffect(() => {
+    setForegroundPushPresentationEnabled(shouldRegister);
+  }, [shouldRegister]);
 
   const registerToken = useCallback(async () => {
     if (!Device.isDevice || !userId) return;

@@ -13,6 +13,8 @@ function scopedKey(userKey?: string): string {
 
 export type RecentPublishedEntry = {
   id: string;
+  /** Canonical backend identity of the ride this recent row represents. */
+  rideId?: string;
   pickup: string;
   destination: string;
   pickupLatitude: number;
@@ -25,7 +27,13 @@ export type RecentPublishedEntry = {
   minute: number;
   seats: number;
   rate: string;
+  /** Optional ride notes shown to passengers on detail screen. */
+  rideDescription?: string;
+  /** Canonical backend key for recent-published rows. */
+  description?: string;
   instantBooking: boolean;
+  createdAt?: string;
+  updatedAt?: string;
 };
 
 function asNum(v: unknown): number | undefined {
@@ -75,6 +83,7 @@ function normalizePublished(raw: unknown): RecentPublishedEntry | null {
   const seats = Math.max(1, Math.min(6, Math.floor(Number(r.seats)) || 1));
   return {
     id: String(r.id ?? r._id ?? `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`),
+    rideId: String(r.rideId ?? r.ride_id ?? r.ride ?? '').trim() || undefined,
     pickup,
     destination,
     pickupLatitude: plat,
@@ -86,7 +95,11 @@ function normalizePublished(raw: unknown): RecentPublishedEntry | null {
     minute,
     seats,
     rate: String(r.rate ?? '').trim(),
+    rideDescription: String(r.rideDescription ?? r.ride_description ?? r.description ?? '').trim(),
+    description: String(r.description ?? r.rideDescription ?? r.ride_description ?? '').trim(),
     instantBooking: Boolean(r.instantBooking ?? r.instant_booking),
+    createdAt: String(r.createdAt ?? '').trim() || undefined,
+    updatedAt: String(r.updatedAt ?? '').trim() || undefined,
   };
 }
 
@@ -112,6 +125,8 @@ async function saveLocal(list: RecentPublishedEntry[], userKey?: string): Promis
 function dedupeKeyFromSnapshot(
   e: Omit<RecentPublishedEntry, 'id'> | RecentPublishedEntry
 ): string {
+  const canonicalRideId = (e.rideId ?? '').trim();
+  if (canonicalRideId) return `ride:${canonicalRideId}`;
   return [
     e.pickup.toLowerCase(),
     e.destination.toLowerCase(),
@@ -120,6 +135,7 @@ function dedupeKeyFromSnapshot(
     e.minute,
     e.seats,
     e.rate,
+    (e.rideDescription ?? e.description ?? '').trim(),
     e.instantBooking ? '1' : '0',
     e.pickupLatitude,
     e.pickupLongitude,
@@ -176,6 +192,7 @@ export async function addRecentPublished(
   }
 
   const snapshot: Omit<RecentPublishedEntry, 'id'> = {
+    rideId: (entry.rideId ?? '').trim() || undefined,
     pickup,
     destination,
     pickupLatitude: entry.pickupLatitude,
@@ -187,6 +204,8 @@ export async function addRecentPublished(
     minute: Math.max(0, Math.min(59, Math.floor(entry.minute))),
     seats: Math.max(1, Math.min(6, Math.floor(entry.seats) || 1)),
     rate: entry.rate.trim(),
+    rideDescription: (entry.rideDescription ?? entry.description ?? '').trim(),
+    description: (entry.description ?? entry.rideDescription ?? '').trim(),
     instantBooking: Boolean(entry.instantBooking),
   };
 
@@ -210,14 +229,11 @@ export async function addRecentPublished(
   }
 
   try {
-    const local = await loadLocal(userKey);
-    const key = dedupeKeyFromSnapshot(snapshot);
-    const alreadyExists = local.some((x) => dedupeKeyFromSnapshot(x) === key);
-    if (alreadyExists) {
-      return local;
+    if (snapshot.rideId) {
+      await api.put(API.endpoints.recentPublished.upsertByRide(snapshot.rideId), snapshot);
+    } else {
+      await api.post(API.endpoints.recentPublished.upsert, snapshot);
     }
-
-    await api.post(API.endpoints.recentPublished.upsert, snapshot);
     return loadRecentPublished(userKey);
   } catch {
     return mergeLocalOnly();

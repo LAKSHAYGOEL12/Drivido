@@ -13,10 +13,13 @@ import {
 } from '@expo-google-fonts/roboto';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { AuthProvider } from './src/contexts/AuthContext';
+import { NotificationPreferencesProvider } from './src/contexts/NotificationPreferencesContext';
 import { ThemeProvider, useTheme } from './src/contexts/ThemeContext';
+import { AppAlertProvider } from './src/contexts/AppAlertProvider';
 import { ToastProvider } from './src/contexts/ToastContext';
 import { LocationProvider } from './src/contexts/LocationContext';
 import { InboxProvider } from './src/contexts/InboxContext';
+import { OwnerPendingRequestsProvider } from './src/contexts/OwnerPendingRequestsContext';
 import RootNavigator from './src/navigation/RootNavigator';
 import { COLORS } from './src/constants/colors';
 import { applyGlobalRobotoFont } from './src/constants/typography';
@@ -46,7 +49,8 @@ function ThemedStatusBar(): React.JSX.Element {
 /**
  * App.tsx
  * └── AuthProvider
- *     └── RootNavigator
+ *     └── NotificationPreferencesProvider
+ *         └── RootNavigator (via Theme, Toast, Location, Inbox)
  *         └── RootStack: Main (BottomTabs) + modal Login | Register (guests browse Search; book opens auth)
  */
 export default function App(): React.JSX.Element | null {
@@ -78,16 +82,22 @@ export default function App(): React.JSX.Element | null {
   return (
     <SafeAreaProvider>
       <AuthProvider>
-        <ThemeProvider>
-          <ToastProvider>
-            <ThemedStatusBar />
-            <LocationProvider>
-              <InboxProvider>
-                <RootNavigator />
-              </InboxProvider>
-            </LocationProvider>
-          </ToastProvider>
-        </ThemeProvider>
+        <NotificationPreferencesProvider>
+          <ThemeProvider>
+            <AppAlertProvider>
+              <ToastProvider>
+                <ThemedStatusBar />
+                <LocationProvider>
+                  <OwnerPendingRequestsProvider>
+                    <InboxProvider>
+                      <RootNavigator />
+                    </InboxProvider>
+                  </OwnerPendingRequestsProvider>
+                </LocationProvider>
+              </ToastProvider>
+            </AppAlertProvider>
+          </ThemeProvider>
+        </NotificationPreferencesProvider>
       </AuthProvider>
     </SafeAreaProvider>
   );

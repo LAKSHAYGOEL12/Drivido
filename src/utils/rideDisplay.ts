@@ -1,5 +1,5 @@
 import type { RideListItem } from '../types/api';
-import { bookingIsCancelled } from './bookingStatus';
+import { bookingIsCancelled, bookingIsPendingLike } from './bookingStatus';
 import { bookingPassengerDisplayName } from './displayNames';
 import { distanceKm } from './calculateDistance';
 
@@ -143,8 +143,8 @@ export function isRidePast(ride: RideListItem): boolean {
   return at.getTime() < Date.now();
 }
 
-/** Grace after estimated arrival before a ride is treated as “past / completed” (1 hour). */
-export const PAST_GRACE_MS_AFTER_ARRIVAL = 60 * 60 * 1000;
+/** Grace after estimated arrival before a ride is treated as “past / completed” (30 minutes). */
+export const PAST_GRACE_MS_AFTER_ARRIVAL = 30 * 60 * 1000;
 
 /**
  * Estimated arrival time (pickup + route duration). If duration unknown, assumes +1h from pickup.
@@ -204,6 +204,35 @@ export function getRideTotalBookingCount(ride: RideListItem): number {
   return (ride.bookings ?? []).length;
 }
 
+/**
+ * Owner “pending request” line on ride cards: pending-like `bookings[]` rows, numeric aggregate,
+ * or owner-only `hasPendingRequests` / `has_pending_requests` from GET /rides, /my-rides, /rides/booked.
+ */
+export function readPendingSeatRequestCount(
+  ride: RideListItem,
+  bookings: { status?: string }[] | undefined
+): number {
+  const fromRows = (bookings ?? []).filter((b) => bookingIsPendingLike(b.status)).length;
+  const r = ride as RideListItem & Record<string, unknown>;
+  const raw =
+    r.pendingRequests ??
+    r.pending_requests ??
+    r.pendingRequestCount ??
+    r.pending_request_count ??
+    r.requestsPending ??
+    r.requests_pending;
+  let fromField = 0;
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    fromField = Math.max(0, Math.floor(raw));
+  } else if (typeof raw === 'string' && raw.trim() !== '') {
+    const p = parseInt(raw, 10);
+    if (!Number.isNaN(p)) fromField = Math.max(0, p);
+  }
+  const hp = r.hasPendingRequests ?? r.has_pending_requests;
+  const fromBool = hp === true || hp === 'true' ? 1 : 0;
+  return Math.max(fromRows, fromField, fromBool);
+}
+
 /** Compare user ids (trimmed, case-insensitive) to avoid ObjectId string mismatches. */
 export function userIdsMatch(a: string | undefined, b: string | undefined): boolean {
   const x = (a ?? '').trim();
@@ -220,6 +249,18 @@ export function isViewerOwnerStrict(ride: RideListItem): boolean {
   if (ride.viewerIsOwner === true) return true;
   const snake = (ride as { viewer_is_owner?: unknown }).viewer_is_owner;
   return snake === true || snake === 'true';
+}
+
+/**
+ * Whether the viewer is this ride’s publisher and there is at least one pending seat request
+ * (aligned with ride list cards — `hasPendingRequests`, `bookings[]`, or numeric aggregates).
+ */
+export function ownerHasPendingSeatRequests(ride: RideListItem, currentUserId: string | undefined): boolean {
+  const uid = currentUserId?.trim();
+  if (!uid) return false;
+  const isPublisher = userIdsMatch(uid, ride.userId) || isViewerOwnerStrict(ride);
+  if (!isPublisher) return false;
+  return readPendingSeatRequestCount(ride, ride.bookings) > 0;
 }
 
 /**

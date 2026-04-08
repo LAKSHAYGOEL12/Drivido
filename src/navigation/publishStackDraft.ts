@@ -16,6 +16,8 @@ export type PublishRideFormDraft = {
   seats: number;
   rate: string;
   instantBooking: boolean;
+  /** Optional ride notes for passengers (POST /rides `description`). */
+  rideDescription?: string;
   ladiesOnly: boolean;
   calendarMonthIso: string;
   clockHour24: number;

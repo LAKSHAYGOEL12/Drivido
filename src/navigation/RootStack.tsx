@@ -8,6 +8,8 @@ import Register from '../screens/auth/Register';
 import VerifyEmail from '../screens/auth/VerifyEmail';
 import CompleteProfile from '../screens/auth/CompleteProfile';
 import ForgotPassword from '../screens/auth/ForgotPassword';
+import AccountDeactivated from '../screens/auth/AccountDeactivated';
+import ReactivateAccount from '../screens/auth/ReactivateAccount';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
@@ -65,6 +67,24 @@ export default function RootStack(): React.JSX.Element {
         options={{
           presentation: 'modal',
           animation: 'slide_from_bottom',
+        }}
+      />
+      <Stack.Screen
+        name="AccountDeactivated"
+        component={AccountDeactivated}
+        options={{
+          presentation: 'modal',
+          animation: 'slide_from_bottom',
+          gestureEnabled: false,
+        }}
+      />
+      <Stack.Screen
+        name="ReactivateAccount"
+        component={ReactivateAccount}
+        options={{
+          presentation: 'modal',
+          animation: 'slide_from_bottom',
+          gestureEnabled: false,
         }}
       />
     </Stack.Navigator>

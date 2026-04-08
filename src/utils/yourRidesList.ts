@@ -1,6 +1,7 @@
 import type { RideListItem } from '../types/api';
 import { bookingIsCancelled } from './bookingStatus';
 import {
+  getRideArrivalDate,
   getRideScheduledAt,
   isRideCancelledByOwner,
   isRidePastArrivalWindow,
@@ -75,11 +76,14 @@ export function matchesPastRidesTab(r: RideListItem, ctx: YourRidesListContext):
 
 /** Sort key: soonest / unknown last for upcoming; latest first for past. */
 function rideSortTime(ride: RideListItem, mode: 'upcoming' | 'past'): number {
-  const at = getRideScheduledAt(ride);
-  if (!at || isNaN(at.getTime())) {
+  const baseDate =
+    mode === 'past'
+      ? (getRideArrivalDate(ride) ?? getRideScheduledAt(ride))
+      : getRideScheduledAt(ride);
+  if (!baseDate || isNaN(baseDate.getTime())) {
     return mode === 'upcoming' ? Number.POSITIVE_INFINITY : Number.NEGATIVE_INFINITY;
   }
-  return at.getTime();
+  return baseDate.getTime();
 }
 
 export function sortRidesForYourRides(rides: RideListItem[], mode: 'upcoming' | 'past'): RideListItem[] {
