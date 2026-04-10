@@ -66,6 +66,12 @@ export async function patchUserProfileBio(bio: string): Promise<void> {
   await api.patch(userUpdatePath(), { bio: t, description: t });
 }
 
+/** PATCH `/user/update` — occupation text shown on profile. */
+export async function patchUserOccupation(occupation: string): Promise<void> {
+  const t = occupation.trim();
+  await api.patch(userUpdatePath(), { occupation: t });
+}
+
 /** PATCH `/user/update` — driver comfort tags (backend source of truth: `ridePreferences` on User). */
 export async function patchUserRidePreferences(ids: string[]): Promise<void> {
   const ridePreferences = normalizeRidePreferenceIds(ids);

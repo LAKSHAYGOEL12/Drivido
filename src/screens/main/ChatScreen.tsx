@@ -316,18 +316,26 @@ export default function ChatScreen(): React.JSX.Element {
   const chatClosedByPolicy =
     backendCanSendChat === false ||
     backendChatClosed === true;
+  const myBookingStatusLower = String(myBookingStatusCandidate ?? '').trim().toLowerCase();
+  const myBookingStatusReasonLower = String(ride.myBookingStatusReason ?? '').trim().toLowerCase();
+  const isRejectedBookingStatus =
+    myBookingStatusLower === 'rejected' ||
+    myBookingStatusReasonLower.includes('reject');
   const bookingStatusLabel = rideCompletedForDisplay
     ? 'Ride completed'
     : !myBookingStatusCandidate
       ? ''
-      : String(myBookingStatusCandidate).trim().toLowerCase() === 'pending' ||
-          String(myBookingStatusCandidate).trim().toLowerCase() === 'requested' ||
-          String(myBookingStatusCandidate).trim().toLowerCase() === 'request_pending' ||
-          String(myBookingStatusCandidate).trim().toLowerCase() === 'awaiting_approval'
+      : myBookingStatusLower === 'pending' ||
+          myBookingStatusLower === 'requested' ||
+          myBookingStatusLower === 'request_pending' ||
+          myBookingStatusLower === 'awaiting_approval'
         ? 'Approval pending'
+      : isRejectedBookingStatus
+        ? 'Rejected'
       : bookingIsCancelled(myBookingStatusCandidate)
         ? 'Cancelled'
         : 'Booked';
+  const isRejectedStatusLabel = bookingStatusLabel === 'Rejected';
 
   const canSend = !chatClosedByPolicy && !otherUserDeactivated;
 
@@ -691,7 +699,9 @@ export default function ChatScreen(): React.JSX.Element {
               <Text style={styles.rideRoute} numberOfLines={1}>{shortRoute}</Text>
               {bookingStatusLabel ? (
                 <Text style={styles.rideMeta}>
-                  <Text style={styles.rideStatus}>{bookingStatusLabel}</Text>
+                  <Text style={[styles.rideStatus, isRejectedStatusLabel && styles.rideStatusRejected]}>
+                    {bookingStatusLabel}
+                  </Text>
                   {' • '}{rideDateTimeStr}
                 </Text>
               ) : (
@@ -900,6 +910,10 @@ const styles = StyleSheet.create({
   rideStatus: {
     color: COLORS.primary,
     fontWeight: '600',
+  },
+  rideStatusRejected: {
+    color: COLORS.error,
+    fontWeight: '700',
   },
   rideBarHint: {
     fontSize: 11,

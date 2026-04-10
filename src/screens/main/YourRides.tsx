@@ -31,7 +31,10 @@ import {
   mergeRideListRowWithDetailSnapshot,
   RIDE_LIST_MERGE_FROM_DETAIL,
 } from '../../services/rideListFromDetailSync';
-import { REQUEST_MY_RIDES_LIST_REFRESH } from '../../services/myRidesListRefreshEvents';
+import {
+  REQUEST_MY_RIDES_LIST_REFRESH,
+  type MyRidesRefreshRequestPayload,
+} from '../../services/myRidesListRefreshEvents';
 import { loadOwnerCancelledRides } from '../../services/ownerCancelledRidesStorage';
 import { API } from '../../constants/API';
 import type { RideListItem } from '../../types/api';
@@ -634,6 +637,9 @@ export default function YourRides(): React.JSX.Element {
   const [justBookedWelcome, setJustBookedWelcome] = useState(false);
   /** Soft / focus refetch: keep filters + list chrome; show spinner in list area instead of empty state. */
   const [backgroundRefreshing, setBackgroundRefreshing] = useState(false);
+  const [blockingRefreshLoading, setBlockingRefreshLoading] = useState(false);
+  const [blockingExpectedRemovedRideId, setBlockingExpectedRemovedRideId] = useState('');
+  const blockingRefreshStartedAtRef = useRef(0);
   /** Last accurate “All rides” count (browse merged). Live count drops on my/past-only refetches without catalog. */
   const [cachedAllRidesCount, setCachedAllRidesCount] = useState(0);
   const [ratingRide, setRatingRide] = useState<RideListItem | null>(null);
@@ -1111,15 +1117,26 @@ export default function YourRides(): React.JSX.Element {
   const myRidesExternalRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (!currentUserId) return;
-    const sub = DeviceEventEmitter.addListener(REQUEST_MY_RIDES_LIST_REFRESH, () => {
+    const sub = DeviceEventEmitter.addListener(
+      REQUEST_MY_RIDES_LIST_REFRESH,
+      (payload?: MyRidesRefreshRequestPayload) => {
+      const requestedBlocking = payload?.blocking === true;
+      const expectedId = String(payload?.expectedRemovedRideId ?? '').trim();
+      if (requestedBlocking) {
+        blockingRefreshStartedAtRef.current = Date.now();
+        setBlockingExpectedRemovedRideId(expectedId);
+        setBlockingRefreshLoading(true);
+        setFilter('myRides');
+      }
       if (myRidesExternalRefreshTimerRef.current) {
         clearTimeout(myRidesExternalRefreshTimerRef.current);
       }
       myRidesExternalRefreshTimerRef.current = setTimeout(() => {
         myRidesExternalRefreshTimerRef.current = null;
-        void fetchRides(ridesRef.current.length > 0);
+        void fetchRides(!requestedBlocking && ridesRef.current.length > 0);
       }, 150);
-    });
+      }
+    );
     return () => {
       sub.remove();
       if (myRidesExternalRefreshTimerRef.current) {
@@ -1127,6 +1144,25 @@ export default function YourRides(): React.JSX.Element {
       }
     };
   }, [currentUserId, fetchRides]);
+
+  useEffect(() => {
+    if (!blockingRefreshLoading) return;
+    if (loading) return;
+    const expectedId = blockingExpectedRemovedRideId.trim();
+    const target = expectedId ? rides.find((r) => (r.id ?? '').trim() === expectedId) : undefined;
+    const staleStillVisible = Boolean(
+      target &&
+        !isRideCancelledByOwner(target) &&
+        !bookingIsCancelled(target.myBookingStatus) &&
+        String(target.status ?? '').trim().toLowerCase() !== 'cancelled'
+    );
+    const elapsed = Date.now() - blockingRefreshStartedAtRef.current;
+    // Keep loader until stale row is no longer active in My Rides; fallback timeout avoids hangs.
+    if (!staleStillVisible || elapsed > 12000) {
+      setBlockingRefreshLoading(false);
+      setBlockingExpectedRemovedRideId('');
+    }
+  }, [blockingRefreshLoading, blockingExpectedRemovedRideId, loading, rides]);
 
   useFocusEffect(
     useCallback(() => {
@@ -1548,6 +1584,12 @@ export default function YourRides(): React.JSX.Element {
         </TouchableOpacity>
       </View>
     ) : null;
+  const blockingRefreshBlock = blockingRefreshLoading ? (
+    <View style={styles.listBody}>
+      <ActivityIndicator size="large" color={COLORS.primary} />
+      <Text style={styles.blockingLoaderCaption}>Updating rides...</Text>
+    </View>
+  ) : null;
 
   return (
     <View style={styles.wrapper}>
@@ -1588,7 +1630,7 @@ export default function YourRides(): React.JSX.Element {
         </TouchableOpacity>
       </View>
       </View>
-      {initialLoadBlock ?? initialErrorBlock ?? (
+      {initialLoadBlock ?? initialErrorBlock ?? blockingRefreshBlock ?? (
         filter === 'allRides' ? (
           <FlatList
             data={allRidesFlat}
@@ -1975,6 +2017,13 @@ const styles = StyleSheet.create({
     color: COLORS.textSecondary,
     textAlign: 'center',
     lineHeight: 22,
+  },
+  blockingLoaderCaption: {
+    marginTop: 12,
+    fontSize: 13,
+    fontWeight: '600',
+    color: COLORS.textSecondary,
+    letterSpacing: 0.1,
   },
   errorText: {
     marginTop: 12,

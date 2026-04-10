@@ -233,13 +233,29 @@ export function mapRawToBookingRow(o: Record<string, unknown>): RideBookingRow |
             : seatsRaw != null && seatsRaw !== ''
               ? Math.max(0, Math.floor(Number(seatsRaw)) || 0)
               : 0;
-        const st = toStr(rec.status) ?? 'confirmed';
+        // Missing status should not imply a confirmed seat.
+        const st = toStr(rec.status) ?? 'pending';
         const bat = toStr(rec.bookedAt ?? rec.booked_at ?? rec.createdAt ?? rec.created_at) ?? '';
+        const embDk = toStr(rec.displayKey ?? rec.display_key);
+        const embDp = rec.displayParams ?? rec.display_params;
+        let embDisplayParams: { seats?: number; reason?: string } | undefined;
+        if (embDp && typeof embDp === 'object' && !Array.isArray(embDp)) {
+          const dpr = embDp as Record<string, unknown>;
+          const sn = dpr.seats;
+          const rs = dpr.reason;
+          embDisplayParams = {
+            ...(typeof sn === 'number' && Number.isFinite(sn) ? { seats: Math.max(0, Math.floor(sn)) } : {}),
+            ...(typeof rs === 'string' && rs.trim() ? { reason: rs.trim() } : {}),
+          };
+          if (Object.keys(embDisplayParams).length === 0) embDisplayParams = undefined;
+        }
         return {
           ...(hid ? { id: hid } : {}),
           seats: seatsNum,
           status: st,
           bookedAt: bat,
+          ...(embDk ? { displayKey: embDk } : {}),
+          ...(embDisplayParams ? { displayParams: embDisplayParams } : {}),
         };
       })
       .filter((x): x is NonNullable<typeof x> => x != null);
@@ -264,6 +280,14 @@ export function mapRawToBookingRow(o: Record<string, unknown>): RideBookingRow |
   const canOwnerRemoveRaw =
     (o as Record<string, unknown>).canOwnerRemove ??
     (o as Record<string, unknown>).can_owner_remove;
+  const showRebookedBadgeRaw =
+    (o as Record<string, unknown>).showRebookedBadge ??
+    (o as Record<string, unknown>).show_rebooked_badge;
+  const rebookedBadgeSourceRaw =
+    (o as Record<string, unknown>).rebookedBadgeSource ??
+    (o as Record<string, unknown>).rebooked_badge_source;
+  const ownerListRoleRaw =
+    (o as Record<string, unknown>).ownerListRole ?? (o as Record<string, unknown>).owner_list_role;
 
   return {
     id: bookingId || `${userId || 'b'}-${toStr(o.bookedAt) ?? ''}`,
@@ -285,6 +309,13 @@ export function mapRawToBookingRow(o: Record<string, unknown>): RideBookingRow |
     ...(isCancelledByPassengerRaw === true ? { isCancelledByPassenger: true } : {}),
     ...(isCancelledByOwnerRaw === true ? { isCancelledByOwner: true } : {}),
     ...(typeof canOwnerRemoveRaw === 'boolean' ? { canOwnerRemove: canOwnerRemoveRaw } : {}),
+    ...(typeof showRebookedBadgeRaw === 'boolean' ? { showRebookedBadge: showRebookedBadgeRaw } : {}),
+    ...(typeof rebookedBadgeSourceRaw === 'string' && rebookedBadgeSourceRaw.trim()
+      ? { rebookedBadgeSource: rebookedBadgeSourceRaw.trim() }
+      : {}),
+    ...(typeof ownerListRoleRaw === 'string' && ownerListRoleRaw.trim()
+      ? { ownerListRole: ownerListRoleRaw.trim() }
+      : {}),
     // Extract dateOfBirth - check root first, then nested objects
     ...((): { dateOfBirth?: string } => {
       const dob = toStr(

@@ -49,6 +49,8 @@ export type User = {
   avatarUrl?: string;
   /** Short public description (PATCH `/user/update` as `bio` / `description`). */
   bio?: string;
+  /** Public occupation text shown in profile views. */
+  occupation?: string;
   /**
    * Driver / ride comfort tags from GET `/auth/me` (PATCH via `ridePreferences`).
    * Canonical ids: see `constants/ridePreferences.ts`.
@@ -214,12 +216,24 @@ function buildSessionUser(fbUser: FirebaseUser, backendUser: BackendAuthUser): U
     Object.prototype.hasOwnProperty.call(rec, 'profileBio') ||
     Object.prototype.hasOwnProperty.call(rec, 'profile_bio') ||
     Object.prototype.hasOwnProperty.call(rec, 'about');
+  const occupationKeyPresent =
+    Object.prototype.hasOwnProperty.call(rec, 'occupation') ||
+    Object.prototype.hasOwnProperty.call(rec, 'occupation_text') ||
+    Object.prototype.hasOwnProperty.call(rec, 'jobTitle') ||
+    Object.prototype.hasOwnProperty.call(rec, 'job_title') ||
+    Object.prototype.hasOwnProperty.call(rec, 'profession');
   const beBioCombined =
     strField(rec.bio) ||
     strField(rec.description) ||
     strField(rec.profileBio) ||
     strField(rec.profile_bio) ||
     strField(rec.about);
+  const beOccupation =
+    strField(rec.occupation) ||
+    strField(rec.occupation_text) ||
+    strField(rec.jobTitle) ||
+    strField(rec.job_title) ||
+    strField(rec.profession);
   const ridePrefsRaw = rec.ridePreferences ?? rec.ride_preferences ?? rec.driverPreferences ?? rec.driver_preferences;
   const vehicleListKeyPresent =
     Object.prototype.hasOwnProperty.call(rec, 'vehicles') ||
@@ -251,6 +265,7 @@ function buildSessionUser(fbUser: FirebaseUser, backendUser: BackendAuthUser): U
     ...(beDob ? { dateOfBirth: beDob } : {}),
     ...(beGender ? { gender: beGender } : {}),
     ...(bioKeyPresent || beBioCombined ? { bio: beBioCombined } : {}),
+    ...(occupationKeyPresent || beOccupation ? { occupation: beOccupation } : {}),
     ...(Array.isArray(ridePrefsRaw)
       ? { ridePreferences: normalizeRidePreferenceIds(ridePrefsRaw) }
       : {}),

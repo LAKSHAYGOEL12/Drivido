@@ -23,6 +23,7 @@ import type { ProfileStackParamList } from '../../navigation/types';
 import {
   patchUserPhoneOnly,
   patchUserProfileBio,
+  patchUserOccupation,
   patchUserRidePreferences,
   patchUserVehicleProfile,
   clearLegacyUserVehicleProfile,
@@ -46,6 +47,16 @@ const CARD_OFFSET_PLATE_COLOR = 168;
 const CARD_OFFSET_MODEL = 48;
 /** Keep focused field this many px below the top of the visible scroll area. */
 const FOCUS_SCROLL_TOP_MARGIN = 96;
+const OCCUPATION_OPTIONS = [
+  'Student',
+  'Software Engineer',
+  'Doctor',
+  'Teacher',
+  'Business Owner',
+  'Sales Executive',
+  'Designer',
+  'Freelancer',
+];
 
 type VehicleFormRow = {
   key: string;
@@ -98,6 +109,7 @@ export default function EditProfileScreen(): React.JSX.Element {
     clampPhoneNationalInput(normalizePhoneForValidation(user?.phone ?? ''))
   );
   const [profileBio, setProfileBio] = useState(() => (user?.bio ?? '').trim());
+  const [occupation, setOccupation] = useState(() => (user?.occupation ?? '').trim());
   const [ridePrefs, setRidePrefs] = useState<string[]>(() =>
     normalizeRidePreferenceIds(user?.ridePreferences)
   );
@@ -109,6 +121,7 @@ export default function EditProfileScreen(): React.JSX.Element {
   const [keyboardBottomInset, setKeyboardBottomInset] = useState(0);
   const scrollRef = useRef<ScrollView>(null);
   const [phoneFocused, setPhoneFocused] = useState(false);
+  const [occupationFocused, setOccupationFocused] = useState(false);
   /** Y of each vehicle card top inside scroll content (from onLayout). */
   const vehicleCardY = useRef<Record<string, number>>({});
 
@@ -133,13 +146,19 @@ export default function EditProfileScreen(): React.JSX.Element {
     requestAnimationFrame(run);
     setTimeout(run, Platform.OS === 'ios' ? 140 : 100);
   }, []);
+  const scrollOccupationIntoView = useCallback(() => {
+    const run = () => scrollRef.current?.scrollTo({ y: 220, animated: true });
+    requestAnimationFrame(run);
+    setTimeout(run, Platform.OS === 'ios' ? 120 : 90);
+  }, []);
 
   useFocusEffect(
     useCallback(() => {
       setProfileBio((user?.bio ?? '').trim());
+      setOccupation((user?.occupation ?? '').trim());
       setRidePrefs(normalizeRidePreferenceIds(user?.ridePreferences));
       setBioError(undefined);
-    }, [user?.bio, user?.ridePreferences])
+    }, [user?.bio, user?.occupation, user?.ridePreferences])
   );
 
   const toggleRidePreference = useCallback((id: string) => {
@@ -160,6 +179,10 @@ export default function EditProfileScreen(): React.JSX.Element {
         requestAnimationFrame(() => {
           scrollRef.current?.scrollToEnd({ animated: true });
         });
+      } else if (occupationFocused) {
+        requestAnimationFrame(() => {
+          scrollOccupationIntoView();
+        });
       }
     });
     const subHide = Keyboard.addListener(hide, () => {
@@ -169,7 +192,7 @@ export default function EditProfileScreen(): React.JSX.Element {
       subShow.remove();
       subHide.remove();
     };
-  }, []);
+  }, [phoneFocused, occupationFocused, scrollOccupationIntoView]);
 
   const updateRow = useCallback((key: string, patch: Partial<Omit<VehicleFormRow, 'key' | 'vehicleId'>>) => {
     setRows((prev) => prev.map((r) => (r.key === key ? { ...r, ...patch } : r)));
@@ -264,6 +287,9 @@ export default function EditProfileScreen(): React.JSX.Element {
 
       await patchUserProfileBio(profileBio);
       patchUser({ bio: profileBio.trim() });
+
+      await patchUserOccupation(occupation);
+      patchUser({ occupation: occupation.trim() });
 
       const prefsNormalized = normalizeRidePreferenceIds(ridePrefs);
       await patchUserRidePreferences(prefsNormalized);
@@ -389,6 +415,47 @@ export default function EditProfileScreen(): React.JSX.Element {
         />
         <Text style={styles.charCount}>{profileBio.length}/300</Text>
         {bioError ? <Text style={styles.errorText}>{bioError}</Text> : null}
+
+        <Text style={[styles.sectionLabel, styles.sectionLabelSpaced]}>Occupation</Text>
+        <Text style={styles.fieldHelp}>Optional. Visible to other users on your profile.</Text>
+        <View style={styles.occupationChipWrap}>
+          {OCCUPATION_OPTIONS.map((opt) => {
+            const active = occupation.trim().toLowerCase() === opt.toLowerCase();
+            return (
+              <Pressable
+                key={opt}
+                onPress={() => setOccupation(opt)}
+                disabled={saving}
+                style={({ pressed }) => [
+                  styles.occupationChip,
+                  active && styles.occupationChipOn,
+                  pressed && !saving && styles.occupationChipPressed,
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel={`Select occupation ${opt}`}
+              >
+                <Text style={[styles.occupationChipLabel, active && styles.occupationChipLabelOn]}>
+                  {opt}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+        <TextInput
+          style={styles.fieldInput}
+          value={occupation}
+          onChangeText={setOccupation}
+          onFocus={() => {
+            setOccupationFocused(true);
+            scrollOccupationIntoView();
+          }}
+          onBlur={() => setOccupationFocused(false)}
+          placeholder="e.g. Software Engineer"
+          placeholderTextColor={COLORS.textMuted}
+          maxLength={80}
+          editable={!saving}
+        />
+        <Text style={styles.charCount}>{occupation.length}/80</Text>
 
         <Text style={[styles.sectionLabel, styles.sectionLabelSpaced]}>Ride preferences</Text>
         <Text style={styles.fieldHelp}>Optional tags shown on your profile.</Text>
@@ -703,6 +770,35 @@ const styles = StyleSheet.create({
     color: COLORS.text,
   },
   prefChipLabelOn: {
+    color: COLORS.white,
+  },
+  occupationChipWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 10,
+  },
+  occupationChip: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.backgroundSecondary,
+  },
+  occupationChipOn: {
+    backgroundColor: COLORS.primary,
+    borderColor: COLORS.primary,
+  },
+  occupationChipPressed: {
+    opacity: 0.88,
+  },
+  occupationChipLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: COLORS.text,
+  },
+  occupationChipLabelOn: {
     color: COLORS.white,
   },
   inputWrap: {

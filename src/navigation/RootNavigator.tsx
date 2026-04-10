@@ -73,6 +73,12 @@ export default function RootNavigator(): React.JSX.Element | null {
   const didPostLoginSearchResetRef = useRef(false);
   const LOGOUT_HOLD_AFTER_RESET_MS = 480;
   const LOGOUT_FADE_OUT_MS = 320;
+  const shouldSkipPostLoginSearchReset = (): boolean => {
+    if (!rootNavigationRef.isReady()) return false;
+    const current = rootNavigationRef.getCurrentRoute()?.name;
+    // Guest -> login from Ride Detail should remain on Ride Detail so confirm alert can continue.
+    return current === 'RideDetail' || current === 'RideDetailScreen';
+  };
 
   usePushNotifications(
     rootNavigationRef,
@@ -248,6 +254,7 @@ export default function RootNavigator(): React.JSX.Element | null {
     if (!becameAuthenticated) return;
     if (!navReady || isLoading) return;
     if (needsEmailVerification || needsProfileCompletion || needsAccountReactivation) return;
+    if (shouldSkipPostLoginSearchReset()) return;
     InteractionManager.runAfterInteractions(() => {
       resetMainTabsToSearchFromRoot();
     });
@@ -272,6 +279,7 @@ export default function RootNavigator(): React.JSX.Element | null {
     if (!becameSessionReady) return;
     if (!navReady || isLoading) return;
     if (didPostLoginSearchResetRef.current) return;
+    if (shouldSkipPostLoginSearchReset()) return;
     didPostLoginSearchResetRef.current = true;
     InteractionManager.runAfterInteractions(() => {
       resetMainTabsToSearchFromRoot();

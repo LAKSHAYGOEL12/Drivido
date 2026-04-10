@@ -65,6 +65,7 @@ export default function Profile(): React.JSX.Element {
   const [photoMenuVisible, setPhotoMenuVisible] = useState(false);
   const [tripsBreakdownVisible, setTripsBreakdownVisible] = useState(false);
   const [subjectBioFromApi, setSubjectBioFromApi] = useState('');
+  const [subjectOccupationFromApi, setSubjectOccupationFromApi] = useState('');
   const [subjectRidePrefsFromApi, setSubjectRidePrefsFromApi] = useState<string[]>([]);
   /** Avoid flashing “—” on Trips when refocusing the same profile (e.g. back from Trips screen). */
   const prevTripsSubjectIdRef = useRef<string | null>(null);
@@ -83,6 +84,13 @@ export default function Profile(): React.JSX.Element {
 
   const targetDisplayName = routeDisplayName || user?.name?.trim() || 'Drivido User';
   const isSelf = Boolean(user?.id?.trim() && targetUserId === user.id.trim());
+  const profileRidePreferenceIds = useMemo(
+    () =>
+      isSelf
+        ? normalizeRidePreferenceIds(user?.ridePreferences ?? subjectRidePrefsFromApi)
+        : subjectRidePrefsFromApi,
+    [isSelf, user?.ridePreferences, subjectRidePrefsFromApi]
+  );
 
   const displayName = profileName || targetDisplayName;
   const mergedVehicles = useMemo(() => (isSelf ? vehiclesFromUser(user) : []), [isSelf, user]);
@@ -212,6 +220,7 @@ export default function Profile(): React.JSX.Element {
         setTripsCompletedThisMonth(0);
         setMemberSinceLabel('—');
         setSubjectBioFromApi('');
+        setSubjectOccupationFromApi('');
         setSubjectRidePrefsFromApi([]);
         return () => {};
       }
@@ -233,9 +242,11 @@ export default function Profile(): React.JSX.Element {
           setTotalRatings(summary.totalRatings);
           if (summary.subjectDeactivated) {
             setSubjectBioFromApi('');
+            setSubjectOccupationFromApi('');
             setSubjectRidePrefsFromApi([]);
           } else {
             setSubjectBioFromApi((summary.subjectBio ?? '').trim());
+            setSubjectOccupationFromApi((summary.subjectOccupation ?? '').trim());
             setSubjectRidePrefsFromApi(
               normalizeRidePreferenceIds(summary.subjectRidePreferences ?? [])
             );
@@ -251,6 +262,7 @@ export default function Profile(): React.JSX.Element {
           setAvgRating(0);
           setTotalRatings(0);
           setSubjectBioFromApi('');
+          setSubjectOccupationFromApi('');
           setSubjectRidePrefsFromApi([]);
           setMemberSinceLabel(formatMemberSinceLabel(isSelf ? user?.createdAt : undefined));
         } finally {
@@ -427,6 +439,13 @@ export default function Profile(): React.JSX.Element {
         </View>
         <Text style={styles.name}>{displayName}</Text>
         {(() => {
+          const occupationLine = isSelf
+            ? (user?.occupation ?? '').trim() || subjectOccupationFromApi
+            : subjectOccupationFromApi;
+          if (!occupationLine) return null;
+          return <Text style={styles.occupation}>{occupationLine}</Text>;
+        })()}
+        {(() => {
           const bioLine = isSelf
             ? (user?.bio ?? '').trim() || subjectBioFromApi
             : subjectBioFromApi;
@@ -440,14 +459,6 @@ export default function Profile(): React.JSX.Element {
           }
           return null;
         })()}
-        <RidePreferenceChips
-          ids={
-            isSelf
-              ? normalizeRidePreferenceIds(user?.ridePreferences ?? subjectRidePrefsFromApi)
-              : subjectRidePrefsFromApi
-          }
-          style={styles.ridePrefChips}
-        />
       </View>
 
       <View style={styles.statsCard}>
@@ -520,6 +531,27 @@ export default function Profile(): React.JSX.Element {
         </View>
       </View>
 
+      <View style={styles.preferencesCard}>
+        <View style={styles.preferencesHeader}>
+          <View style={styles.rowIcon}>
+            <Ionicons name="options-outline" size={16} color={COLORS.primary} />
+          </View>
+          <View style={styles.preferencesHeaderText}>
+            <Text style={styles.preferencesTitle}>Ride preferences</Text>
+            <Text style={styles.preferencesSubtitle}>
+              {isSelf ? 'What passengers can expect on your rides' : 'Driver comfort preferences'}
+            </Text>
+          </View>
+        </View>
+        {profileRidePreferenceIds.length > 0 ? (
+          <RidePreferenceChips ids={profileRidePreferenceIds} style={styles.ridePrefChipsCard} />
+        ) : (
+          <Text style={styles.preferencesEmpty}>
+            {isSelf ? 'No preferences added yet. Update from Edit profile.' : 'No preferences provided.'}
+          </Text>
+        )}
+      </View>
+
       {isSelf ? (
         <>
           <Section title="Personal Details">
@@ -557,6 +589,11 @@ export default function Profile(): React.JSX.Element {
               }
             />
             <InfoRow icon="call-outline" label="Phone" value={user?.phone?.trim() ? user.phone : 'Not provided'} />
+            <InfoRow
+              icon="briefcase-outline"
+              label="Occupation"
+              value={(user?.occupation ?? '').trim() || 'Not provided'}
+            />
           </Section>
 
           <View style={styles.vehicleInfoCard}>
@@ -1267,6 +1304,13 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: COLORS.text,
   },
+  occupation: {
+    marginTop: 2,
+    textAlign: 'center',
+    fontSize: 13,
+    color: COLORS.textSecondary,
+    fontWeight: '600',
+  },
   bio: {
     marginTop: 4,
     textAlign: 'center',
@@ -1279,6 +1323,42 @@ const styles = StyleSheet.create({
     marginTop: 12,
     justifyContent: 'center',
     paddingHorizontal: 4,
+  },
+  preferencesCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: COLORS.borderLight,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    gap: 8,
+  },
+  preferencesHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  preferencesHeaderText: {
+    flex: 1,
+    minWidth: 0,
+  },
+  preferencesTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: COLORS.text,
+  },
+  preferencesSubtitle: {
+    marginTop: 2,
+    fontSize: 12,
+    color: COLORS.textMuted,
+  },
+  ridePrefChipsCard: {
+    marginTop: 4,
+  },
+  preferencesEmpty: {
+    fontSize: 13,
+    color: COLORS.textSecondary,
+    fontStyle: 'italic',
   },
   bioHint: {
     marginTop: 4,

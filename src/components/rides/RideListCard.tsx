@@ -134,7 +134,7 @@ export default function RideListCard({
   const ownerHasPendingRequests = isRidePublisherViewer && pendingRequestCount > 0;
 
   const displayName = (() => {
-    if (ownerHasPendingRequests) return 'Pending request';
+    if (ownerHasPendingRequests) return 'Awaiting your approval';
     if (ownerMyRidesSeatOnly) {
       if (isRequestBookingMode) {
         if (isRideSeatsFull(ride)) return 'Ride full';
@@ -154,7 +154,7 @@ export default function RideListCard({
     return driverName;
   })();
   const displaySubtitle = ownerHasPendingRequests
-    ? ''
+    ? 'Open this ride to approve or decline'
     : ownerMyRidesSeatOnly
       ? ''
       : isOwner

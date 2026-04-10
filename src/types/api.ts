@@ -148,11 +148,30 @@ export interface RideBookingHistoryEvent {
   seatsChanged: number;
   seatsAfter: number;
   createdAt: string;
+  /** Backend-owned display hint; when present, client should prefer this over inferred copy. */
+  displayKey?: string;
+  displayParams?: { seats?: number; reason?: string };
+  /** When set, overrides client heuristic for “passenger gave up confirmed seats”. */
+  countsAsPassengerSeatRelease?: boolean;
+  seatConfirmationOrdinal?: number;
+  isRebook?: boolean;
 }
 
 export interface RideBookingHistoryUserGroup {
   userId: string;
   events: RideBookingHistoryEvent[];
+}
+
+/**
+ * Owner ride detail: hints that `rideBookingHistory` is server-deduped and authoritative.
+ * Align with backend `BOOKING_HISTORY_META` / `bookingHistoryFormat`.
+ */
+export interface RideBookingHistoryMeta {
+  source?: string;
+  orderedBy?: string;
+  serverAuthoredFields?: string[];
+  /** Human-readable deduplication policy (non-empty ⇒ prefer server timeline, skip client merge of embedded snapshots). */
+  deduplication?: string;
 }
 
 /** Single ride in GET /rides response. For UI labels use ridePublisherDisplayName (name over username). */
@@ -202,6 +221,13 @@ export interface RideListItem {
   availableSeats?: number;
   /** Count of all booking rows for this ride (any status); use when bookedSeats is 0 but history exists. */
   totalBookings?: number;
+  /** Owner-facing backend counters (source of truth for segmented owner lists). */
+  activePassengerCount?: number;
+  active_passenger_count?: number;
+  pendingRequestCount?: number;
+  pending_request_count?: number;
+  historicalPassengerCount?: number;
+  historical_passenger_count?: number;
   /** Owner-facing count of pending seat requests (when API sends a number). */
   pendingRequests?: number;
   /**
@@ -218,6 +244,9 @@ export interface RideListItem {
   publisherAvatarUrl?: string;
   /** Publisher/driver date of birth when API provides it. */
   publisherDateOfBirth?: string;
+  /** Driver preference tags copied from profile for ride detail/list display. */
+  publisherRidePreferences?: string[];
+  publisher_ride_preferences?: string[];
   /**
    * Optional aggregates for the publisher (driver), from GET /rides list/detail when backend embeds them.
    * Passed into Owner profile when a signed-in user opens Details (no ratings fetch on ride detail).
@@ -302,6 +331,8 @@ export interface RideListItem {
       seats: number;
       status?: string;
       bookedAt?: string;
+      displayKey?: string;
+      displayParams?: { seats?: number; reason?: string };
     }>;
     /**
      * When true, `cancelled_by_owner` row still holds seats (partial removal). Omit/false = full removal
@@ -314,12 +345,22 @@ export interface RideListItem {
     isCancelledByPassenger?: boolean;
     isCancelledByOwner?: boolean;
     canOwnerRemove?: boolean;
+    /** Owner ride detail: true when server considers this an accepted passenger after a prior confirm cycle (rebook). */
+    showRebookedBadge?: boolean;
+    /** When `server`, trust `showRebookedBadge` only — no client rebook heuristic. */
+    rebookedBadgeSource?: string;
+    /**
+     * Owner list: `pending_request` | `active_passenger` | `historical_cancelled` — server-owned row role.
+     */
+    ownerListRole?: string;
   }>;
   /**
    * Populated from ride detail: `bookingHistory` array grouped by `userId` (owner view).
    * Distinct from per-booking `bookings[].bookingHistory` snapshots.
    */
   rideBookingHistory?: RideBookingHistoryUserGroup[];
+  /** Owner-only: contract for canonical booking timeline (see `RideBookingHistoryMeta`). */
+  bookingHistoryMeta?: RideBookingHistoryMeta;
 }
 
 export interface CreateRideResponse {

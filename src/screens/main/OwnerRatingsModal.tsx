@@ -10,6 +10,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { COLORS } from '../../constants/colors';
 import { getUserRatingsSummary, type UserRatingReview } from '../../services/ratings';
 import { DEACTIVATED_ACCOUNT_LABEL } from '../../utils/deactivatedAccount';
+import { findMainTabNavigatorWithOptions } from '../../navigation/findMainTabNavigator';
 
 type OwnerRatingsRoute =
   | RouteProp<RidesStackParamList, 'OwnerRatingsModal'>
@@ -56,36 +57,10 @@ export default function OwnerRatingsModal(): React.JSX.Element {
 
   useFocusEffect(
     useCallback(() => {
-      const parentNav = (navigation as any)?.getParent?.();
-      parentNav?.setOptions?.({ tabBarStyle: { display: 'none' } });
+      const tabsNav = findMainTabNavigatorWithOptions(navigation as { getParent?: () => unknown });
+      tabsNav?.setOptions?.({ tabBarStyle: { display: 'none' } });
       return () => {
-        setTimeout(() => {
-          try {
-            const tabState = parentNav?.getState?.();
-            const activeTabRoute = tabState?.routes?.[tabState?.index ?? 0];
-            const nestedState = activeTabRoute?.state;
-            const nestedName = nestedState?.routes?.[nestedState?.index ?? 0]?.name;
-
-            const hiddenNestedNames = new Set([
-              'RideDetail',
-              'RideDetailScreen',
-              'BookPassengerDetail',
-              'Chat',
-              'OwnerProfileModal',
-              'OwnerRatingsModal',
-              'ProfileHome',
-              'ProfileEntry',
-              'Ratings',
-              'RatingsScreen',
-            ]);
-
-            if (!nestedName || !hiddenNestedNames.has(nestedName)) {
-              parentNav?.setOptions?.({ tabBarStyle: undefined });
-            }
-          } catch {
-            // ignore
-          }
-        }, 180);
+        tabsNav?.setOptions?.({ tabBarStyle: undefined });
       };
     }, [navigation])
   );

@@ -63,6 +63,9 @@ export type BackendAuthUser = {
   account_active?: boolean;
   /** Public profile tagline — also `description` / `profileBio` on some payloads. */
   bio?: string | null;
+  /** Public occupation label shown on profile cards. */
+  occupation?: string | null;
+  occupation_text?: string | null;
   description?: string | null;
   profileBio?: string | null;
   profile_bio?: string | null;

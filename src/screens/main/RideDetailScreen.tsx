@@ -95,11 +95,14 @@ import { pickAvatarUrlFromRecord, pickPublisherAvatarUrl } from '../../utils/ava
 import { getPublisherRouteCoords } from '../../utils/ridePublisherCoords';
 import { showToast } from '../../utils/toast';
 import { calculateAge } from '../../utils/calculateAge';
+import RidePreferenceChips from '../../components/profile/RidePreferenceChips';
+import { normalizeRidePreferenceIds } from '../../constants/ridePreferences';
 import {
   fetchPassengerBookedRidesForOverlap,
   invalidatePassengerBookedRidesCache,
 } from '../../services/fetchPassengerBookedRides';
 import { emitRideListMergeFromDetail } from '../../services/rideListFromDetailSync';
+import { emitRequestMyRidesBlockingRefresh } from '../../services/myRidesListRefreshEvents';
 
 type RideDetailRouteProp =
   | RouteProp<RidesStackParamList, 'RideDetail'>
@@ -154,6 +157,106 @@ function bookingFlag(
   return typeof v === 'boolean' ? v : undefined;
 }
 
+/**
+ * Request-mode owner “Passengers” list: backend-only (`ride.bookings[]` + embedded `bookingHistory` on those rows).
+ * No merged ride-level timeline — avoids showing requesters before owner approval.
+ */
+function requestModeOwnerPassengerListedFromBackendBookingsOnly(
+  apiBookings: BookingItem[],
+  userId: string,
+  primary: BookingItem,
+  rideGroups?: RideBookingHistoryUserGroup[]
+): boolean {
+  const uid = (userId ?? '').trim();
+  const rows: BookingItem[] = uid
+    ? apiBookings.filter((p) => (p.userId ?? '').trim() === uid)
+    : apiBookings.filter((p) => (p.id ?? '').trim() === (primary.id ?? '').trim());
+  const toScan = rows.length > 0 ? rows : [primary];
+  const rowHasAcceptedEvidence = (r: BookingItem): boolean => {
+    if (bookingFlag(r, 'isAcceptedPassenger') === true) return true;
+    if (isAcceptedLikeBookingStatus(r.status)) return true;
+    const hist = r.bookingHistory;
+    if (!Array.isArray(hist)) return false;
+    return hist.some((h) => {
+      const hs = String(h.status ?? '').trim().toLowerCase();
+      if (isAcceptedLikeBookingStatus(hs)) return true;
+      const dk = String((h as { displayKey?: string }).displayKey ?? '').trim().toLowerCase();
+      return dk === 'booked' || dk === 'rebooked' || dk === 'approved';
+    });
+  };
+  const userHasAcceptedEvidenceFromRideHistory = (): boolean => {
+    if (!uid) return false;
+    const group = findBookingHistoryGroupForUser(rideGroups, uid);
+    if (!group?.events?.length) return false;
+    return group.events.some((ev) => {
+      if ((ev.seatConfirmationOrdinal ?? 0) > 0) return true;
+      const dk = String(ev.displayKey ?? '').trim().toLowerCase();
+      if (dk === 'booked' || dk === 'rebooked' || dk === 'approved') return true;
+      const et = String(ev.eventType ?? '').trim().toLowerCase();
+      return (
+        et === 'booked' ||
+        et === 'rebooked' ||
+        et === 'booking_created' ||
+        et === 'approved' ||
+        et === 'request_approved' ||
+        et === 'owner_approved'
+      );
+    });
+  };
+
+  if (toScan.some((r) => String((r as BookingItem & { ownerListRole?: string }).ownerListRole ?? '').trim())) {
+    return toScan.some((r) => {
+      const role = String((r as BookingItem & { ownerListRole?: string }).ownerListRole ?? '').trim();
+      if (role === 'active_passenger') return true;
+      // Keep historical cancelled passenger visible only when backend row/history proves they were accepted before.
+      if (role === 'historical_cancelled') {
+        return rowHasAcceptedEvidence(r) || userHasAcceptedEvidenceFromRideHistory();
+      }
+      return false;
+    });
+  }
+  // If this user has any role-tagged rows in the API payload, that role is authoritative.
+  // No role seen as active => do not infer from legacy status/history fallbacks.
+  const allRowsForUser = uid
+    ? apiBookings.filter((p) => (p.userId ?? '').trim() === uid)
+    : apiBookings.filter((p) => (p.id ?? '').trim() === (primary.id ?? '').trim());
+  if (
+    allRowsForUser.some(
+      (r) => String((r as BookingItem & { ownerListRole?: string }).ownerListRole ?? '').trim().length > 0
+    )
+  ) {
+    // When role tags exist but none are active/historical-with-accept-evidence, keep hidden.
+    return allRowsForUser.some((r) => {
+      const role = String((r as BookingItem & { ownerListRole?: string }).ownerListRole ?? '').trim();
+      if (role === 'active_passenger') return true;
+      if (role === 'historical_cancelled') {
+        return rowHasAcceptedEvidence(r) || userHasAcceptedEvidenceFromRideHistory();
+      }
+      return false;
+    });
+  }
+
+  for (const r of toScan) {
+    if (bookingFlag(r, 'isAcceptedPassenger') === true) return true;
+  }
+  for (const r of toScan) {
+    if (bookingFlag(r, 'isPendingRequest') === true) continue;
+    const s = String(r.status ?? '').trim().toLowerCase();
+    if (isPendingLikeBookingStatus(s) || s === 'rejected') continue;
+    if (isAcceptedLikeBookingStatus(s)) return true;
+  }
+  for (const r of toScan) {
+    const hist = r.bookingHistory;
+    if (!Array.isArray(hist)) continue;
+    for (const h of hist) {
+      const hs = String(h.status ?? '').trim().toLowerCase();
+      if (isPendingLikeBookingStatus(hs) || hs === 'rejected') continue;
+      if (isAcceptedLikeBookingStatus(hs)) return true;
+    }
+  }
+  return false;
+}
+
 function seatPhrase(n: number): string {
   const x = Math.max(0, Math.floor(n));
   return `${x} seat${x !== 1 ? 's' : ''}`;
@@ -174,6 +277,84 @@ function cancelledSeatsFromRideHistoryEvent(ev: {
   return Math.max(0, delta);
 }
 
+/** True if this user had an accepted/confirmed booking snapshot strictly before `h` in the merged timeline. */
+function hadPriorAcceptedBookingSnapshot(
+  uid: string,
+  h: BookingItem,
+  historyChronological: BookingItem[]
+): boolean {
+  if (!uid.trim()) return false;
+  const idxH = historyChronological.indexOf(h);
+  if (idxH < 0) return false;
+  const myT = bookingTimelineMs(h);
+  for (let i = 0; i < historyChronological.length; i++) {
+    const row = historyChronological[i];
+    if ((row.userId ?? '').trim() !== uid) continue;
+    if (i === idxH) continue;
+    const rt = bookingTimelineMs(row);
+    const strictlyBefore = rt < myT || (rt === myT && i < idxH);
+    if (!strictlyBefore) continue;
+    const st = String(row.status ?? '').trim().toLowerCase();
+    if (isPendingLikeBookingStatus(st) || st === 'rejected') continue;
+    if (bookingIsCancelled(row.status)) continue;
+    if (bookingFlag(row, 'isAcceptedPassenger') === true && bookingSeatCount(row) > 0) return true;
+    if (isAcceptedLikeBookingStatus(st) && bookingSeatCount(row) > 0) return true;
+  }
+  return false;
+}
+
+/**
+ * Passenger list “Rebooked” badge: true only after a cancellation (or owner removal) that happens **after**
+ * the first owner-approved / confirmed booking — not when a pending row is superseded on first accept.
+ */
+function passengerListRowIsTrueRebook(userId: string, allPassengers: BookingItem[]): boolean {
+  const uid = (userId ?? '').trim();
+  if (!uid) return false;
+  const mine = allPassengers.filter((p) => (p.userId ?? '').trim() === uid);
+  if (mine.length === 0) return false;
+
+  let firstAcceptMs: number | null = null;
+  for (const p of mine) {
+    const st = String(p.status ?? '').trim().toLowerCase();
+    if (isPendingLikeBookingStatus(st) || st === 'rejected') continue;
+    if (bookingIsCancelled(p.status)) continue;
+    const accepted =
+      bookingFlag(p, 'isAcceptedPassenger') === true || isAcceptedLikeBookingStatus(st);
+    if (!accepted) continue;
+    if (bookingSeatCount(p) <= 0 && !bookingRowHoldsOccupiedSeats(p)) continue;
+    const t = bookingTimelineMs(p);
+    if (firstAcceptMs === null || t < firstAcceptMs) firstAcceptMs = t;
+  }
+  if (firstAcceptMs === null) return false;
+  const firstAcceptAt = firstAcceptMs;
+
+  const hasActive = mine.some((p) => {
+    if (bookingIsCancelledByOwner(p.status)) return bookingRowHoldsOccupiedSeats(p);
+    return !bookingIsCancelled(p.status);
+  });
+  if (!hasActive) return false;
+
+  return mine.some((p) => {
+    if (!bookingIsCancelled(p.status)) return false;
+    if (bookingTimelineMs(p) <= firstAcceptAt) return false;
+    // Partial owner removal still has an active booking row — not a passenger "rebook" story.
+    if (bookingIsCancelledByOwner(p.status) && bookingRowHoldsOccupiedSeats(p)) return false;
+    return true;
+  });
+}
+
+/** Prefer backend `showRebookedBadge` when sent; else client heuristic (older APIs). */
+function passengerRowShowRebookedBadge(b: BookingItem, allPassengers: BookingItem[]): boolean {
+  const badgeSrc = String((b as BookingItem & { rebookedBadgeSource?: string }).rebookedBadgeSource ?? '')
+    .trim()
+    .toLowerCase();
+  if (badgeSrc === 'server') {
+    return b.showRebookedBadge === true;
+  }
+  if (typeof b.showRebookedBadge === 'boolean') return b.showRebookedBadge;
+  return passengerListRowIsTrueRebook((b.userId ?? '').trim(), allPassengers);
+}
+
 function rowReflectsPassengerGivingUpSeats(
   row: BookingItem,
   historyChronological: BookingItem[]
@@ -183,6 +364,14 @@ function rowReflectsPassengerGivingUpSeats(
 
   const rev = (row as BookingItemWithRideHistory).rideHistoryEvent;
   if (rev) {
+    if (typeof rev.countsAsPassengerSeatRelease === 'boolean') {
+      if (!rev.countsAsPassengerSeatRelease) return false;
+      const etCsr = String(rev.eventType ?? '').trim().toLowerCase();
+      if (etCsr === 'removed_by_owner' || etCsr === 'cancelled_by_owner' || etCsr === 'owner_removed') {
+        return false;
+      }
+      return true;
+    }
     const et = String(rev.eventType ?? '').trim().toLowerCase();
     if (et === 'removed_by_owner' || et === 'cancelled_by_owner' || et === 'owner_removed') return false;
     if (
@@ -196,7 +385,10 @@ function rowReflectsPassengerGivingUpSeats(
     ) {
       return true;
     }
-    if (et === 'cancelled' || et === 'passenger_cancelled' || et === 'cancelled_by_passenger') return true;
+    if (et === 'cancelled' || et === 'passenger_cancelled' || et === 'cancelled_by_passenger') {
+      const uid = (row.userId ?? '').trim();
+      return uid ? hadPriorAcceptedBookingSnapshot(uid, row, historyChronological) : false;
+    }
     return false;
   }
 
@@ -211,7 +403,10 @@ function rowReflectsPassengerGivingUpSeats(
   ) {
     return true;
   }
-  if (bookingIsCancelled(row.status)) return true;
+  if (bookingIsCancelled(row.status)) {
+    const uid = (row.userId ?? '').trim();
+    return uid ? hadPriorAcceptedBookingSnapshot(uid, row, historyChronological) : true;
+  }
   return false;
 }
 
@@ -236,6 +431,39 @@ function priorRowInPassengerHistory(h: BookingItem, sortedChronological: Booking
   const idx = sortedChronological.indexOf(h);
   if (idx <= 0) return undefined;
   return sortedChronological[idx - 1];
+}
+
+/**
+ * Some payloads include a current "confirmed N seats" snapshot alongside older history rows.
+ * After partial cancels this can create a fake extra "Booked N seats" line (e.g. Booked 1).
+ * Suppress that snapshot when:
+ * - another accepted snapshot exists with more seats, and
+ * - a passenger seat-cancel/cancel event exists at/after this snapshot time.
+ */
+function shouldSuppressStaleConfirmedSnapshot(
+  h: BookingItem,
+  historyChronological: BookingItem[]
+): boolean {
+  const uid = (h.userId ?? '').trim();
+  if (!uid) return false;
+  const mySeats = bookingSeatCount(h);
+  if (mySeats <= 0) return false;
+  const myTs = bookingTimelineMs(h);
+  let hasAcceptedWithMoreSeats = false;
+  let hasCancelAtOrAfter = false;
+  for (const row of historyChronological) {
+    if (row === h) continue;
+    if ((row.userId ?? '').trim() !== uid) continue;
+    if (isAcceptedLikeBookingStatus(row.status) && bookingSeatCount(row) > mySeats) {
+      hasAcceptedWithMoreSeats = true;
+    }
+    if (!hasCancelAtOrAfter && rowReflectsPassengerGivingUpSeats(row, historyChronological)) {
+      const ts = bookingTimelineMs(row);
+      if (ts >= myTs) hasCancelAtOrAfter = true;
+    }
+    if (hasAcceptedWithMoreSeats && hasCancelAtOrAfter) return true;
+  }
+  return false;
 }
 
 /** Best-effort swatch for free-text vehicle color labels (unknown → neutral grey). */
@@ -286,6 +514,25 @@ function formatBookingHistoryLineWhen(iso: string): string {
   return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
+/** Strip trailing " · {when}" so we can match duplicate Booked/Approved lines from row + ride event. */
+function ownerHistoryLineBodyForDedupe(line: string): string {
+  const t = line.trim();
+  const i = t.lastIndexOf(' · ');
+  return i > 0 ? t.slice(0, i).trim() : t;
+}
+
+function ownerHistoryLineEligibleForNearDuplicateCollapse(body: string): boolean {
+  return (
+    /^Booked \d+ seat/.test(body) ||
+    /^Rebooked \d+ seat/.test(body) ||
+    /^Approved \d+ seat/.test(body) ||
+    /^Requested \d+ seat/.test(body)
+  );
+}
+
+/** Same logical action often appears twice (live row + ride-level event) with slightly different timestamps. */
+const OWNER_HISTORY_SAME_ACTION_WINDOW_MS = 120_000;
+
 /** Optional metadata from ride-level `bookingHistory.events[]` (GET /api/rides/:id). */
 type BookingItemWithRideHistory = BookingItem & {
   rideHistoryEvent?: {
@@ -293,8 +540,79 @@ type BookingItemWithRideHistory = BookingItem & {
     seatsBefore: number;
     seatsChanged: number;
     seatsAfter: number;
+    displayKey?: string;
+    displayParams?: { seats?: number; reason?: string };
+    countsAsPassengerSeatRelease?: boolean;
+    seatConfirmationOrdinal?: number;
+    isRebook?: boolean;
   };
 };
+
+/**
+ * When backend sends `displayKey` / `displayParams` on a timeline event, mirror prior client wording.
+ * Returns `null` to fall back to eventType/status heuristics.
+ */
+function ownerHistoryLineFromBackendDisplayKey(h: BookingItemWithRideHistory, timeSuffix: string): string | null {
+  const ev = h.rideHistoryEvent;
+  if (!ev) return null;
+  const dkRaw = ev.displayKey?.trim().toLowerCase();
+  if (!dkRaw) return null;
+
+  const params = ev.displayParams;
+  const seatFromParams =
+    typeof params?.seats === 'number' && Number.isFinite(params.seats)
+      ? Math.max(0, Math.floor(params.seats))
+      : undefined;
+  const nAfter = Math.max(0, Math.floor(Number(ev.seatsAfter) || 0));
+  const nBefore = Math.max(0, Math.floor(Number(ev.seatsBefore) || 0));
+
+  switch (dkRaw) {
+    case 'booked':
+    case 'rebooked': {
+      const seats = seatFromParams ?? (nAfter || nBefore);
+      const isRb = dkRaw === 'rebooked' || ev.isRebook === true;
+      const verb = isRb ? 'Rebooked' : 'Booked';
+      if (seats <= 0) return '';
+      return `${verb} ${seatPhrase(seats)}${timeSuffix}`;
+    }
+    case 'approved': {
+      const seats = seatFromParams ?? (nAfter || nBefore);
+      if (seats <= 0) return '';
+      return `Approved ${seatPhrase(seats)}${timeSuffix}`;
+    }
+    case 'requested': {
+      const seats =
+        seatFromParams ??
+        (nAfter ||
+          nBefore ||
+          Math.max(0, Math.floor(Number(ev.seatsChanged) || 0)));
+      if (seats <= 0) return '';
+      return `Requested ${seatPhrase(seats)}${timeSuffix}`;
+    }
+    case 'full_cancel_passenger':
+      return `Cancelled all seats${timeSuffix}`;
+    case 'full_cancel_owner':
+      return '';
+    case 'full_cancel_system': {
+      const r = typeof params?.reason === 'string' ? params.reason.trim() : '';
+      return r ? `Cancelled (${r})${timeSuffix}` : `Cancelled all seats${timeSuffix}`;
+    }
+    case 'request_superseded':
+    case 'request_rejected':
+    case 'request_expired':
+      return '';
+    case 'seats_reduced':
+    case 'seat_cancelled': {
+      const after = nAfter;
+      if (after === 0) return `Cancelled all seats${timeSuffix}`;
+      const delta = cancelledSeatsFromRideHistoryEvent(ev);
+      if (delta > 0) return `Cancelled ${seatPhrase(delta)}${timeSuffix}`;
+      return '';
+    }
+    default:
+      return null;
+  }
+}
 
 /**
  * Owner-facing passenger history: booked / rebooked / partial or full cancel with seat counts;
@@ -309,6 +627,9 @@ function formatOwnerBookingHistoryLineText(
   const timeSuffix = when ? ` · ${when}` : '';
 
   if (ev) {
+    const fromBackendKey = ownerHistoryLineFromBackendDisplayKey(h, timeSuffix);
+    if (fromBackendKey !== null) return fromBackendKey;
+
     const et = String(ev.eventType ?? '').trim().toLowerCase();
     if (
       et === 'requested' ||
@@ -332,7 +653,9 @@ function formatOwnerBookingHistoryLineText(
     }
     if (et === 'booked' || et === 'rebooked' || et === 'booking_created') {
       const n = Math.max(0, Math.floor(Number(ev.seatsAfter) || 0));
-      const rebooked = et === 'rebooked' || hadPriorPassengerSeatEvent(h, historyChronological);
+      // Same rule as status snapshots: first acceptance after a request is "Booked", not "Rebooked",
+      // unless a prior row reflects giving up confirmed seats (hadPriorPassengerSeatEvent).
+      const rebooked = hadPriorPassengerSeatEvent(h, historyChronological);
       const verb = rebooked ? 'Rebooked' : 'Booked';
       return `${verb} ${seatPhrase(n)}${timeSuffix}`;
     }
@@ -401,6 +724,7 @@ function formatOwnerBookingHistoryLineText(
     return '';
   }
   if (st === 'confirmed' || st === 'accepted' || st === 'completed') {
+    if (shouldSuppressStaleConfirmedSnapshot(h, historyChronological)) return '';
     const n = bookingSeatCount(h);
     const verb = hadPriorPassengerSeatEvent(h, historyChronological) ? 'Rebooked' : 'Booked';
     return `${verb} ${seatPhrase(n)}${timeSuffix}`;
@@ -434,7 +758,8 @@ function expandPassengerHistoryFromBookingRows(list: BookingItem[]): BookingItem
       const ev = bh[i];
       const id = (ev.id?.trim() || `bh-${(row.id ?? 'row').trim()}-${i}`).trim();
       if (byId.has(id)) continue;
-      const st = String(ev.status ?? 'confirmed').trim().toLowerCase() || 'confirmed';
+      // Keep unknown snapshot status non-confirmed to avoid request rows leaking into passenger logic.
+      const st = String(ev.status ?? 'pending').trim().toLowerCase() || 'pending';
       const seats =
         typeof ev.seats === 'number' && Number.isFinite(ev.seats) ? Math.max(0, Math.floor(ev.seats)) : 0;
       const synthetic: BookingItem = {
@@ -520,6 +845,29 @@ function parseRideBookingHistoryFromApi(
     const id = String(e.id ?? e._id ?? `ev-${userId}-${index}`).trim();
     const eventType = String(e.eventType ?? e.event_type ?? e.type ?? '').trim() || 'unknown';
     const createdAt = String(e.createdAt ?? e.created_at ?? e.timestamp ?? '').trim();
+    const displayKeyRaw = e.displayKey ?? e.display_key;
+    const displayKey =
+      typeof displayKeyRaw === 'string' && displayKeyRaw.trim() ? displayKeyRaw.trim() : undefined;
+    const dpRaw = e.displayParams ?? e.display_params;
+    let displayParams: { seats?: number; reason?: string } | undefined;
+    if (dpRaw && typeof dpRaw === 'object' && !Array.isArray(dpRaw)) {
+      const dp = dpRaw as Record<string, unknown>;
+      const sn = dp.seats;
+      const rs = dp.reason;
+      displayParams = {
+        ...(typeof sn === 'number' && Number.isFinite(sn) ? { seats: Math.max(0, Math.floor(sn)) } : {}),
+        ...(typeof rs === 'string' && rs.trim() ? { reason: rs.trim() } : {}),
+      };
+      if (Object.keys(displayParams).length === 0) displayParams = undefined;
+    }
+    const csrRaw = e.countsAsPassengerSeatRelease ?? e.counts_as_passenger_seat_release;
+    const countsAsPassengerSeatRelease = typeof csrRaw === 'boolean' ? csrRaw : undefined;
+    const ordRaw = e.seatConfirmationOrdinal ?? e.seat_confirmation_ordinal;
+    const seatConfirmationOrdinal =
+      typeof ordRaw === 'number' && Number.isFinite(ordRaw) ? Math.floor(ordRaw) : undefined;
+    const irRaw = e.isRebook ?? e.is_rebook;
+    const isRebook = typeof irRaw === 'boolean' ? irRaw : undefined;
+
     return {
       id,
       eventType,
@@ -527,6 +875,11 @@ function parseRideBookingHistoryFromApi(
       seatsChanged: numFieldLoose(e.seatsChanged ?? e.seats_changed),
       seatsAfter: numFieldLoose(e.seatsAfter ?? e.seats_after),
       createdAt,
+      ...(displayKey ? { displayKey } : {}),
+      ...(displayParams ? { displayParams } : {}),
+      ...(countsAsPassengerSeatRelease !== undefined ? { countsAsPassengerSeatRelease } : {}),
+      ...(seatConfirmationOrdinal !== undefined ? { seatConfirmationOrdinal } : {}),
+      ...(isRebook !== undefined ? { isRebook } : {}),
     };
   };
 
@@ -577,6 +930,62 @@ function parseRideBookingHistoryFromApi(
   return out;
 }
 
+function parseBookingHistoryMetaFromApi(
+  resRoot: Record<string, unknown>,
+  candidate: Record<string, unknown>
+): RideListItem['bookingHistoryMeta'] {
+  const dataObj =
+    resRoot.data && typeof resRoot.data === 'object' ? (resRoot.data as Record<string, unknown>) : undefined;
+  const rideNested =
+    dataObj?.ride && typeof dataObj.ride === 'object' ? (dataObj.ride as Record<string, unknown>) : undefined;
+  const raw =
+    candidate.bookingHistoryMeta ??
+    candidate.booking_history_meta ??
+    resRoot.bookingHistoryMeta ??
+    resRoot.booking_history_meta ??
+    dataObj?.bookingHistoryMeta ??
+    dataObj?.booking_history_meta ??
+    rideNested?.bookingHistoryMeta ??
+    rideNested?.booking_history_meta;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const r = raw as Record<string, unknown>;
+  const source = typeof r.source === 'string' ? r.source.trim() : undefined;
+  const orderedBy =
+    typeof r.orderedBy === 'string'
+      ? r.orderedBy.trim()
+      : typeof r.ordered_by === 'string'
+        ? r.ordered_by.trim()
+        : undefined;
+  const deduplication =
+    typeof r.deduplication === 'string'
+      ? r.deduplication.trim()
+      : typeof r.deduplicationPolicy === 'string'
+        ? r.deduplicationPolicy.trim()
+        : typeof r.deduplication_policy === 'string'
+          ? r.deduplication_policy.trim()
+          : undefined;
+  const sarf = r.serverAuthoredFields ?? r.server_authored_fields;
+  const serverAuthoredFields = Array.isArray(sarf)
+    ? sarf.filter((x): x is string => typeof x === 'string' && x.trim().length > 0).map((x) => x.trim())
+    : undefined;
+  if (!source && !orderedBy && !deduplication && !serverAuthoredFields?.length) return undefined;
+  return {
+    ...(source ? { source } : {}),
+    ...(orderedBy ? { orderedBy } : {}),
+    ...(deduplication ? { deduplication } : {}),
+    ...(serverAuthoredFields?.length ? { serverAuthoredFields } : {}),
+  };
+}
+
+/** When true, `rideBookingHistory` is server-deduped — do not merge embedded `bookings[].bookingHistory` snapshots into the owner timeline. */
+function rideUsesServerCanonicalBookingHistory(meta: RideListItem['bookingHistoryMeta']): boolean {
+  if (!meta) return false;
+  if (String(meta.deduplication ?? '').trim().length > 0) return true;
+  if (Array.isArray(meta.serverAuthoredFields) && meta.serverAuthoredFields.length > 0) return true;
+  const src = String(meta.source ?? '').trim().toLowerCase();
+  return src === 'server' || src === 'canonical' || src === 'timeline';
+}
+
 function eventTypeToSyntheticBookingStatus(eventType: string): string {
   const t = String(eventType ?? '').trim().toLowerCase();
   if (t === 'booked' || t === 'rebooked' || t === 'booking_created') return 'confirmed';
@@ -604,7 +1013,8 @@ function eventTypeToSyntheticBookingStatus(eventType: string): string {
     return 'cancelled_by_owner';
   }
   if (t === 'cancelled' || t === 'passenger_cancelled' || t === 'cancelled_by_passenger') return 'cancelled';
-  return t || 'confirmed';
+  // Unknown event types must not synthesize "confirmed" — that incorrectly puts request-only users on the owner Passengers list.
+  return t || 'pending';
 }
 
 /**
@@ -627,9 +1037,10 @@ function mergeRideLevelBookingHistoryIntoTimeline(
   userId: string,
   list: BookingItem[],
   primary: BookingItem,
-  rideGroups: RideBookingHistoryUserGroup[] | undefined
+  rideGroups: RideBookingHistoryUserGroup[] | undefined,
+  serverCanonicalTimeline: boolean
 ): BookingItem[] {
-  const merged = expandPassengerHistoryFromBookingRows(list);
+  const merged = serverCanonicalTimeline ? [...list] : expandPassengerHistoryFromBookingRows(list);
   const byId = new Map<string, BookingItem>();
   for (const row of merged) {
     const k = (row.id ?? '').trim() || `${row.userId}|${row.bookedAt}`;
@@ -658,6 +1069,15 @@ function mergeRideLevelBookingHistoryIntoTimeline(
         seatsBefore: ev.seatsBefore,
         seatsChanged: ev.seatsChanged,
         seatsAfter: ev.seatsAfter,
+        ...(ev.displayKey ? { displayKey: ev.displayKey } : {}),
+        ...(ev.displayParams ? { displayParams: ev.displayParams } : {}),
+        ...(ev.countsAsPassengerSeatRelease !== undefined
+          ? { countsAsPassengerSeatRelease: ev.countsAsPassengerSeatRelease }
+          : {}),
+        ...(ev.seatConfirmationOrdinal !== undefined
+          ? { seatConfirmationOrdinal: ev.seatConfirmationOrdinal }
+          : {}),
+        ...(ev.isRebook !== undefined ? { isRebook: ev.isRebook } : {}),
       },
     };
     byId.set(rid, synthetic);
@@ -936,6 +1356,8 @@ export default function RideDetailScreen(): React.JSX.Element {
     !isOwner && isBookedByMe && !isPastRide && !rideCancelledByOwner;
   const showPassengerPendingFixedAction =
     !isOwner && isMyBookingPending && !isPastRide && !rideCancelledByOwner;
+  const showPassengerRejectedFixedAction =
+    !isOwner && isMyBookingRejected && !isPastRide && !rideCancelledByOwner;
   const showPassengerBookFixedAction =
     !isOwner &&
     !isPastRide &&
@@ -951,6 +1373,7 @@ export default function RideDetailScreen(): React.JSX.Element {
     showOwnerPastRepublishFixedAction ||
     showPassengerCancelFixedAction ||
     showPassengerPendingFixedAction ||
+    showPassengerRejectedFixedAction ||
     showPassengerBookFixedAction;
   const passengerSelfCancelledBooking =
     isMyBookingCancelled && !rideCancelledByOwner && !passengerRemovedByOwner;
@@ -960,11 +1383,17 @@ export default function RideDetailScreen(): React.JSX.Element {
     if (flagged !== undefined) return flagged;
     return isPendingLikeBookingStatus(b.status);
   });
-  const activePassengers = passengers.filter((b) => {
-    if (bookingIsCancelledByOwner(b.status)) return bookingRowHoldsOccupiedSeats(b);
-    return !bookingIsCancelled(b.status);
-  });
-
+  const ownerPendingRequestCountForDisplay = Math.max(
+    0,
+    Math.floor(
+      Number(
+        ride.pendingRequestCount ??
+          ride.pending_request_count ??
+          ride.pendingRequests ??
+          pendingSeatRequests.length
+      ) || 0
+    )
+  );
   const confirmedPassengers = passengers.filter((b) => {
     const flaggedAccepted = bookingFlag(b, 'isAcceptedPassenger');
     if (flaggedAccepted !== undefined) {
@@ -975,15 +1404,6 @@ export default function RideDetailScreen(): React.JSX.Element {
     if (isPendingLikeBookingStatus(s) || s === 'rejected') return false;
     return bookingRowHoldsOccupiedSeats(b);
   });
-  const activePassengerUserIds = new Set(
-    activePassengers.map((p) => (p.userId ?? '').trim()).filter(Boolean)
-  );
-  const cancelledPassengerUserIds = new Set(
-    passengers
-      .filter((p) => bookingIsCancelled(p.status))
-      .map((p) => (p.userId ?? '').trim())
-      .filter(Boolean)
-  );
   /** Display list: one entry per passenger user when userId is present (prevents cancel+rebook duplicate rows). */
   const passengersForDisplay: BookingItem[] = (() => {
     const byUser = new Map<string, BookingItem>();
@@ -1027,6 +1447,7 @@ export default function RideDetailScreen(): React.JSX.Element {
 
   /** All booking rows per passenger (re-book / cancel / partial owner-remove) for primary row + chronological history. */
   const perUserPassengerSummaries = useMemo(() => {
+    const serverCanonTimeline = rideUsesServerCanonicalBookingHistory(ride.bookingHistoryMeta);
     const byUser = new Map<string, BookingItem[]>();
     const noUserId: BookingItem[] = [];
     for (const p of passengers) {
@@ -1055,7 +1476,8 @@ export default function RideDetailScreen(): React.JSX.Element {
         uid,
         list,
         primary,
-        rideBookingHistoryGroups
+        rideBookingHistoryGroups,
+        serverCanonTimeline
       );
       const historyChronological = [...mergedTimeline].sort((a, b) => bookingTimelineMs(a) - bookingTimelineMs(b));
       summaries.push({ userId: uid, primary, historyChronological });
@@ -1065,7 +1487,8 @@ export default function RideDetailScreen(): React.JSX.Element {
         '',
         [orphan],
         orphan,
-        rideBookingHistoryGroups
+        rideBookingHistoryGroups,
+        serverCanonTimeline
       );
       const historyChronological = [...mergedTimeline].sort((a, b) => bookingTimelineMs(a) - bookingTimelineMs(b));
       summaries.push({
@@ -1078,27 +1501,76 @@ export default function RideDetailScreen(): React.JSX.Element {
       bookingPassengerDisplayName(a.primary).localeCompare(bookingPassengerDisplayName(b.primary))
     );
     return summaries;
-  }, [passengers, rideBookingHistoryGroups]);
+  }, [passengers, rideBookingHistoryGroups, ride.bookingHistoryMeta]);
   const ownerPassengerSummariesForDisplay = useMemo(() => {
-    return perUserPassengerSummaries.filter(({ historyChronological, primary }) => {
-      // Owner passengers list should include:
-      // 1) accepted/current passengers, and
-      // 2) cancelled passengers who previously had seats (for audit/history context).
-      // It must still exclude pending/rejected request-only rows.
-      const hasAnyNonPendingHistoryWithSeats = historyChronological.some((h) => {
-        const s = String(h.status ?? '').trim().toLowerCase();
-        if (isPendingLikeBookingStatus(s) || s === 'rejected') return false;
-        return bookingSeatCount(h) > 0;
-      });
-      if (hasAnyNonPendingHistoryWithSeats) return true;
+    return perUserPassengerSummaries.filter(({ userId, historyChronological, primary }) => {
+      if (isRequestBookingMode) {
+        return requestModeOwnerPassengerListedFromBackendBookingsOnly(
+          passengers,
+          userId,
+          primary,
+          rideBookingHistoryGroups
+        );
+      }
+
+      // Instant booking / non-request: keep merged-timeline + occupancy rules for audit edge cases.
+      if (
+        bookingFlag(primary, 'isPendingRequest') === true &&
+        bookingFlag(primary, 'isAcceptedPassenger') !== true
+      ) {
+        return false;
+      }
       const primaryStatus = String(primary.status ?? '').trim().toLowerCase();
       if (isPendingLikeBookingStatus(primaryStatus) || primaryStatus === 'rejected') return false;
-      // Request-mode edge: backend may return passenger-cancelled row with seats=0 and sparse history.
-      // Keep it visible to owner for audit/history context.
+
       if (bookingIsCancelled(primary.status) && !bookingIsCancelledByOwner(primary.status)) return true;
-      return bookingSeatCount(primary) > 0;
+
+      const uid = (userId ?? '').trim();
+      const mine = uid ? passengers.filter((p) => (p.userId ?? '').trim() === uid) : [];
+      if (
+        mine.some(
+          (r) =>
+            bookingFlag(r, 'isPendingRequest') === true && bookingFlag(r, 'isAcceptedPassenger') !== true
+        ) &&
+        !mine.some(
+          (r) =>
+            bookingFlag(r, 'isAcceptedPassenger') === true ||
+            (bookingRowHoldsOccupiedSeats(r) &&
+              !isPendingLikeBookingStatus(String(r.status ?? '').trim().toLowerCase()) &&
+              String(r.status ?? '').trim().toLowerCase() !== 'rejected')
+        )
+      ) {
+        return false;
+      }
+
+      for (const r of mine) {
+        if (bookingFlag(r, 'isAcceptedPassenger') === true && bookingSeatCount(r) > 0) return true;
+        const rs = String(r.status ?? '').trim().toLowerCase();
+        if (bookingRowHoldsOccupiedSeats(r) && !isPendingLikeBookingStatus(rs) && rs !== 'rejected') return true;
+      }
+
+      for (const h of historyChronological) {
+        if (bookingFlag(h, 'isPendingRequest') === true) continue;
+        const s = String(h.status ?? '').trim().toLowerCase();
+        if (s === '' || isPendingLikeBookingStatus(s) || s === 'rejected') continue;
+        if (bookingSeatCount(h) <= 0) continue;
+        if (isAcceptedLikeBookingStatus(s)) return true;
+        if (bookingIsCancelledByOwner(h.status)) return true;
+        if (
+          s === 'seats_reduced' ||
+          s === 'seat_reduced' ||
+          s === 'partial_cancel' ||
+          s === 'partial_cancellation' ||
+          s === 'seat_cancelled' ||
+          s === 'seats_cancelled'
+        ) {
+          return true;
+        }
+      }
+
+      return false;
     });
-  }, [perUserPassengerSummaries]);
+  }, [perUserPassengerSummaries, passengers, isRequestBookingMode]);
 
   /** Passenger detail only sees `booking.bookingHistory` on one row — pass merged ride timeline from here. */
   const computeOwnerBookingHistoryLinesForPassenger = useCallback(
@@ -1110,21 +1582,41 @@ export default function RideDetailScreen(): React.JSX.Element {
         rideBookingHistoryGroups
       );
       const sorted = [...rows].sort((a, b) => bookingTimelineMs(a) - bookingTimelineMs(b));
-      const lines = sorted
-        .map((h) => formatOwnerBookingHistoryLineText(h, sorted))
-        .filter((line) => line.trim().length > 0);
-      // Backend can emit equivalent "Booked N seats" from multiple sources (row + event).
-      // Keep first occurrence to avoid duplicate history lines for the same action.
+      const lineEntries = sorted
+        .map((h) => ({
+          line: formatOwnerBookingHistoryLineText(h, sorted),
+          timelineMs: bookingTimelineMs(h),
+        }))
+        .filter((entry) => entry.line.trim().length > 0);
+      const serverCanon = rideUsesServerCanonicalBookingHistory(ride.bookingHistoryMeta);
+      // 1) Client near-dedupe only when timeline is not server-canonical (avoids double-processing).
+      // 2) Exact line+ms dedupe (unchanged).
       const unique: string[] = [];
       const seen = new Set<string>();
-      for (const line of lines) {
-        if (seen.has(line)) continue;
-        seen.add(line);
-        unique.push(line);
+      const lastKeptMsByBody = new Map<string, number>();
+      for (const entry of lineEntries) {
+        const body = ownerHistoryLineBodyForDedupe(entry.line);
+        if (
+          !serverCanon &&
+          ownerHistoryLineEligibleForNearDuplicateCollapse(body)
+        ) {
+          const prevMs = lastKeptMsByBody.get(body);
+          if (
+            prevMs !== undefined &&
+            Math.abs(entry.timelineMs - prevMs) < OWNER_HISTORY_SAME_ACTION_WINDOW_MS
+          ) {
+            continue;
+          }
+          lastKeptMsByBody.set(body, entry.timelineMs);
+        }
+        const key = `${entry.line}@@${entry.timelineMs}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        unique.push(entry.line);
       }
       return unique;
     },
-    [rideBookingHistoryGroups]
+    [rideBookingHistoryGroups, ride.bookingHistoryMeta]
   );
 
   const totalBookingsCount = getRideTotalBookingCount(ride);
@@ -1165,6 +1657,22 @@ export default function RideDetailScreen(): React.JSX.Element {
   const pickupTime = getRidePickupTime(ride);
   const driverName = ridePublisherDisplayName(ride);
   const publisherDeactivated = ridePublisherDeactivated(ride);
+  const ridePreferenceIdsForDetail = useMemo(() => {
+    const r = ride as RideListItem & {
+      publisherRidePreferences?: unknown;
+      publisher_ride_preferences?: unknown;
+      ridePreferences?: unknown;
+      ride_preferences?: unknown;
+    };
+    const candidates = [
+      normalizeRidePreferenceIds(r.publisherRidePreferences),
+      normalizeRidePreferenceIds(r.publisher_ride_preferences),
+      normalizeRidePreferenceIds(r.ridePreferences),
+      normalizeRidePreferenceIds(r.ride_preferences),
+    ];
+    const fromRide = candidates.find((ids) => ids.length > 0) ?? [];
+    return fromRide;
+  }, [ride]);
   /** Ride API fields + nested `vehicle` / `publisher` (see rideVehicleFields) + owner profile fallback for your rides. */
   const {
     vehicleNameLine,
@@ -1333,6 +1841,17 @@ export default function RideDetailScreen(): React.JSX.Element {
       destinationLocationName:
         String(row.destinationLocationName ?? row.dropoff ?? row.destination ?? '').trim() || undefined,
       ...(avatarUrl ? { avatarUrl } : {}),
+      ...(typeof row.showRebookedBadge === 'boolean' ? { showRebookedBadge: row.showRebookedBadge } : {}),
+      ...(String(row.rebookedBadgeSource ?? row.rebooked_badge_source ?? '')
+        .trim()
+        ? {
+            rebookedBadgeSource: String(row.rebookedBadgeSource ?? row.rebooked_badge_source ?? '').trim(),
+          }
+        : {}),
+      ...(String(row.ownerListRole ?? row.owner_list_role ?? '')
+        .trim()
+        ? { ownerListRole: String(row.ownerListRole ?? row.owner_list_role ?? '').trim() }
+        : {}),
     };
   }, []);
 
@@ -1452,7 +1971,31 @@ export default function RideDetailScreen(): React.JSX.Element {
         )
           .trim()
           .toLowerCase();
-        const useStrictOwnerPassengers = isOwner && ownerPassengersRaw && contractVersion === 'v3';
+        const bookingHistoryMetaParsed = parseBookingHistoryMetaFromApi(root, candidate as Record<string, unknown>);
+        const rowHasOwnerListRole = (r: unknown): boolean =>
+          Boolean(
+            r &&
+              typeof r === 'object' &&
+              String(
+                (r as Record<string, unknown>).ownerListRole ??
+                  (r as Record<string, unknown>).owner_list_role ??
+                  ''
+              ).trim().length > 0
+          );
+        const segmentedOwnerPayload =
+          (Array.isArray(ownerPassengersRaw) && ownerPassengersRaw.some(rowHasOwnerListRole)) ||
+          (Array.isArray(ownerAllBookingsRaw) && ownerAllBookingsRaw.some(rowHasOwnerListRole));
+        // Do not merge full `bookings[]` into owner state when API already segments `passengers` vs requests:
+        // - contract v3, or
+        // - bookingHistoryMeta (server canonical timeline), or
+        // - `ownerListRole` on payload rows (segmented owner API)
+        // Otherwise pending rows in `bookings[]` leak into Passengers UI.
+        const useStrictOwnerPassengers =
+          isOwner &&
+          ownerPassengersRaw &&
+          (contractVersion === 'v3' ||
+            rideUsesServerCanonicalBookingHistory(bookingHistoryMetaParsed) ||
+            segmentedOwnerPayload);
         const bookingsRaw =
           useStrictOwnerPassengers
             ? ownerPassengersRaw
@@ -1495,6 +2038,7 @@ export default function RideDetailScreen(): React.JSX.Element {
           (pricing?.fare as string | number | undefined);
         setPassengers(list);
         if (isOwner) {
+          let ownerRequestsLenForLog = 0;
           const ownerSeatRequestsRaw =
             (Array.isArray(candidate.seatRequests) ? (candidate.seatRequests as unknown[]) : null) ??
             (Array.isArray((root as Record<string, unknown>).seatRequests)
@@ -1509,7 +2053,31 @@ export default function RideDetailScreen(): React.JSX.Element {
             const normalizedRequests = ownerSeatRequestsRaw
               .map((item) => normalizeRequestBookingItem(item))
               .filter((item): item is BookingItem => Boolean(item));
+            ownerRequestsLenForLog = normalizedRequests.length;
             setSeatRequests(normalizedRequests);
+          }
+          if (__DEV__) {
+            const candRec = candidate as Record<string, unknown>;
+            const n = (v: unknown): number =>
+              typeof v === 'number' && Number.isFinite(v)
+                ? v
+                : typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v))
+                  ? Number(v)
+                  : NaN;
+            // Helps verify owner segmentation contract quickly while debugging payload leaks.
+            console.log(
+              '[RideDetail][owner-segmentation]',
+              JSON.stringify({
+                passengersLen: list.length,
+                requestsLen: ownerRequestsLenForLog,
+                bookingsLen: ownerAllBookingsRaw.length,
+                activePassengerCount: n(candRec.activePassengerCount ?? candRec.active_passenger_count),
+                pendingRequestCount: n(candRec.pendingRequestCount ?? candRec.pending_request_count),
+                historicalPassengerCount: n(
+                  candRec.historicalPassengerCount ?? candRec.historical_passenger_count
+                ),
+              })
+            );
           }
         }
         setRide((prev) => {
@@ -1632,6 +2200,21 @@ export default function RideDetailScreen(): React.JSX.Element {
           if (pubDateOfBirth) {
             next.publisherDateOfBirth = pubDateOfBirth;
           }
+          const activePassengerCount =
+            numFrom(candRec.activePassengerCount) ?? numFrom(candRec.active_passenger_count);
+          const pendingRequestCount =
+            numFrom(candRec.pendingRequestCount) ?? numFrom(candRec.pending_request_count);
+          const historicalPassengerCount =
+            numFrom(candRec.historicalPassengerCount) ?? numFrom(candRec.historical_passenger_count);
+          if (activePassengerCount != null && activePassengerCount >= 0) {
+            next.activePassengerCount = Math.max(0, Math.floor(activePassengerCount));
+          }
+          if (pendingRequestCount != null && pendingRequestCount >= 0) {
+            next.pendingRequestCount = Math.max(0, Math.floor(pendingRequestCount));
+          }
+          if (historicalPassengerCount != null && historicalPassengerCount >= 0) {
+            next.historicalPassengerCount = Math.max(0, Math.floor(historicalPassengerCount));
+          }
           const dataLayer =
             root.data && typeof root.data === 'object' ? (root.data as Record<string, unknown>) : null;
           const noticeRaw =
@@ -1655,6 +2238,7 @@ export default function RideDetailScreen(): React.JSX.Element {
             ...vehicleNorm,
             ...(vehicleIdStr ? { vehicleId: vehicleIdStr } : {}),
             rideBookingHistory: rideBookingHistoryParsed,
+            ...(bookingHistoryMetaParsed ? { bookingHistoryMeta: bookingHistoryMetaParsed } : {}),
           } as RideListItem;
           delete (merged as Record<string, unknown>).bookingHistory;
           nextRideSnapshot = merged;
@@ -1691,6 +2275,7 @@ export default function RideDetailScreen(): React.JSX.Element {
   const fetchSeatRequests = useCallback(async () => {
     if (!isOwner || !isRequestBookingMode) {
       setSeatRequests([]);
+      setSeatRequestsLoading(false);
       return;
     }
     setSeatRequestsLoading(true);
@@ -1853,14 +2438,6 @@ export default function RideDetailScreen(): React.JSX.Element {
   );
 
   useEffect(() => {
-    if (!isOwner || !isRequestBookingMode) {
-      setSeatRequests([]);
-      return;
-    }
-    void fetchSeatRequests();
-  }, [isOwner, isRequestBookingMode, fetchSeatRequests]);
-
-  useEffect(() => {
     if (!isOwner || !isRequestBookingMode) return;
     if (availableSeatsCount > 0) return;
     if (autoRejectPendingInFlightRef.current) return;
@@ -1884,6 +2461,32 @@ export default function RideDetailScreen(): React.JSX.Element {
           setPassengerBookedRidesForOverlap(list)
         );
       }
+      return () => {
+        // Keep tabs hidden when navigating to full-screen child flows from Ride Detail.
+        setTimeout(() => {
+          try {
+            const tabState = mainTabs?.getState?.();
+            const activeTabRoute = tabState?.routes?.[tabState?.index ?? 0] as
+              | { state?: { routes?: { name?: string }[]; index?: number } }
+              | undefined;
+            const nestedState = activeTabRoute?.state;
+            const nestedName = nestedState?.routes?.[nestedState?.index ?? 0]?.name;
+            const hideTabsOn = new Set([
+              'RideDetail',
+              'RideDetailScreen',
+              'BookPassengerDetail',
+              'Chat',
+              'OwnerProfileModal',
+              'OwnerRatingsModal',
+            ]);
+            if (!nestedName || !hideTabsOn.has(nestedName)) {
+              mainTabs?.setOptions?.({ tabBarStyle: undefined });
+            }
+          } catch {
+            mainTabs?.setOptions?.({ tabBarStyle: undefined });
+          }
+        }, 120);
+      };
     }, [refreshRideDetailEventDriven, navigation, sessionReady, currentUserId, isOwnerStrict])
   );
 
@@ -2345,11 +2948,11 @@ export default function RideDetailScreen(): React.JSX.Element {
         if (cancelAll) {
           if (flow === 'request') {
             Alert.alert('Cancelled', 'Your seat request was cancelled.', [
-              { text: 'OK', onPress: () => navigation.goBack() },
+              { text: 'OK', onPress: () => void navigateBackAfterCancel() },
             ]);
           } else {
             Alert.alert('Cancelled', 'Your booking was cancelled. You can find it under Past rides.', [
-              { text: 'OK', onPress: () => navigation.goBack() },
+              { text: 'OK', onPress: () => void navigateBackAfterCancel() },
             ]);
           }
         } else {
@@ -2371,7 +2974,7 @@ export default function RideDetailScreen(): React.JSX.Element {
         setCancelBookingSeatsToCancel(1);
       }
     },
-    [refreshRideDetailEventDriven, navigation]
+    [refreshRideDetailEventDriven, navigateBackAfterCancel]
   );
 
   const handleCancelBooking = () => {
@@ -2454,6 +3057,20 @@ export default function RideDetailScreen(): React.JSX.Element {
     setCancelBookingSheetMode('booking');
     setOwnerRemovePassengerLabel('');
   }, [cancellingBooking]);
+
+  const navigateBackAfterCancel = useCallback(async () => {
+    emitRequestMyRidesBlockingRefresh({
+      blocking: true,
+      expectedRemovedRideId: (ride.id ?? '').trim() || undefined,
+    });
+    await new Promise<void>((resolve) => {
+      InteractionManager.runAfterInteractions(() => resolve());
+    });
+    await new Promise<void>((resolve) =>
+      setTimeout(resolve, Platform.OS === 'android' ? 220 : 280)
+    );
+    navigation.goBack();
+  }, [navigation, ride.id]);
 
   const confirmCancelSeats = useCallback(
     async (seatsToCancel: number) => {
@@ -2571,7 +3188,7 @@ export default function RideDetailScreen(): React.JSX.Element {
         estimatedDurationSeconds: ride.estimatedDurationSeconds,
         status: 'cancelled',
       });
-      navigation.goBack();
+      await navigateBackAfterCancel();
     } catch (e: unknown) {
       const message =
         e && typeof e === 'object' && 'message' in e
@@ -2581,7 +3198,7 @@ export default function RideDetailScreen(): React.JSX.Element {
     } finally {
       setCancelling(false);
     }
-  }, [ride, currentUserId, navigation]);
+  }, [ride, currentUserId, navigateBackAfterCancel]);
 
   const handleCancelRide = () => {
     if (!isOwnerStrict) {
@@ -2897,6 +3514,24 @@ export default function RideDetailScreen(): React.JSX.Element {
           </View>
         </View>
 
+        {ridePreferenceIdsForDetail.length > 0 ? (
+          <View
+            style={[styles.detailCard, styles.vehicleInfoDetailCard]}
+            accessibilityRole="summary"
+            accessibilityLabel="Ride preferences"
+          >
+            <Text style={styles.vehicleInfoSectionLabel}>Ride preferences</Text>
+            <View style={styles.ridePrefsRow}>
+              <View style={styles.ridePrefsIconWrap} importantForAccessibility="no-hide-descendants">
+                <Ionicons name="options-outline" size={22} color={COLORS.primary} />
+              </View>
+              <View style={styles.ridePrefsTextCol}>
+                <RidePreferenceChips ids={ridePreferenceIdsForDetail} />
+              </View>
+            </View>
+          </View>
+        ) : null}
+
         {/* Fare & payment — directly after trip summary so price sits with route/driver context */}
         <View
           style={[styles.detailCard, styles.vehicleInfoDetailCard]}
@@ -3001,16 +3636,19 @@ export default function RideDetailScreen(): React.JSX.Element {
           <View style={[styles.block, styles.seatRequestsBlock]}>
             <View style={styles.seatRequestsHeader}>
               <Text style={styles.seatRequestsHeading}>
-                Requests <Text style={styles.seatRequestsCount}>{pendingSeatRequests.length}</Text>
+                Requests <Text style={styles.seatRequestsCount}>{ownerPendingRequestCountForDisplay}</Text>
               </Text>
+              {seatRequestsLoading && pendingSeatRequests.length > 0 ? (
+                <ActivityIndicator size="small" color={COLORS.primary} style={styles.seatRequestsHeaderSpinner} />
+              ) : null}
             </View>
-            {seatRequestsLoading ? (
-              <View style={styles.seatRequestsLoadingWrap}>
-                <ActivityIndicator size="small" color={COLORS.primary} />
-                <Text style={styles.seatRequestsLoadingText}>Loading requests...</Text>
-              </View>
-            ) : pendingSeatRequests.length > 0 ? (
-              <View style={styles.seatRequestsList}>
+            {pendingSeatRequests.length > 0 ? (
+              <View
+                style={[
+                  styles.seatRequestsList,
+                  seatRequestsLoading ? styles.seatRequestsListRefreshing : null,
+                ]}
+              >
                 {pendingSeatRequests.map((b) => {
                   const displayName = bookingPassengerDisplayName(b);
                   const { lineShort } = bookingPickupDrop(ride, b);
@@ -3047,9 +3685,6 @@ export default function RideDetailScreen(): React.JSX.Element {
                                 {displayName}
                               </Text>
                               <View style={styles.seatRequestMetaRow}>
-                                <Ionicons name="star-outline" size={12} color="#f59e0b" />
-                                <Text style={styles.seatRequestMetaText}>4.9</Text>
-                                {requestAgo ? <Text style={styles.seatRequestMetaDot}>•</Text> : null}
                                 {requestAgo ? (
                                   <Text style={styles.seatRequestMetaTextMuted}>{requestAgo}</Text>
                                 ) : null}
@@ -3105,6 +3740,21 @@ export default function RideDetailScreen(): React.JSX.Element {
                   );
                 })}
               </View>
+            ) : seatRequestsLoading ? (
+              <View style={styles.seatRequestsPlaceholder}>
+                <View style={styles.seatRequestsSkeletonCard}>
+                  <View style={styles.seatRequestsSkeletonLineWide} />
+                  <View style={styles.seatRequestsSkeletonLine} />
+                </View>
+                <View style={styles.seatRequestsSkeletonCard}>
+                  <View style={styles.seatRequestsSkeletonLineWide} />
+                  <View style={styles.seatRequestsSkeletonLine} />
+                </View>
+                <View style={styles.seatRequestsLoadingRow}>
+                  <ActivityIndicator size="small" color={COLORS.primary} />
+                  <Text style={styles.seatRequestsLoadingText}>Loading requests…</Text>
+                </View>
+              </View>
             ) : (
               <Text style={styles.noPassengers}>No pending requests</Text>
             )}
@@ -3153,8 +3803,7 @@ export default function RideDetailScreen(): React.JSX.Element {
                       !partialOwnerRemoveStillBooked &&
                       !bookingCancelledForDisplay &&
                       !isPastRide &&
-                      cancelledPassengerUserIds.has((b.userId ?? '').trim()) &&
-                      activePassengerUserIds.has((b.userId ?? '').trim());
+                      passengerRowShowRebookedBadge(b, passengers);
                     const shouldFadeCancelled = bookingCancelledForDisplay && !isRebooked;
                     const mergedForRoute: BookingItem =
                       isMe && passengerSearch?.from?.trim() && passengerSearch?.to?.trim()
@@ -3334,8 +3983,7 @@ export default function RideDetailScreen(): React.JSX.Element {
                   const isRebooked =
                     !bookingCancelled &&
                     !isPastRide &&
-                    cancelledPassengerUserIds.has((b.userId ?? '').trim()) &&
-                    activePassengerUserIds.has((b.userId ?? '').trim());
+                    passengerRowShowRebookedBadge(b, passengers);
                   const shouldFadeCancelled = bookingCancelled && !isRebooked;
 
                   const coPassengerUid = (b.userId ?? '').trim();
@@ -3449,25 +4097,7 @@ export default function RideDetailScreen(): React.JSX.Element {
           </View>
         ) : null}
 
-        {/* Actions — past rides: no calendar / offer links; owner: no edit or cancel */}
-        {!isPastRide && (!isBookedByMe || isOwner) && !isOwnerRideCancelled ? (
-          <>
-            <TouchableOpacity style={styles.linkButton} onPress={() => {}}>
-              <Text style={styles.linkText}>Add to calendar</Text>
-            </TouchableOpacity>
-          </>
-        ) : null}
-
-        {isOwnerStrict && isOwnerRideCancelled ? null : isOwnerStrict && !isPastRide ? null : showPassengerCancelFixedAction ? null : showPassengerPendingFixedAction ? null : !isOwner && isMyBookingRejected && !isPastRide && !rideCancelledByOwner ? (
-          <TouchableOpacity
-            style={[styles.button, styles.buttonRequestRejected]}
-            onPress={openPendingRequestActions}
-            activeOpacity={0.85}
-          >
-            <Ionicons name="time-outline" size={22} color={COLORS.error} />
-            <Text style={styles.buttonRequestRejectedText}>{driverName} rejected</Text>
-          </TouchableOpacity>
-        ) : !isOwner && rideCancelledByOwner ? (
+        {isOwnerStrict && isOwnerRideCancelled ? null : isOwnerStrict && !isPastRide ? null : showPassengerCancelFixedAction ? null : showPassengerPendingFixedAction ? null : showPassengerRejectedFixedAction ? null : !isOwner && rideCancelledByOwner ? (
           <View style={[styles.button, styles.buttonOwnerRideCancelled]}>
             <Ionicons name="ban-outline" size={22} color={COLORS.textMuted} />
             <Text style={styles.buttonOwnerRideCancelledText}>Ride cancelled by the driver</Text>
@@ -3587,6 +4217,12 @@ export default function RideDetailScreen(): React.JSX.Element {
                 <Text style={styles.buttonPendingRequestText}>Request pending approval</Text>
               </TouchableOpacity>
             ) : null}
+            {showPassengerRejectedFixedAction ? (
+              <View style={[styles.button, styles.buttonRequestRejected, styles.footerSingleActionBtn]}>
+                <Ionicons name="time-outline" size={22} color={COLORS.error} />
+                <Text style={styles.buttonRequestRejectedText}>{driverName} rejected</Text>
+              </View>
+            ) : null}
             {showPassengerBookFixedAction ? (
               <View style={styles.footerBookWrap}>
                 {passengerSelfCancelledBooking ? (
@@ -3684,30 +4320,10 @@ export default function RideDetailScreen(): React.JSX.Element {
                 authUserIdRef.current.trim()
               ).trim();
               if (id) {
-                const cap = getRideAvailableSeats(ride);
-                if (cap <= 0) {
-                  Alert.alert('Full', 'This ride has no available seats.');
-                  return;
-                }
-                const seats = Math.min(Math.max(1, bookSeatsCount), cap);
-                const unit = parseSeatPriceNumber(ride);
-                const priceLine =
-                  unit != null ? `\n\nTotal: ${formatRupees(unit * seats)}` : '';
-                Alert.alert(
-                  isRequestBookingMode ? 'Confirm request' : 'Confirm booking',
-                  `${isRequestBookingMode ? 'Request' : 'Book'} ${seats} seat${seats === 1 ? '' : 's'} on this ride?${priceLine}`,
-                  [
-                    { text: 'Cancel', style: 'cancel' },
-                    {
-                      text: isRequestBookingMode ? 'Request' : 'Book',
-                      onPress: () =>
-                        void handleBook({
-                          sessionUserId: id,
-                          stayOnRideDetail: true,
-                        }),
-                    },
-                  ],
-                );
+                void handleBook({
+                  sessionUserId: id,
+                  stayOnRideDetail: true,
+                });
                 return;
               }
               attempts += 1;
@@ -4546,6 +5162,24 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  ridePrefsRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+  },
+  ridePrefsIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: 'rgba(41, 190, 139, 0.12)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 2,
+  },
+  ridePrefsTextCol: {
+    flex: 1,
+    minWidth: 0,
+  },
   rideDescriptionBody: {
     flex: 1,
     minWidth: 0,
@@ -4568,6 +5202,9 @@ const styles = StyleSheet.create({
     marginTop: 14,
     marginBottom: 6,
   },
+  seatRequestsHeaderSpinner: {
+    marginRight: 4,
+  },
   seatRequestsCount: {
     color: COLORS.primary,
     fontWeight: '800',
@@ -4585,6 +5222,42 @@ const styles = StyleSheet.create({
   seatRequestsList: {
     paddingTop: 6,
   },
+  seatRequestsListRefreshing: {
+    opacity: 0.92,
+  },
+  seatRequestsPlaceholder: {
+    paddingTop: 4,
+    paddingBottom: 4,
+  },
+  seatRequestsSkeletonCard: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: COLORS.borderLight,
+    backgroundColor: COLORS.backgroundSecondary,
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    marginBottom: 10,
+  },
+  seatRequestsSkeletonLineWide: {
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: COLORS.border,
+    width: '72%',
+    marginBottom: 10,
+  },
+  seatRequestsSkeletonLine: {
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: COLORS.borderLight,
+    width: '48%',
+  },
+  seatRequestsLoadingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingTop: 4,
+    paddingBottom: 2,
+  },
   seatRequestsManageAll: {
     fontSize: 13,
     fontWeight: '700',
@@ -4595,12 +5268,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'flex-end',
     minWidth: 70,
-  },
-  seatRequestsLoadingWrap: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingTop: 10,
   },
   seatRequestsLoadingText: {
     fontSize: 13,

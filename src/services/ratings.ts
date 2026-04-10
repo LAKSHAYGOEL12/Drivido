@@ -51,6 +51,8 @@ export type UserRatingsSummary = {
   subjectDeactivated?: boolean;
   /** Short public bio when `GET /ratings/:userId` embeds it on `user` / envelope. */
   subjectBio?: string;
+  /** Occupation text when ratings payload embeds it on `user` / envelope. */
+  subjectOccupation?: string;
   /** Driver comfort tags from `user.ridePreferences` on ratings payload (may be empty). */
   subjectRidePreferences: string[];
 };
@@ -505,6 +507,19 @@ export async function getUserRatingsSummary(userId: string): Promise<UserRatings
       data.bio ??
       data.description
   ).trim();
+  const subjectOccupationRaw = asString(
+    data.subjectOccupation ??
+      data.subject_occupation ??
+      root?.subjectOccupation ??
+      root?.subject_occupation ??
+      userObj.occupation ??
+      userObj.occupation_text ??
+      userObj.jobTitle ??
+      userObj.job_title ??
+      userObj.profession ??
+      data.occupation ??
+      data.occupation_text
+  ).trim();
 
   const subjectRidePrefsRaw =
     userObj.ridePreferences ??
@@ -523,6 +538,7 @@ export async function getUserRatingsSummary(userId: string): Promise<UserRatings
     ...(subjectAvatarUrl ? { subjectAvatarUrl } : {}),
     ...(subjectCreatedAtRaw ? { subjectCreatedAt: subjectCreatedAtRaw } : {}),
     ...(subjectBioRaw ? { subjectBio: subjectBioRaw } : {}),
+    ...(subjectOccupationRaw ? { subjectOccupation: subjectOccupationRaw } : {}),
     ...(subjectContactPhone ? { subjectContactPhone } : {}),
     subjectRidePreferences,
   };

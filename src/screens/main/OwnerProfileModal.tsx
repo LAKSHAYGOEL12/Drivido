@@ -119,6 +119,7 @@ export default function OwnerProfileModal(): React.JSX.Element {
   /** Filled from GET /ratings/:userId (or profile probes) when backend exposes `subjectContactPhone`. */
   const [contactPhoneFromApi, setContactPhoneFromApi] = useState('');
   const [subjectBioFromApi, setSubjectBioFromApi] = useState('');
+  const [subjectOccupationFromApi, setSubjectOccupationFromApi] = useState('');
   const [subjectRidePrefsFromApi, setSubjectRidePrefsFromApi] = useState<string[]>([]);
 
   useFocusEffect(
@@ -135,6 +136,7 @@ export default function OwnerProfileModal(): React.JSX.Element {
         setSinceLabel('—');
         setContactPhoneFromApi('');
         setSubjectBioFromApi('');
+        setSubjectOccupationFromApi('');
         setSubjectRidePrefsFromApi([]);
         return () => {};
       }
@@ -143,6 +145,7 @@ export default function OwnerProfileModal(): React.JSX.Element {
       const runId = ++ratingsFetchSeqRef.current;
       setContactPhoneFromApi('');
       setSubjectBioFromApi('');
+      setSubjectOccupationFromApi('');
       setLoading(true);
       setSinceLabel(formatMemberSinceLabel(isSelf ? user?.createdAt : undefined));
       setTripsLoading(true);
@@ -215,9 +218,11 @@ export default function OwnerProfileModal(): React.JSX.Element {
           );
           if (summary.subjectDeactivated) {
             setSubjectBioFromApi('');
+            setSubjectOccupationFromApi('');
             setSubjectRidePrefsFromApi([]);
           } else {
             setSubjectBioFromApi((summary.subjectBio ?? '').trim());
+            setSubjectOccupationFromApi((summary.subjectOccupation ?? '').trim());
             setSubjectRidePrefsFromApi(
               normalizeRidePreferenceIds(summary.subjectRidePreferences ?? [])
             );
@@ -226,6 +231,7 @@ export default function OwnerProfileModal(): React.JSX.Element {
           if (cancelled || runId !== ratingsFetchSeqRef.current) return;
           setContactPhoneFromApi('');
           setSubjectBioFromApi('');
+          setSubjectOccupationFromApi('');
           setSubjectRidePrefsFromApi([]);
           if (!hadEmbeddedFromRide) {
             setAvgRating(0);
@@ -355,6 +361,9 @@ export default function OwnerProfileModal(): React.JSX.Element {
           </View>
 
           <Text style={styles.name}>{targetDisplayName}</Text>
+          {subjectOccupationFromApi ? (
+            <Text style={styles.occupation}>{subjectOccupationFromApi}</Text>
+          ) : null}
           {(() => {
             const bioLine = isSelf
               ? (user?.bio ?? '').trim() || subjectBioFromApi
@@ -584,6 +593,13 @@ const styles = StyleSheet.create({
   },
 
   name: { fontSize: 26, fontWeight: '800', color: COLORS.text, textAlign: 'center' },
+  occupation: {
+    marginTop: 2,
+    textAlign: 'center',
+    fontSize: 13,
+    color: COLORS.textSecondary,
+    fontWeight: '600',
+  },
   bio: {
     marginTop: 4,
     textAlign: 'center',

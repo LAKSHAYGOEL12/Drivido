@@ -8,10 +8,11 @@ import {
   ActivityIndicator,
   InteractionManager,
   Linking,
+  Platform,
 } from 'react-native';
 import { Alert } from '../../utils/themedAlert';
 import { useFocusEffect, useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import type { RidesStackParamList, SearchStackParamList } from '../../navigation/types';
 import { COLORS } from '../../constants/colors';
@@ -25,25 +26,17 @@ import UserAvatar from '../../components/common/UserAvatar';
 import { BookingHistoryTimeline } from '../../components/common/BookingHistoryTimeline';
 import { calculateAge } from '../../utils/calculateAge';
 import { buildBookingHistoryTimelineItems } from '../../utils/bookingHistoryDisplay';
+import { findMainTabNavigatorWithOptions } from '../../navigation/findMainTabNavigator';
 
 type BookPassengerRouteProp =
   | RouteProp<RidesStackParamList, 'BookPassengerDetail'>
   | RouteProp<SearchStackParamList, 'BookPassengerDetail'>;
 
-function findMainTabNavigator(navigation: any) {
-  let current = navigation?.getParent?.() as any | undefined;
-  for (let i = 0; i < 5 && current; i += 1) {
-    const names: string[] | undefined = current?.getState?.()?.routeNames;
-    if (names?.includes('SearchStack') && names?.includes('YourRides')) return current;
-    current = current.getParent?.();
-  }
-  return null;
-}
-
 export default function BookPassengerDetailScreen(): React.JSX.Element {
   const navigation = useNavigation();
   const route = useRoute<BookPassengerRouteProp>();
   const { ride, booking, requestMode, ownerBookingHistoryLines } = route.params;
+  const insets = useSafeAreaInsets();
 
   const [avgRating, setAvgRating] = useState<number | null>(null);
   const [ratingCount, setRatingCount] = useState(0);
@@ -53,16 +46,18 @@ export default function BookPassengerDetailScreen(): React.JSX.Element {
 
   useFocusEffect(
     useCallback(() => {
-      const tabsNav = findMainTabNavigator(navigation as any);
+      const tabsNav = findMainTabNavigatorWithOptions(navigation as { getParent?: () => unknown });
       tabsNav?.setOptions?.({ tabBarStyle: { display: 'none' } });
       return () => {
         setTimeout(() => {
           try {
             const tabState = tabsNav?.getState?.();
-            const activeTabRoute = tabState?.routes?.[tabState?.index ?? 0];
+            const activeTabRoute = tabState?.routes?.[tabState?.index ?? 0] as
+              | { state?: { routes?: { name?: string }[]; index?: number } }
+              | undefined;
             const nestedState = activeTabRoute?.state;
             const nestedName = nestedState?.routes?.[nestedState?.index ?? 0]?.name;
-            const hiddenNestedNames = new Set([
+            const hideTabsOn = new Set([
               'RideDetail',
               'RideDetailScreen',
               'BookPassengerDetail',
@@ -70,13 +65,13 @@ export default function BookPassengerDetailScreen(): React.JSX.Element {
               'OwnerProfileModal',
               'OwnerRatingsModal',
             ]);
-            if (!nestedName || !hiddenNestedNames.has(nestedName)) {
+            if (!nestedName || !hideTabsOn.has(nestedName)) {
               tabsNav?.setOptions?.({ tabBarStyle: undefined });
             }
           } catch {
-            // ignore
+            tabsNav?.setOptions?.({ tabBarStyle: undefined });
           }
-        }, 180);
+        }, 120);
       };
     }, [navigation])
   );
@@ -258,114 +253,115 @@ export default function BookPassengerDetailScreen(): React.JSX.Element {
   }
 
   return (
-    <SafeAreaView style={styles.safe} edges={['top']}>
+    <SafeAreaView style={[styles.safe, isRequestDetail && styles.safeRequest]} edges={['top']}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.headerBack} hitSlop={12}>
-          <Ionicons name="arrow-back" size={24} color={COLORS.primary} />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>Passenger</Text>
-        <View style={styles.headerSpacer} />
+        <View style={styles.headerSide}>
+          <TouchableOpacity onPress={() => navigation.goBack()} style={styles.headerBack} hitSlop={12}>
+            <Ionicons name="arrow-back" size={24} color={COLORS.primary} />
+          </TouchableOpacity>
+        </View>
+        <View style={styles.headerTitleCol}>
+          <Text style={styles.headerTitle}>{isRequestDetail ? 'Seat request' : 'Passenger'}</Text>
+          {isRequestDetail ? (
+            <Text style={styles.headerSubtitle} numberOfLines={1}>
+              {ride.pickupLocationName?.trim() || ride.from?.trim() || 'Ride'} →{' '}
+              {ride.destinationLocationName?.trim() || ride.to?.trim() || 'Destination'}
+            </Text>
+          ) : null}
+        </View>
+        <View style={styles.headerSide} />
       </View>
 
       <ScrollView
         style={styles.scroll}
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[styles.scrollContent, isRequestDetail && styles.scrollContentRequest]}
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
       >
         {isRequestDetail ? (
           <>
-            <Text style={styles.requestTitle}>Request from {passengerName}</Text>
-            <View style={styles.requestProfileCard}>
-              <View style={styles.avatarWrap}>
-                <UserAvatar
-                  uri={passengerAvatarUrl}
-                  name={passengerName}
-                  size={72}
-                  backgroundColor={COLORS.primary}
-                  fallbackTextColor={COLORS.white}
-                />
+            <View style={styles.requestStatusPill}>
+              <Ionicons name="hourglass-outline" size={16} color="#b45309" />
+              <Text style={styles.requestStatusPillText}>Waiting for you to approve or decline</Text>
+            </View>
+
+            <View style={styles.requestHeroCard}>
+              <View style={styles.requestHeroAvatarBlock}>
+                <View style={styles.requestHeroAvatarRing}>
+                  <UserAvatar
+                    uri={passengerAvatarUrl}
+                    name={passengerName}
+                    size={80}
+                    backgroundColor={COLORS.primary}
+                    fallbackTextColor={COLORS.white}
+                  />
+                </View>
                 {passengerAge !== null ? (
-                  <View style={styles.ageBadge}>
-                    <Text style={styles.ageBadgeText}>{passengerAge}y</Text>
+                  <View style={styles.requestAgeChip}>
+                    <Text style={styles.requestAgeChipText}>{passengerAge}</Text>
                   </View>
                 ) : null}
               </View>
-              <View style={styles.requestProfileTextCol}>
-                <Text style={styles.requestProfileName}>{passengerName}</Text>
-                <TouchableOpacity style={styles.requestRatingRow} onPress={openPassengerRatings} activeOpacity={0.75}>
-                  <Ionicons name="star-outline" size={14} color={COLORS.warning} />
-                  {ratingLoading ? (
-                    <Text style={styles.requestRatingText}>Loading rating...</Text>
-                  ) : (
-                    <Text style={styles.requestRatingText}>
-                      {avgRating != null ? avgRating.toFixed(1) : 'No rating'} {ratingCount > 0 ? `(${ratingCount} rides)` : ''}
-                    </Text>
-                  )}
-                </TouchableOpacity>
-              </View>
-            </View>
-
-            <View style={styles.requestRouteCard}>
-              <Text style={styles.requestRouteLabel}>PICKUP</Text>
-              <Text style={styles.requestRouteValue}>{pickup}</Text>
-              <Text style={[styles.requestRouteLabel, styles.requestRouteLabelGap]}>DROP-OFF</Text>
-              <Text style={styles.requestRouteValue}>{drop}</Text>
-            </View>
-
-            <View style={styles.requestMetaRow}>
-              <View style={styles.requestMetaItem}>
-                <Text style={styles.requestMetaLabel}>SEATS</Text>
-                <Text style={styles.requestMetaValue}>{booking.seats} Passenger{booking.seats !== 1 ? 's' : ''}</Text>
-              </View>
-              <View style={[styles.requestMetaItem, styles.requestMetaItemPayment]}>
-                <Text style={styles.requestMetaLabel}>PAYMENT</Text>
-                <Text style={styles.requestMetaValue}>{totalPriceText}</Text>
-              </View>
-            </View>
-
-            <View style={styles.requestActionsRow}>
+              <Text style={styles.requestHeroName} numberOfLines={2}>
+                {passengerName}
+              </Text>
               <TouchableOpacity
-                style={styles.requestRejectBtn}
-                onPress={() => void handleRequestAction('reject')}
-                activeOpacity={0.85}
-                disabled={requestActionLoading != null}
+                style={styles.requestRatingChip}
+                onPress={openPassengerRatings}
+                activeOpacity={0.75}
               >
-                {requestActionLoading === 'reject' ? (
-                  <ActivityIndicator size="small" color={COLORS.error} />
+                <Ionicons name="star" size={14} color={COLORS.warning} />
+                {ratingLoading ? (
+                  <Text style={styles.requestRatingChipText}>Loading…</Text>
                 ) : (
-                  <>
-                    <Ionicons name="close-circle-outline" size={18} color={COLORS.error} />
-                    <Text style={styles.requestRejectText}>Reject</Text>
-                  </>
+                  <Text style={styles.requestRatingChipText}>
+                    {avgRating != null ? `${avgRating.toFixed(1)} rating` : 'View ratings'}
+                    {ratingCount > 0 ? ` · ${ratingCount} reviews` : ''}
+                  </Text>
                 )}
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.requestApproveBtn}
-                onPress={() => void handleRequestAction('approve')}
-                activeOpacity={0.85}
-                disabled={requestActionLoading != null}
-              >
-                {requestActionLoading === 'approve' ? (
-                  <ActivityIndicator size="small" color={COLORS.white} />
-                ) : (
-                  <>
-                    <Ionicons name="checkmark-circle-outline" size={18} color={COLORS.white} />
-                    <Text style={styles.requestApproveText}>Approve</Text>
-                  </>
-                )}
+                <Ionicons name="chevron-forward" size={16} color={COLORS.textMuted} />
               </TouchableOpacity>
             </View>
 
-            <TouchableOpacity
-              style={styles.requestChatBtn}
-              onPress={openChat}
-              activeOpacity={0.7}
-              accessibilityRole="button"
-              accessibilityLabel="Chat with passenger"
-            >
-              <Ionicons name="chatbubble-ellipses-outline" size={22} color={COLORS.primary} />
-              <Text style={styles.requestChatBtnText}>Chat</Text>
-            </TouchableOpacity>
+            <View style={styles.requestSectionCard}>
+              <Text style={styles.requestSectionTitle}>Requested route</Text>
+              <View style={styles.requestRouteTimeline}>
+                <View style={styles.requestRouteTimelineRail}>
+                  <View style={[styles.requestRouteDot, styles.requestRouteDotPickup]} />
+                  <View style={styles.requestRouteDash} />
+                  <View style={[styles.requestRouteDot, styles.requestRouteDotDrop]} />
+                </View>
+                <View style={styles.requestRouteTimelineBody}>
+                  <View>
+                    <Text style={styles.requestRouteKind}>Pickup</Text>
+                    <Text style={styles.requestRouteLine}>{pickup}</Text>
+                  </View>
+                  <View style={styles.requestRouteStopGap}>
+                    <Text style={styles.requestRouteKind}>Drop-off</Text>
+                    <Text style={styles.requestRouteLine}>{drop}</Text>
+                  </View>
+                </View>
+              </View>
+            </View>
+
+            <View style={styles.requestSummaryRow}>
+              <View style={styles.requestSummaryCard}>
+                <View style={styles.requestSummaryIconCircle}>
+                  <Ionicons name="people-outline" size={18} color={COLORS.primary} />
+                </View>
+                <Text style={styles.requestSummaryLabel}>Seats</Text>
+                <Text style={styles.requestSummaryValue}>
+                  {booking.seats} {booking.seats === 1 ? 'passenger' : 'passengers'}
+                </Text>
+              </View>
+              <View style={styles.requestSummaryCard}>
+                <View style={[styles.requestSummaryIconCircle, styles.requestSummaryIconCircleMuted]}>
+                  <Ionicons name="wallet-outline" size={18} color="#c2410c" />
+                </View>
+                <Text style={styles.requestSummaryLabel}>If approved</Text>
+                <Text style={styles.requestSummaryValue}>{totalPriceText}</Text>
+              </View>
+            </View>
           </>
         ) : (
           <>
@@ -466,6 +462,58 @@ export default function BookPassengerDetailScreen(): React.JSX.Element {
           </>
         )}
       </ScrollView>
+
+      {isRequestDetail ? (
+        <View
+          style={[
+            styles.requestFooter,
+            { paddingBottom: Math.max(insets.bottom, 12) },
+          ]}
+        >
+          <View style={styles.requestActionsRow}>
+            <TouchableOpacity
+              style={styles.requestRejectBtn}
+              onPress={() => void handleRequestAction('reject')}
+              activeOpacity={0.85}
+              disabled={requestActionLoading != null}
+            >
+              {requestActionLoading === 'reject' ? (
+                <ActivityIndicator size="small" color={COLORS.error} />
+              ) : (
+                <>
+                  <Ionicons name="close-circle-outline" size={20} color={COLORS.error} />
+                  <Text style={styles.requestRejectText}>Decline</Text>
+                </>
+              )}
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.requestApproveBtn}
+              onPress={() => void handleRequestAction('approve')}
+              activeOpacity={0.85}
+              disabled={requestActionLoading != null}
+            >
+              {requestActionLoading === 'approve' ? (
+                <ActivityIndicator size="small" color={COLORS.white} />
+              ) : (
+                <>
+                  <Ionicons name="checkmark-circle" size={20} color={COLORS.white} />
+                  <Text style={styles.requestApproveText}>Approve</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          </View>
+          <TouchableOpacity
+            style={styles.requestFooterChat}
+            onPress={openChat}
+            activeOpacity={0.7}
+            accessibilityRole="button"
+            accessibilityLabel="Message passenger"
+          >
+            <Ionicons name="chatbubble-ellipses-outline" size={20} color={COLORS.primary} />
+            <Text style={styles.requestFooterChatText}>Message passenger</Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
     </SafeAreaView>
   );
 }
@@ -475,25 +523,43 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: COLORS.background,
   },
+  safeRequest: {
+    backgroundColor: COLORS.backgroundSecondary,
+  },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: COLORS.border,
+    backgroundColor: COLORS.background,
+  },
+  headerSide: {
+    width: 40,
+    justifyContent: 'center',
   },
   headerBack: {
     padding: 4,
+  },
+  headerTitleCol: {
+    flex: 1,
+    minWidth: 0,
+    alignItems: 'center',
   },
   headerTitle: {
     fontSize: 17,
     fontWeight: '700',
     color: COLORS.text,
+    textAlign: 'center',
   },
-  headerSpacer: {
-    width: 32,
+  headerSubtitle: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: COLORS.textMuted,
+    marginTop: 2,
+    textAlign: 'center',
+    paddingHorizontal: 4,
   },
   scroll: {
     flex: 1,
@@ -503,12 +569,9 @@ const styles = StyleSheet.create({
     paddingTop: 20,
     paddingBottom: 24,
   },
-  requestTitle: {
-    fontSize: 20,
-    fontWeight: '800',
-    color: COLORS.text,
-    marginBottom: 10,
-    lineHeight: 26,
+  scrollContentRequest: {
+    paddingTop: 12,
+    paddingBottom: 8,
   },
   requestFullScreenLoader: {
     flex: 1,
@@ -522,36 +585,296 @@ const styles = StyleSheet.create({
     color: COLORS.textSecondary,
     fontWeight: '600',
   },
-  requestProfileCard: {
-    backgroundColor: COLORS.white,
-    borderWidth: 1,
-    borderColor: COLORS.borderLight,
-    borderRadius: 12,
-    padding: 12,
+  requestStatusPill: {
     flexDirection: 'row',
     alignItems: 'center',
+    alignSelf: 'center',
+    gap: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 999,
+    backgroundColor: 'rgba(245, 158, 11, 0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(245, 158, 11, 0.35)',
+    marginBottom: 16,
+  },
+  requestStatusPillText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#92400e',
+    flexShrink: 1,
+  },
+  requestHeroCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: COLORS.borderLight,
+    paddingVertical: 20,
+    paddingHorizontal: 16,
+    marginBottom: 12,
+    alignItems: 'center',
+    ...Platform.select({
+      ios: {
+        shadowColor: '#0f172a',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.06,
+        shadowRadius: 12,
+      },
+      android: { elevation: 2 },
+    }),
+  },
+  requestHeroAvatarBlock: {
+    position: 'relative',
     marginBottom: 12,
   },
-  requestProfileTextCol: {
-    flex: 1,
-    minWidth: 0,
+  requestHeroAvatarRing: {
+    borderRadius: 48,
+    padding: 3,
+    borderWidth: 2,
+    borderColor: 'rgba(41, 190, 139, 0.35)',
+    backgroundColor: COLORS.white,
   },
-  requestProfileName: {
-    fontSize: 18,
-    fontWeight: '700',
+  requestAgeChip: {
+    position: 'absolute',
+    right: -4,
+    bottom: 2,
+    minWidth: 28,
+    paddingVertical: 3,
+    paddingHorizontal: 8,
+    borderRadius: 10,
+    backgroundColor: COLORS.text,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: COLORS.white,
+  },
+  requestAgeChipText: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: COLORS.white,
+  },
+  requestHeroName: {
+    fontSize: 20,
+    fontWeight: '800',
     color: COLORS.text,
+    textAlign: 'center',
+    lineHeight: 26,
+    marginBottom: 10,
+    paddingHorizontal: 8,
   },
-  requestRatingRow: {
+  requestRatingChip: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    marginTop: 6,
-    alignSelf: 'flex-start',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    backgroundColor: COLORS.backgroundSecondary,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    alignSelf: 'stretch',
+    marginHorizontal: 4,
   },
-  requestRatingText: {
-    fontSize: 12,
+  requestRatingChipText: {
+    flex: 1,
+    fontSize: 13,
     fontWeight: '600',
     color: COLORS.textSecondary,
+  },
+  requestSectionCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: COLORS.borderLight,
+    padding: 16,
+    marginBottom: 12,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#0f172a',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.04,
+        shadowRadius: 8,
+      },
+      android: { elevation: 1 },
+    }),
+  },
+  requestSectionTitle: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: COLORS.textMuted,
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+    marginBottom: 14,
+  },
+  requestRouteTimeline: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+  },
+  requestRouteTimelineRail: {
+    width: 14,
+    alignItems: 'center',
+    alignSelf: 'stretch',
+    marginRight: 12,
+    paddingTop: 4,
+  },
+  requestRouteDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    borderWidth: 2,
+    backgroundColor: COLORS.white,
+  },
+  requestRouteDotPickup: {
+    borderColor: COLORS.primary,
+  },
+  requestRouteDotDrop: {
+    borderColor: COLORS.error,
+  },
+  requestRouteDash: {
+    width: 2,
+    flex: 1,
+    minHeight: 20,
+    marginVertical: 4,
+    backgroundColor: COLORS.border,
+    borderRadius: 1,
+  },
+  requestRouteTimelineBody: {
+    flex: 1,
+    minWidth: 0,
+  },
+  requestRouteKind: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: COLORS.textMuted,
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
+    marginBottom: 4,
+  },
+  requestRouteLine: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: COLORS.text,
+    lineHeight: 21,
+  },
+  requestRouteStopGap: {
+    marginTop: 16,
+  },
+  requestSummaryRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 8,
+  },
+  requestSummaryCard: {
+    flex: 1,
+    backgroundColor: COLORS.white,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: COLORS.borderLight,
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+    alignItems: 'flex-start',
+  },
+  requestSummaryIconCircle: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(41, 190, 139, 0.12)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 8,
+  },
+  requestSummaryIconCircleMuted: {
+    backgroundColor: 'rgba(234, 88, 12, 0.12)',
+  },
+  requestSummaryLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.textMuted,
+    letterSpacing: 0.3,
+    textTransform: 'uppercase',
+    marginBottom: 4,
+  },
+  requestSummaryValue: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: COLORS.text,
+    lineHeight: 22,
+  },
+  requestFooter: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: COLORS.border,
+    backgroundColor: COLORS.background,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#0f172a',
+        shadowOffset: { width: 0, height: -3 },
+        shadowOpacity: 0.06,
+        shadowRadius: 8,
+      },
+      android: { elevation: 8 },
+    }),
+  },
+  requestActionsRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  requestRejectBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.white,
+    paddingVertical: 14,
+    minHeight: 50,
+  },
+  requestRejectText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: COLORS.text,
+  },
+  requestApproveBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    borderRadius: 14,
+    backgroundColor: COLORS.primary,
+    paddingVertical: 14,
+    minHeight: 50,
+    ...Platform.select({
+      ios: {
+        shadowColor: COLORS.primary,
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.28,
+        shadowRadius: 8,
+      },
+      android: { elevation: 3 },
+    }),
+  },
+  requestApproveText: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: COLORS.white,
+  },
+  requestFooterChat: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 14,
+    marginTop: 4,
+  },
+  requestFooterChatText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: COLORS.primary,
   },
   requestRouteCard: {
     borderRadius: 12,
@@ -576,88 +899,6 @@ const styles = StyleSheet.create({
     color: COLORS.text,
     marginTop: 4,
     lineHeight: 21,
-  },
-  requestMetaRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 14,
-  },
-  requestMetaItem: {
-    flex: 1,
-    borderRadius: 12,
-    backgroundColor: '#eef2ff',
-    paddingVertical: 12,
-    paddingHorizontal: 10,
-  },
-  requestMetaItemPayment: {
-    backgroundColor: '#fff7ed',
-  },
-  requestMetaLabel: {
-    fontSize: 12,
-    fontWeight: '800',
-    color: COLORS.textSecondary,
-    letterSpacing: 0.3,
-  },
-  requestMetaValue: {
-    fontSize: 15,
-    fontWeight: '800',
-    color: COLORS.text,
-    marginTop: 4,
-    lineHeight: 20,
-  },
-  requestActionsRow: {
-    flexDirection: 'row',
-    gap: 10,
-    marginTop: 6,
-  },
-  requestRejectBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    backgroundColor: COLORS.white,
-    paddingVertical: 12,
-  },
-  requestRejectText: {
-    fontSize: 17,
-    fontWeight: '700',
-    color: COLORS.text,
-  },
-  requestApproveBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    borderRadius: 12,
-    backgroundColor: '#27c8b7',
-    paddingVertical: 12,
-  },
-  requestApproveText: {
-    fontSize: 17,
-    fontWeight: '800',
-    color: COLORS.white,
-  },
-  requestChatBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 10,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: COLORS.primary,
-    backgroundColor: 'rgba(0, 150, 135, 0.08)',
-    paddingVertical: 12,
-    marginTop: 12,
-  },
-  requestChatBtnText: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: COLORS.primary,
   },
   profileRow: {
     flexDirection: 'row',

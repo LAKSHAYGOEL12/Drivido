@@ -25,11 +25,45 @@ function seatPhrase(n: number): string {
 
 /** Embedded `bookingHistory[]` snapshots (no ride-level events): best-effort same wording as owner lines. */
 function humanizeEmbeddedBookingSnapshot(
-  h: { seats: number; status?: string },
+  h: {
+    seats: number;
+    status?: string;
+    displayKey?: string;
+    displayParams?: { seats?: number; reason?: string };
+  },
   prev?: { seats: number; status?: string }
 ): string {
+  const dk = String(h.displayKey ?? '').trim().toLowerCase();
+  const dp = h.displayParams;
+  const nFromParams =
+    typeof dp?.seats === 'number' && Number.isFinite(dp.seats) ? Math.max(0, Math.floor(dp.seats)) : undefined;
+  const n = nFromParams ?? Math.max(0, Math.floor(Number(h.seats) || 0));
+  if (dk === 'booked') return `Booked ${seatPhrase(n)}`;
+  if (dk === 'rebooked') return `Rebooked ${seatPhrase(n)}`;
+  if (dk === 'requested' && n > 0) return `Requested ${seatPhrase(n)}`;
+  if (dk === 'approved' && n > 0) return `Approved ${seatPhrase(n)}`;
+  if (dk === 'full_cancel_passenger' || dk === 'full_cancel_system') {
+    const r = typeof dp?.reason === 'string' ? dp.reason.trim() : '';
+    return r ? `Cancelled (${r})` : 'Cancelled all seats';
+  }
+  if (dk === 'seats_reduced' || dk === 'seat_cancelled') {
+    if (n <= 0 && prev) {
+      const prevSeats = Math.max(0, Math.floor(Number(prev.seats) || 0));
+      if (prevSeats > 0) return `Cancelled ${seatPhrase(prevSeats)}`;
+    }
+    if (prev) {
+      const prevSeats = Math.max(0, Math.floor(Number(prev.seats) || 0));
+      const delta = prevSeats - n;
+      if (n === 0 && prevSeats > 0) return 'Cancelled all seats';
+      if (delta > 0) return `Cancelled ${seatPhrase(delta)}`;
+    }
+    return '';
+  }
+  if (dk === 'request_superseded' || dk === 'request_rejected' || dk === 'request_expired' || dk === 'full_cancel_owner') {
+    return '';
+  }
+
   const s = String(h.status ?? '').trim().toLowerCase();
-  const n = Math.max(0, Math.floor(Number(h.seats) || 0));
 
   if (bookingIsCancelledByOwner(h.status)) return '';
 
@@ -77,6 +111,12 @@ function toneAndIconForTitle(title: string): { tone: BookingHistoryTone; icon: B
   }
   if (t.startsWith('rebooked') || t.startsWith('booked')) {
     return { tone: 'success', icon: 'checkmark-circle' };
+  }
+  if (t.startsWith('approved')) {
+    return { tone: 'success', icon: 'checkmark-circle' };
+  }
+  if (t.startsWith('requested')) {
+    return { tone: 'neutral', icon: 'time-outline' };
   }
   return { tone: 'neutral', icon: 'time-outline' };
 }
@@ -162,7 +202,13 @@ export function parseOwnerHistoryLineToTimelineItem(line: string, id: string): B
 }
 
 export function embeddedBookingSnapshotToTimelineItem(
-  h: { seats: number; status?: string; bookedAt?: string },
+  h: {
+    seats: number;
+    status?: string;
+    bookedAt?: string;
+    displayKey?: string;
+    displayParams?: { seats?: number; reason?: string };
+  },
   index: number,
   prev?: { seats: number; status?: string; bookedAt?: string }
 ): BookingHistoryTimelineItem | null {
@@ -184,7 +230,32 @@ export function embeddedBookingSnapshotToTimelineItem(
 
 function isAllowedPassengerHistoryRow(item: BookingHistoryTimelineItem): boolean {
   const t = item.title.trim().toLowerCase();
-  return t.startsWith('booked ') || t.startsWith('rebooked ') || t.startsWith('cancelled ');
+  return (
+    t.startsWith('booked ') ||
+    t.startsWith('rebooked ') ||
+    t.startsWith('cancelled ') ||
+    t.startsWith('requested ') ||
+    t.startsWith('approved ')
+  );
+}
+
+/** Drop back-to-back identical “booked / approved / requested” titles (duplicate embedded snapshots). */
+function collapseConsecutiveDuplicateBookingTitles(items: BookingHistoryTimelineItem[]): BookingHistoryTimelineItem[] {
+  const out: BookingHistoryTimelineItem[] = [];
+  for (const it of items) {
+    const prev = out[out.length - 1];
+    const t = it.title.trim().toLowerCase();
+    const isBookLike =
+      t.startsWith('booked ') ||
+      t.startsWith('rebooked ') ||
+      t.startsWith('approved ') ||
+      t.startsWith('requested ');
+    if (prev && isBookLike && prev.title === it.title) {
+      continue;
+    }
+    out.push(it);
+  }
+  return out;
 }
 
 export function buildBookingHistoryTimelineItems(args: {
@@ -193,16 +264,20 @@ export function buildBookingHistoryTimelineItems(args: {
 }): BookingHistoryTimelineItem[] {
   const lines = (args.ownerBookingHistoryLines ?? []).map((l) => String(l).trim()).filter(Boolean);
   if (lines.length > 0) {
-    return lines
-      .map((line, i) => parseOwnerHistoryLineToTimelineItem(line, `nav-${i}`))
-      .filter(isAllowedPassengerHistoryRow);
+    return collapseConsecutiveDuplicateBookingTitles(
+      lines
+        .map((line, i) => parseOwnerHistoryLineToTimelineItem(line, `nav-${i}`))
+        .filter(isAllowedPassengerHistoryRow)
+    );
   }
   const emb = args.embedded;
   if (Array.isArray(emb) && emb.length > 0) {
-    return emb
-      .map((h, i) => embeddedBookingSnapshotToTimelineItem(h, i, i > 0 ? emb[i - 1] : undefined))
-      .filter((x): x is BookingHistoryTimelineItem => x != null)
-      .filter(isAllowedPassengerHistoryRow);
+    return collapseConsecutiveDuplicateBookingTitles(
+      emb
+        .map((h, i) => embeddedBookingSnapshotToTimelineItem(h, i, i > 0 ? emb[i - 1] : undefined))
+        .filter((x): x is BookingHistoryTimelineItem => x != null)
+        .filter(isAllowedPassengerHistoryRow)
+    );
   }
   return [];
 }
