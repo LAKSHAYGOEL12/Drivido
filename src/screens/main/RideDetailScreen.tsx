@@ -82,9 +82,19 @@ import LoginBottomSheet from '../../components/auth/LoginBottomSheet';
 import UserAvatar from '../../components/common/UserAvatar';
 import { mapRawToBookingRow } from '../../utils/bookingNormalize';
 import {
+  bookingRetryCooldownUserMessage,
+  isBookingRetryCooldownError,
+  isInsufficientSeatsBookingError,
+  isInvalidPreviousBookingError,
   isRouteTimeOverlapBookingError,
   pickApiErrorBodyMessage,
 } from '../../utils/bookingApiErrors';
+import { pickPreviousBookingIdForRetry } from '../../utils/bookingRetry';
+import {
+  readViewerRideBookingEligibility,
+  viewerBookingNotAllowedMessage,
+} from '../../utils/viewerBookingEligibility';
+import * as Crypto from 'expo-crypto';
 import {
   findOverlappingPassengerBookingRide,
   PASSENGER_ALREADY_BOOKED_THIS_RIDE_TOAST,
@@ -120,6 +130,20 @@ function isTooCloseForOwnerRemovePassenger(ride: RideListItem): boolean {
   const msUntil = at.getTime() - Date.now();
   if (msUntil <= 0) return false;
   return msUntil < OWNER_REMOVE_MIN_LEAD_MS;
+}
+
+/**
+ * Owner “remove passenger” sheet — keep title + body separate.
+ * Do not say they can never re-book; retry/eligibility is decided by the backend.
+ */
+function ownerRemovePassengerSheetTitle(passengerLabel: string): string {
+  const name = passengerLabel.trim() || 'passenger';
+  return `Remove ${name} from this ride?`;
+}
+
+function ownerRemovePassengerSheetBody(maxSeats: number): string {
+  const seatWord = maxSeats !== 1 ? 'seats' : 'seat';
+  return `We'll notify them and free their ${seatWord} on this ride.`;
 }
 
 function bookingTimelineMs(b: BookingItem): number {
@@ -343,14 +367,8 @@ function passengerListRowIsTrueRebook(userId: string, allPassengers: BookingItem
   });
 }
 
-/** Prefer backend `showRebookedBadge` when sent; else client heuristic (older APIs). */
+/** SSOT: use API `showRebookedBadge` when present; otherwise legacy client heuristic only. */
 function passengerRowShowRebookedBadge(b: BookingItem, allPassengers: BookingItem[]): boolean {
-  const badgeSrc = String((b as BookingItem & { rebookedBadgeSource?: string }).rebookedBadgeSource ?? '')
-    .trim()
-    .toLowerCase();
-  if (badgeSrc === 'server') {
-    return b.showRebookedBadge === true;
-  }
   if (typeof b.showRebookedBadge === 'boolean') return b.showRebookedBadge;
   return passengerListRowIsTrueRebook((b.userId ?? '').trim(), allPassengers);
 }
@@ -530,6 +548,43 @@ function ownerHistoryLineEligibleForNearDuplicateCollapse(body: string): boolean
   );
 }
 
+/** Same acceptance can surface as both "Booked N" (ride event) and "Rebooked N" (snapshot) — one line, prefer Rebooked. */
+function parseBookedOrRebookedHistoryBody(body: string): { kind: 'booked' | 'rebooked'; seats: number } | null {
+  const m = body.trim().match(/^(booked|rebooked)\s+(\d+)\s+seats?$/i);
+  if (!m) return null;
+  return { kind: m[1].toLowerCase() as 'booked' | 'rebooked', seats: parseInt(m[2], 10) };
+}
+
+function collapseAdjacentBookedThenRebookedSameSeatLines(
+  lineEntries: { line: string; timelineMs: number }[]
+): { line: string; timelineMs: number }[] {
+  if (lineEntries.length < 2) return lineEntries;
+  const sorted = [...lineEntries].sort((a, b) => a.timelineMs - b.timelineMs);
+  const out: { line: string; timelineMs: number }[] = [];
+  for (let i = 0; i < sorted.length; i++) {
+    const cur = sorted[i];
+    const next = sorted[i + 1];
+    if (!next) {
+      out.push(cur);
+      break;
+    }
+    const cb = parseBookedOrRebookedHistoryBody(ownerHistoryLineBodyForDedupe(cur.line));
+    const nb = parseBookedOrRebookedHistoryBody(ownerHistoryLineBodyForDedupe(next.line));
+    if (cb && nb && cb.kind === 'booked' && nb.kind === 'rebooked' && cb.seats === nb.seats) {
+      out.push(next);
+      i += 1;
+      continue;
+    }
+    if (cb && nb && cb.kind === 'rebooked' && nb.kind === 'booked' && cb.seats === nb.seats) {
+      out.push(cur);
+      i += 1;
+      continue;
+    }
+    out.push(cur);
+  }
+  return out;
+}
+
 /** Same logical action often appears twice (live row + ride-level event) with slightly different timestamps. */
 const OWNER_HISTORY_SAME_ACTION_WINDOW_MS = 120_000;
 
@@ -547,6 +602,125 @@ type BookingItemWithRideHistory = BookingItem & {
     isRebook?: boolean;
   };
 };
+
+/**
+ * Updates running “seats currently / last held” from one timeline node (merged row, ride event synthetic,
+ * or embedded snapshot as a lightweight `BookingItem`).
+ */
+function applyHistoryNodeToLastHeldSeats(held: number, h: BookingItem): number {
+  const s = String(h.status ?? '').trim().toLowerCase();
+  if (s === 'pending' || s === 'rejected') return held;
+
+  const dk = String((h as BookingItem & { displayKey?: string }).displayKey ?? '').trim().toLowerCase();
+  if (dk === 'full_cancel_owner' || dk === 'request_superseded' || dk === 'request_rejected' || dk === 'request_expired') {
+    return held;
+  }
+
+  const ev = (h as BookingItemWithRideHistory).rideHistoryEvent;
+  if (ev) {
+    const et = String(ev.eventType ?? '').trim().toLowerCase();
+    const after = Math.max(0, Math.floor(Number(ev.seatsAfter) || 0));
+    const before = Math.max(0, Math.floor(Number(ev.seatsBefore) || 0));
+
+    if (et === 'removed_by_owner' || et === 'cancelled_by_owner' || et === 'owner_removed') {
+      return Math.max(held, before, bookingSeatCount(h), after);
+    }
+    if (et === 'cancelled' || et === 'passenger_cancelled' || et === 'cancelled_by_passenger') {
+      return after;
+    }
+    if (
+      et === 'booked' ||
+      et === 'rebooked' ||
+      et === 'booking_created' ||
+      et === 'approved' ||
+      et === 'request_approved' ||
+      et === 'owner_approved'
+    ) {
+      return Math.max(held, after);
+    }
+    if (
+      et === 'seat_cancelled' ||
+      et === 'seats_cancelled' ||
+      et === 'seats_reduced' ||
+      et === 'partial_cancel' ||
+      et === 'partial_seat_cancel' ||
+      et === 'passenger_seat_cancel' ||
+      et === 'cancel_seats'
+    ) {
+      return after;
+    }
+    return Math.max(held, after > 0 ? after : before);
+  }
+
+  if (bookingIsCancelledByOwner(h.status)) {
+    return Math.max(held, bookingSeatCount(h));
+  }
+  if (bookingIsCancelled(h.status)) {
+    return bookingSeatCount(h);
+  }
+  if (dk === 'seats_reduced' || dk === 'seat_cancelled') {
+    return bookingSeatCount(h);
+  }
+  if (isAcceptedLikeBookingStatus(h.status) || dk === 'booked' || dk === 'rebooked' || dk === 'approved') {
+    const n = bookingSeatCount(h);
+    return n > 0 ? Math.max(held, n) : held;
+  }
+
+  return held;
+}
+
+/**
+ * Last seat count the passenger held in this segment (chronological walk). When the ride uses a server-canonical
+ * timeline, embedded `bookings[].bookingHistory` is not merged into `historyChronological` — we fold those
+ * snapshots in here so seat increases/reductions still affect the number shown beside the passenger.
+ */
+function lastHeldSeatsForOwnerPassengerEntry(args: {
+  historyChronological: BookingItem[];
+  segmentRows: BookingItem[];
+  mergeEmbeddedFromBookings: boolean;
+}): number {
+  const pts: { ms: number; h: BookingItem }[] = [];
+  for (const h of args.historyChronological) {
+    pts.push({ ms: bookingTimelineMs(h), h });
+  }
+  if (args.mergeEmbeddedFromBookings) {
+    for (const row of args.segmentRows) {
+      const bh = row.bookingHistory;
+      if (!Array.isArray(bh)) continue;
+      for (let i = 0; i < bh.length; i++) {
+        const ev = bh[i] as {
+          seats?: number;
+          status?: string;
+          bookedAt?: string;
+          displayKey?: string;
+        };
+        const bat = String(ev.bookedAt ?? '').trim();
+        const ms = bat ? Date.parse(bat) : bookingTimelineMs(row);
+        const seats =
+          typeof ev.seats === 'number' && Number.isFinite(ev.seats) ? Math.max(0, Math.floor(ev.seats)) : 0;
+        const st = String(ev.status ?? 'pending').trim();
+        const dk = typeof ev.displayKey === 'string' ? ev.displayKey.trim() : '';
+        const synthetic = {
+          id: `__emb_seat_${String(row.id ?? 'r').trim()}_${i}`,
+          userId: row.userId,
+          userName: row.userName || 'Passenger',
+          seats,
+          status: st,
+          bookedAt: bat || row.bookedAt,
+          ...(dk ? { displayKey: dk } : {}),
+        } as BookingItem;
+        pts.push({ ms: Number.isFinite(ms) ? ms : bookingTimelineMs(row), h: synthetic });
+      }
+    }
+  }
+  pts.sort((a, b) => (a.ms !== b.ms ? a.ms - b.ms : String(a.h.id ?? '').localeCompare(String(b.h.id ?? ''))));
+
+  let held = 0;
+  for (const { h } of pts) {
+    held = applyHistoryNodeToLastHeldSeats(held, h);
+  }
+  return held;
+}
 
 /**
  * When backend sends `displayKey` / `displayParams` on a timeline event, mirror prior client wording.
@@ -809,6 +983,39 @@ function findBookingHistoryGroupForUser(
   return groups.find((g) => userIdsMatchBookingHistory(g.userId, u));
 }
 
+function eventPassengerListSegmentId(ev: RideBookingHistoryEvent): string {
+  const ext = ev as RideBookingHistoryEvent & { passenger_list_segment_id?: string };
+  return String(ev.passengerListSegmentId ?? ext.passenger_list_segment_id ?? '').trim();
+}
+
+/**
+ * When ride-level events include `passengerListSegmentId`, merge only matching events into that owner row.
+ * If this passenger has multiple list segments on the ride but events are still untagged, do not merge the
+ * full per-user list into every segment (that duplicated prior-segment history in owner row + passenger detail).
+ * Single-segment passengers keep the full untagged list (backward compatible).
+ */
+function rideBookingHistoryGroupsScopedToPassengerListSegment(
+  groups: RideBookingHistoryUserGroup[] | undefined,
+  userId: string,
+  segmentId: string,
+  passengerSegmentCountOnRide: number
+): RideBookingHistoryUserGroup[] | undefined {
+  const sid = (segmentId ?? '').trim();
+  if (!groups?.length || !sid) return groups;
+  const g = findBookingHistoryGroupForUser(groups, userId);
+  if (!g?.events?.length) return groups;
+  const hasTagged = g.events.some((e) => eventPassengerListSegmentId(e) !== '');
+  const multiSegment = passengerSegmentCountOnRide > 1;
+  const nextEvents = hasTagged
+    ? g.events.filter((e) => eventPassengerListSegmentId(e) === sid)
+    : multiSegment
+      ? []
+      : g.events;
+  return groups.map((gr) =>
+    userIdsMatchBookingHistory(gr.userId, userId) ? { ...gr, events: nextEvents } : gr
+  );
+}
+
 /**
  * Parses ride-level `bookingHistory` from GET /api/rides/:id.
  * Supports: `{ userId, events[] }[]`, or a flat `events[]` with `userId` on each row, and several nesting paths.
@@ -867,6 +1074,9 @@ function parseRideBookingHistoryFromApi(
       typeof ordRaw === 'number' && Number.isFinite(ordRaw) ? Math.floor(ordRaw) : undefined;
     const irRaw = e.isRebook ?? e.is_rebook;
     const isRebook = typeof irRaw === 'boolean' ? irRaw : undefined;
+    const plsRaw = e.passengerListSegmentId ?? e.passenger_list_segment_id;
+    const passengerListSegmentId =
+      typeof plsRaw === 'string' && plsRaw.trim() ? plsRaw.trim() : undefined;
 
     return {
       id,
@@ -875,6 +1085,7 @@ function parseRideBookingHistoryFromApi(
       seatsChanged: numFieldLoose(e.seatsChanged ?? e.seats_changed),
       seatsAfter: numFieldLoose(e.seatsAfter ?? e.seats_after),
       createdAt,
+      ...(passengerListSegmentId ? { passengerListSegmentId } : {}),
       ...(displayKey ? { displayKey } : {}),
       ...(displayParams ? { displayParams } : {}),
       ...(countsAsPassengerSeatRelease !== undefined ? { countsAsPassengerSeatRelease } : {}),
@@ -1085,6 +1296,206 @@ function mergeRideLevelBookingHistoryIntoTimeline(
   return [...byId.values()];
 }
 
+/**
+ * Full owner removal of a confirmed passenger (no partial) — **legacy-only** client segment split when
+ * `passenger_list_segment_id` is missing or all `legacy-*`. Prefer backend segment ids + `status_reason` SSOT.
+ * Do not duplicate backend alias lists here — canonical removal reason is `owner_removed`; empty = legacy omit.
+ */
+function isFullOwnerRemovalClosingSegment(row: BookingItem): boolean {
+  if (!bookingIsCancelledByOwner(row.status)) return false;
+  if (
+    Boolean((row as BookingItem & { ownerPartialSeatRemoval?: boolean }).ownerPartialSeatRemoval)
+  ) {
+    return false;
+  }
+  if (bookingRowHoldsOccupiedSeats(row)) return false;
+  const ext = row as BookingItem & { status_reason?: string };
+  const reason = String(row.statusReason ?? ext.status_reason ?? '').trim().toLowerCase();
+  if (reason === '') return true;
+  return reason === 'owner_removed';
+}
+
+/**
+ * One passenger may have multiple `bookings[]` rows. After each full owner removal, start a new segment
+ * so the owner UI shows a separate row for a later booking (not merged with "Rebooked" on one line).
+ * Used only when API omits real `passenger_list_segment_id` or sends only `legacy-*` synthetic ids.
+ */
+function splitPassengerRowsIntoOwnerListSegments(rows: BookingItem[]): BookingItem[][] {
+  if (rows.length === 0) return [];
+  const sorted = [...rows].sort((a, b) => bookingTimelineMs(a) - bookingTimelineMs(b));
+  const segments: BookingItem[][] = [];
+  let current: BookingItem[] = [];
+  for (const row of sorted) {
+    current.push(row);
+    if (isFullOwnerRemovalClosingSegment(row)) {
+      segments.push(current);
+      current = [];
+    }
+  }
+  if (current.length > 0) segments.push(current);
+  return segments;
+}
+
+function pickPassengerListSegmentIdFromRow(row: BookingItem): string {
+  const ext = row as BookingItem & { passenger_list_segment_id?: string };
+  return String(row.passengerListSegmentId ?? ext.passenger_list_segment_id ?? '').trim();
+}
+
+/** True when every row has a legacy synthetic segment (one per old doc) — keep client split for sane grouping. */
+function passengerOwnerListSegmentsAreLegacyOnly(rows: BookingItem[]): boolean {
+  if (rows.length === 0) return false;
+  for (const r of rows) {
+    const s = pickPassengerListSegmentIdFromRow(r);
+    if (!s) return true;
+    if (!s.toLowerCase().startsWith('legacy-')) return false;
+  }
+  return true;
+}
+
+/**
+ * Owner list segments: prefer backend `passenger_list_segment_id` grouping; else legacy-only or missing → client split.
+ */
+function buildOwnerListSegmentsForUserBookings(rows: BookingItem[]): BookingItem[][] {
+  if (rows.length === 0) return [];
+  const hasAnySegmentId = rows.some((r) => pickPassengerListSegmentIdFromRow(r).length > 0);
+  if (!hasAnySegmentId || passengerOwnerListSegmentsAreLegacyOnly(rows)) {
+    return splitPassengerRowsIntoOwnerListSegments(rows);
+  }
+  const bySeg = new Map<string, BookingItem[]>();
+  for (const r of rows) {
+    const sid =
+      pickPassengerListSegmentIdFromRow(r) ||
+      `fallback-row:${(r.id ?? '').trim() || String(bookingTimelineMs(r))}`;
+    const arr = bySeg.get(sid) ?? [];
+    arr.push(r);
+    bySeg.set(sid, arr);
+  }
+  const ordered = [...bySeg.entries()].sort((a, b) => {
+    const minA = Math.min(...a[1].map((x) => bookingTimelineMs(x)));
+    const minB = Math.min(...b[1].map((x) => bookingTimelineMs(x)));
+    if (minA !== minB) return minA - minB;
+    return a[0].localeCompare(b[0]);
+  });
+  return ordered.map(([, segRows]) => segRows);
+}
+
+function buildOwnerListSegmentSummary(
+  userId: string,
+  segmentRows: BookingItem[],
+  rideGroups: RideBookingHistoryUserGroup[] | undefined,
+  serverCanonicalTimeline: boolean,
+  /** When true (backend `passenger_list_segment_id` grouping): no ride-wide timeline for this user — history/seats stay in this segment only. */
+  segmentScopedHistory: boolean,
+  /** How many owner-list segments this passenger has on this ride (for untagged ride-level event merge). */
+  passengerSegmentCountOnRide: number
+): { primary: BookingItem; historyChronological: BookingItem[] } | null {
+  const uid = userId.trim();
+  const newestFirst = [...segmentRows].sort((a, b) => bookingTimelineMs(b) - bookingTimelineMs(a));
+  const backendRemovablePrimary = newestFirst.find((row) => bookingFlag(row, 'canOwnerRemove') === true);
+  const primary = backendRemovablePrimary ?? pickOwnerPrimaryBookingRow(newestFirst);
+  if (!primary) return null;
+  const scopedGroups = segmentScopedHistory
+    ? rideBookingHistoryGroupsScopedToPassengerListSegment(
+        rideGroups,
+        uid,
+        pickPassengerListSegmentIdFromRow(primary),
+        passengerSegmentCountOnRide
+      )
+    : rideGroups;
+  const mergedTimeline = mergeRideLevelBookingHistoryIntoTimeline(
+    uid,
+    segmentRows,
+    primary,
+    scopedGroups,
+    serverCanonicalTimeline
+  );
+  const historyChronological = [...mergedTimeline].sort((a, b) => bookingTimelineMs(a) - bookingTimelineMs(b));
+  return { primary, historyChronological };
+}
+
+function ownerPassengerSegmentShouldAppearInOwnerList(args: {
+  isRequestBookingMode: boolean;
+  userId: string;
+  segmentRows: BookingItem[];
+  primary: BookingItem;
+  historyChronological: BookingItem[];
+  rideBookingHistoryGroups: RideBookingHistoryUserGroup[] | undefined;
+}): boolean {
+  const {
+    isRequestBookingMode,
+    userId,
+    segmentRows,
+    primary,
+    historyChronological,
+    rideBookingHistoryGroups,
+  } = args;
+  const uid = (userId ?? '').trim();
+  const mine = segmentRows;
+
+  if (isRequestBookingMode) {
+    return requestModeOwnerPassengerListedFromBackendBookingsOnly(
+      segmentRows,
+      uid,
+      primary,
+      rideBookingHistoryGroups
+    );
+  }
+
+  if (
+    bookingFlag(primary, 'isPendingRequest') === true &&
+    bookingFlag(primary, 'isAcceptedPassenger') !== true
+  ) {
+    return false;
+  }
+  const primaryStatus = String(primary.status ?? '').trim().toLowerCase();
+  if (isPendingLikeBookingStatus(primaryStatus) || primaryStatus === 'rejected') return false;
+
+  if (bookingIsCancelled(primary.status) && !bookingIsCancelledByOwner(primary.status)) return true;
+
+  if (
+    mine.some(
+      (r) =>
+        bookingFlag(r, 'isPendingRequest') === true && bookingFlag(r, 'isAcceptedPassenger') !== true
+    ) &&
+    !mine.some(
+      (r) =>
+        bookingFlag(r, 'isAcceptedPassenger') === true ||
+        (bookingRowHoldsOccupiedSeats(r) &&
+          !isPendingLikeBookingStatus(String(r.status ?? '').trim().toLowerCase()) &&
+          String(r.status ?? '').trim().toLowerCase() !== 'rejected')
+    )
+  ) {
+    return false;
+  }
+
+  for (const r of mine) {
+    if (bookingFlag(r, 'isAcceptedPassenger') === true && bookingSeatCount(r) > 0) return true;
+    const rs = String(r.status ?? '').trim().toLowerCase();
+    if (bookingRowHoldsOccupiedSeats(r) && !isPendingLikeBookingStatus(rs) && rs !== 'rejected') return true;
+  }
+
+  for (const h of historyChronological) {
+    if (bookingFlag(h, 'isPendingRequest') === true) continue;
+    const s = String(h.status ?? '').trim().toLowerCase();
+    if (s === '' || isPendingLikeBookingStatus(s) || s === 'rejected') continue;
+    if (bookingSeatCount(h) <= 0) continue;
+    if (isAcceptedLikeBookingStatus(s)) return true;
+    if (bookingIsCancelledByOwner(h.status)) return true;
+    if (
+      s === 'seats_reduced' ||
+      s === 'seat_reduced' ||
+      s === 'partial_cancel' ||
+      s === 'partial_cancellation' ||
+      s === 'seat_cancelled' ||
+      s === 'seats_cancelled'
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function rideDetailNumericField(v: unknown): number | undefined {
   if (typeof v === 'number' && Number.isFinite(v)) return v;
   if (typeof v === 'string' && v.trim() !== '') {
@@ -1247,7 +1658,42 @@ export default function RideDetailScreen(): React.JSX.Element {
   const currentUserId = (user?.id ?? '').trim();
   const currentUserName = (user?.name ?? '').trim();
   const myPassengerBooking = pickPreferredBookingForUser(passengers, currentUserId);
-  const mergedBookingStatus = ride.myBookingStatus;
+  const mergedBookingStatus = ride.myBookingStatus ?? ride.my_booking_status ?? undefined;
+
+  const bookingModeSource = ride as RideListItem & {
+    bookingMode?: string;
+    booking_mode?: string;
+    instantBooking?: boolean;
+    instant_booking?: boolean;
+  };
+  const bookingModeRaw = String(
+    bookingModeSource.bookingMode ??
+      bookingModeSource.booking_mode ??
+      (
+        bookingModeSource.instantBooking === false || bookingModeSource.instant_booking === false
+          ? 'request'
+          : 'instant'
+      )
+  ).trim().toLowerCase();
+  const isRequestBookingMode = bookingModeRaw === 'request';
+  const viewerBookingElig = useMemo(() => readViewerRideBookingEligibility(ride), [ride]);
+  const serverAllowsPassengerBookAttempt =
+    viewerBookingElig.fromServer &&
+    (isRequestBookingMode ? viewerBookingElig.canRequest : viewerBookingElig.canBook);
+  /**
+   * List `bookings[]` can lag behind ride-level `my_booking_status` / `viewer_booking_context` after owner
+   * removal. When SSOT says may book and merged or preferred row is already terminal-cancelled, do not treat
+   * a stale non-cancelled row as an active seat for footer actions.
+   */
+  const mergedTerminalCancelled =
+    mergedBookingStatus != null &&
+    String(mergedBookingStatus).trim() !== '' &&
+    bookingIsCancelled(mergedBookingStatus);
+  const preferredRowTerminalCancelled =
+    Boolean(myPassengerBooking) && bookingIsCancelled(String(myPassengerBooking?.status ?? ''));
+  const useEligibilityOverStaleBookingRow =
+    serverAllowsPassengerBookAttempt && (mergedTerminalCancelled || preferredRowTerminalCancelled);
+
   const normalizedMergedBookingStatus = String(mergedBookingStatus ?? '').trim().toLowerCase();
   const hasMergedConfirmedBooking =
     mergedBookingStatus != null &&
@@ -1263,15 +1709,19 @@ export default function RideDetailScreen(): React.JSX.Element {
     myBookingStatusNormalized === 'requested' ||
     myBookingStatusNormalized === 'request_pending' ||
     myBookingStatusNormalized === 'awaiting_approval';
-  const isMyBookingRejected = myBookingStatusNormalized === 'rejected';
+  const isMyBookingRejected =
+    myBookingStatusNormalized === 'rejected' &&
+    !(myPassengerBooking && bookingIsCancelled(myPassengerBooking.status));
   /** Include merged list status so we’re not “not booked” before detail bookings[] loads. Pending is handled separately. */
-  const isBookedByMe = Boolean(
-    (myPassengerBooking &&
-      !bookingIsCancelled(myPassengerBooking.status) &&
-      !isPendingLikeBookingStatus(String(myPassengerBooking.status ?? '').trim().toLowerCase()) &&
-      String(myPassengerBooking.status ?? '').trim().toLowerCase() !== 'rejected') ||
-      hasMergedConfirmedBooking
-  );
+  const isBookedByMe = useEligibilityOverStaleBookingRow
+    ? false
+    : Boolean(
+        (myPassengerBooking &&
+          !bookingIsCancelled(myPassengerBooking.status) &&
+          !isPendingLikeBookingStatus(String(myPassengerBooking.status ?? '').trim().toLowerCase()) &&
+          String(myPassengerBooking.status ?? '').trim().toLowerCase() !== 'rejected') ||
+          hasMergedConfirmedBooking
+      );
   const userHasPassengerBookingRow = passengers.some(
     (b) => (b.userId ?? '').trim() === currentUserId
   );
@@ -1285,7 +1735,7 @@ export default function RideDetailScreen(): React.JSX.Element {
   /** Re-book creates a second row; stale `ride.myBookingStatus` may still say cancelled — don't treat as cancelled if we're actively booked. */
   const isMyBookingCancelled =
     !isBookedByMe &&
-    (bookingIsCancelled(ride.myBookingStatus) ||
+    (bookingIsCancelled(mergedBookingStatus) ||
       passengers.some(
         (b) =>
           (b.userId ?? '').trim() === currentUserId && bookingIsCancelled(b.status)
@@ -1314,59 +1764,81 @@ export default function RideDetailScreen(): React.JSX.Element {
     );
     return Boolean(row && rideHasActivePassengerBookingForUser(row, currentUserId));
   }, [passengerBookedRidesForOverlap, ride.id, currentUserId, isOwnerStrict]);
-  const bookButtonBlocked =
-    bookDisabledByViewerActiveBooking ||
-    alreadyBookedThisRideFromBookedList ||
-    Boolean(overlappingPassengerRide);
   /** Cancelled rides may still be “upcoming” by time — hide edit/cancel anyway. */
   const isOwnerRideCancelled = isOwnerStrict && isRideCancelledByOwner(ride);
-  const bookingModeSource = ride as RideListItem & {
-    bookingMode?: string;
-    booking_mode?: string;
-    instantBooking?: boolean;
-    instant_booking?: boolean;
-  };
-  const bookingModeRaw = String(
-    bookingModeSource.bookingMode ??
-      bookingModeSource.booking_mode ??
-      (
-        bookingModeSource.instantBooking === false || bookingModeSource.instant_booking === false
-          ? 'request'
-          : 'instant'
-      )
-  ).trim().toLowerCase();
-  const isRequestBookingMode = bookingModeRaw === 'request';
+  /** Whole ride pulled by driver — passenger UI must not imply *they* cancelled or offer re-book. */
+  const rideCancelledByOwner = isRideCancelledByOwner(ride);
+  const availableSeatsCount = getRideAvailableSeats(ride);
+  /** Driver removed this passenger (no active seat on this ride). New book/request = new booking row from API. */
+  const passengerRemovedByOwner =
+    !isOwner &&
+    (bookingIsCancelledByOwner(mergedBookingStatus) ||
+      passengers.some(
+        (b) => (b.userId ?? '').trim() === currentUserId && bookingIsCancelledByOwner(b.status)
+      ));
+  /** Driver removed you — copy/hints only; `can_book` / POST success are backend SSOT. */
+  const passengerCanRetryAfterOwnerRemoval =
+    passengerRemovedByOwner && !isBookedByMe && !isMyBookingPending;
+  /** Signed-in + ride includes viewer eligibility → server flags are SSOT for allow/deny. */
+  const signedInPassengerEligibilityFromServer =
+    currentUserId.length > 0 && !isOwnerStrict && viewerBookingElig.fromServer;
+  /** From API booking rows — `previousBookingId` on POST when present. */
+  const previousBookingRowIdForRetry = useMemo(
+    () => pickPreviousBookingIdForRetry(passengers, currentUserId),
+    [passengers, currentUserId]
+  );
+  /** You cancelled your seat (not driver-cancelled) — footer hint / “Book again” label only. */
+  const passengerSelfCancelledBooking =
+    isMyBookingCancelled &&
+    !rideCancelledByOwner &&
+    !bookingIsCancelledByOwner(mergedBookingStatus) &&
+    !passengers.some(
+      (b) =>
+        (b.userId ?? '').trim() === currentUserId && bookingIsCancelledByOwner(b.status)
+    );
+  /** List/search row has no booking rows for viewer and no reject — first book; detail may still omit can_book. */
+  const firstTimePassengerBookListSparse =
+    !userHasPassengerBookingRow && !isMyBookingRejected;
+  /** Backend SSOT: only `can_book` / `can_request` from ride payload (after detail load). */
+  const passengerMayAttemptBookOnRide = serverAllowsPassengerBookAttempt;
+  const bookButtonBlocked = signedInPassengerEligibilityFromServer
+    ? !passengerMayAttemptBookOnRide
+    : Boolean(overlappingPassengerRide) ||
+      ((bookDisabledByViewerActiveBooking || alreadyBookedThisRideFromBookedList) &&
+        !passengerMayAttemptBookOnRide);
   const isOwnerRef = useRef(isOwner);
   const isRequestBookingModeRef = useRef(isRequestBookingMode);
   isOwnerRef.current = isOwner;
   isRequestBookingModeRef.current = isRequestBookingMode;
-
-  /** Whole ride pulled by driver — passenger UI must not imply *they* cancelled or offer re-book. */
-  const rideCancelledByOwner = isRideCancelledByOwner(ride);
-  const availableSeatsCount = getRideAvailableSeats(ride);
-  /** Driver removed this passenger from the booking — they must not re-book this ride. */
-  const passengerRemovedByOwner =
-    !isOwner &&
-    (bookingIsCancelledByOwner(ride.myBookingStatus) ||
-      passengers.some(
-        (b) => (b.userId ?? '').trim() === currentUserId && bookingIsCancelledByOwner(b.status)
-      ));
   const showOwnerFixedActions = isOwnerStrict && !isPastRide && !isOwnerRideCancelled;
   const showPassengerCancelFixedAction =
     !isOwner && isBookedByMe && !isPastRide && !rideCancelledByOwner;
   const showPassengerPendingFixedAction =
     !isOwner && isMyBookingPending && !isPastRide && !rideCancelledByOwner;
-  const showPassengerRejectedFixedAction =
-    !isOwner && isMyBookingRejected && !isPastRide && !rideCancelledByOwner;
+  /**
+   * Signed-in: wait for first GET /rides/:id (avoids flashing before payload). Show Book only when backend
+   * says `can_book` / `can_request`, or first-time sparse list before eligibility arrives — no client-side rebook override.
+   */
   const showPassengerBookFixedAction =
     !isOwner &&
     !isPastRide &&
     !rideCancelledByOwner &&
     !isBookedByMe &&
     !isMyBookingPending &&
-    !isMyBookingRejected &&
-    !passengerRemovedByOwner &&
-    availableSeatsCount > 0;
+    availableSeatsCount > 0 &&
+    (currentUserId.length > 0
+      ? detailFresh &&
+        ((viewerBookingElig.fromServer && serverAllowsPassengerBookAttempt) ||
+          (!viewerBookingElig.fromServer && firstTimePassengerBookListSparse))
+      : !isMyBookingRejected);
+  /** Static “rejected” strip only when we are not showing the primary Book / Book again action. */
+  const showPassengerRejectedFixedAction =
+    !isOwner &&
+    isMyBookingRejected &&
+    !isPastRide &&
+    !rideCancelledByOwner &&
+    !serverAllowsPassengerBookAttempt &&
+    !showPassengerBookFixedAction;
   const showOwnerPastRepublishFixedAction = isOwnerStrict && (isPastRide || isOwnerRideCancelled);
   const showFixedActionFooter =
     showOwnerFixedActions ||
@@ -1375,8 +1847,11 @@ export default function RideDetailScreen(): React.JSX.Element {
     showPassengerPendingFixedAction ||
     showPassengerRejectedFixedAction ||
     showPassengerBookFixedAction;
-  const passengerSelfCancelledBooking =
-    isMyBookingCancelled && !rideCancelledByOwner && !passengerRemovedByOwner;
+  const showRebookActionLabels =
+    passengerSelfCancelledBooking ||
+    passengerCanRetryAfterOwnerRemoval ||
+    Boolean(previousBookingRowIdForRetry?.trim()) ||
+    isMyBookingRejected;
 
   const pendingSeatRequests = seatRequests.filter((b) => {
     const flagged = bookingFlag(b, 'isPendingRequest');
@@ -1502,75 +1977,119 @@ export default function RideDetailScreen(): React.JSX.Element {
     );
     return summaries;
   }, [passengers, rideBookingHistoryGroups, ride.bookingHistoryMeta]);
-  const ownerPassengerSummariesForDisplay = useMemo(() => {
-    return perUserPassengerSummaries.filter(({ userId, historyChronological, primary }) => {
-      if (isRequestBookingMode) {
-        return requestModeOwnerPassengerListedFromBackendBookingsOnly(
-          passengers,
-          userId,
+  /** Owner “Passengers” rows: group by `passenger_list_segment_id` when backend sends real segments; else legacy/missing → client split after full owner removal. */
+  const ownerPassengerDisplayEntries = useMemo(() => {
+    const serverCanonTimeline = rideUsesServerCanonicalBookingHistory(ride.bookingHistoryMeta);
+    const byUser = new Map<string, BookingItem[]>();
+    const noUserId: BookingItem[] = [];
+    for (const p of passengers) {
+      const uid = (p.userId ?? '').trim();
+      if (!uid) {
+        noUserId.push(p);
+        continue;
+      }
+      const list = byUser.get(uid) ?? [];
+      list.push(p);
+      byUser.set(uid, list);
+    }
+
+    const entries: Array<{
+      listKey: string;
+      userId: string;
+      segmentIndex: number;
+      segmentCount: number;
+      primary: BookingItem;
+      historyChronological: BookingItem[];
+      segmentRows: BookingItem[];
+    }> = [];
+
+    for (const orphan of noUserId) {
+      const built = buildOwnerListSegmentSummary(
+        '',
+        [orphan],
+        rideBookingHistoryGroups,
+        serverCanonTimeline,
+        false,
+        1
+      );
+      if (!built) continue;
+      const { primary, historyChronological } = built;
+      if (
+        ownerPassengerSegmentShouldAppearInOwnerList({
+          isRequestBookingMode,
+          userId: '',
+          segmentRows: [orphan],
           primary,
-          rideBookingHistoryGroups
+          historyChronological,
+          rideBookingHistoryGroups,
+        })
+      ) {
+        entries.push({
+          listKey: `orphan:${(primary.id ?? '').trim() || 'row'}`,
+          userId: '',
+          segmentIndex: 0,
+          segmentCount: 1,
+          primary,
+          historyChronological,
+          segmentRows: [orphan],
+        });
+      }
+    }
+
+    for (const [uid, list] of byUser) {
+      const serverGroupedForUser = !passengerOwnerListSegmentsAreLegacyOnly(list);
+      const segments = buildOwnerListSegmentsForUserBookings(list);
+      let segIdx = 0;
+      for (const seg of segments) {
+        const built = buildOwnerListSegmentSummary(
+          uid,
+          seg,
+          rideBookingHistoryGroups,
+          serverCanonTimeline,
+          serverGroupedForUser,
+          segments.length
         );
-      }
-
-      // Instant booking / non-request: keep merged-timeline + occupancy rules for audit edge cases.
-      if (
-        bookingFlag(primary, 'isPendingRequest') === true &&
-        bookingFlag(primary, 'isAcceptedPassenger') !== true
-      ) {
-        return false;
-      }
-      const primaryStatus = String(primary.status ?? '').trim().toLowerCase();
-      if (isPendingLikeBookingStatus(primaryStatus) || primaryStatus === 'rejected') return false;
-
-      if (bookingIsCancelled(primary.status) && !bookingIsCancelledByOwner(primary.status)) return true;
-
-      const uid = (userId ?? '').trim();
-      const mine = uid ? passengers.filter((p) => (p.userId ?? '').trim() === uid) : [];
-      if (
-        mine.some(
-          (r) =>
-            bookingFlag(r, 'isPendingRequest') === true && bookingFlag(r, 'isAcceptedPassenger') !== true
-        ) &&
-        !mine.some(
-          (r) =>
-            bookingFlag(r, 'isAcceptedPassenger') === true ||
-            (bookingRowHoldsOccupiedSeats(r) &&
-              !isPendingLikeBookingStatus(String(r.status ?? '').trim().toLowerCase()) &&
-              String(r.status ?? '').trim().toLowerCase() !== 'rejected')
-        )
-      ) {
-        return false;
-      }
-
-      for (const r of mine) {
-        if (bookingFlag(r, 'isAcceptedPassenger') === true && bookingSeatCount(r) > 0) return true;
-        const rs = String(r.status ?? '').trim().toLowerCase();
-        if (bookingRowHoldsOccupiedSeats(r) && !isPendingLikeBookingStatus(rs) && rs !== 'rejected') return true;
-      }
-
-      for (const h of historyChronological) {
-        if (bookingFlag(h, 'isPendingRequest') === true) continue;
-        const s = String(h.status ?? '').trim().toLowerCase();
-        if (s === '' || isPendingLikeBookingStatus(s) || s === 'rejected') continue;
-        if (bookingSeatCount(h) <= 0) continue;
-        if (isAcceptedLikeBookingStatus(s)) return true;
-        if (bookingIsCancelledByOwner(h.status)) return true;
-        if (
-          s === 'seats_reduced' ||
-          s === 'seat_reduced' ||
-          s === 'partial_cancel' ||
-          s === 'partial_cancellation' ||
-          s === 'seat_cancelled' ||
-          s === 'seats_cancelled'
-        ) {
-          return true;
+        if (!built) {
+          segIdx += 1;
+          continue;
         }
+        const { primary, historyChronological } = built;
+        if (
+          ownerPassengerSegmentShouldAppearInOwnerList({
+            isRequestBookingMode,
+            userId: uid,
+            segmentRows: seg,
+            primary,
+            historyChronological,
+            rideBookingHistoryGroups,
+          })
+        ) {
+          const segKey = pickPassengerListSegmentIdFromRow(primary);
+          const useServerSeg =
+            segKey.length > 0 && !passengerOwnerListSegmentsAreLegacyOnly(list);
+          entries.push({
+            listKey: useServerSeg ? `${uid}:${segKey}` : `${uid}:${(primary.id ?? '').trim() || `seg-${segIdx}`}`,
+            userId: uid,
+            segmentIndex: segIdx,
+            segmentCount: segments.length,
+            primary,
+            historyChronological,
+            segmentRows: seg,
+          });
+        }
+        segIdx += 1;
       }
+    }
 
-      return false;
+    entries.sort((a, b) => {
+      const nameCmp = bookingPassengerDisplayName(a.primary).localeCompare(
+        bookingPassengerDisplayName(b.primary)
+      );
+      if (nameCmp !== 0) return nameCmp;
+      return bookingTimelineMs(a.primary) - bookingTimelineMs(b.primary);
     });
-  }, [perUserPassengerSummaries, passengers, isRequestBookingMode]);
+    return entries;
+  }, [passengers, rideBookingHistoryGroups, ride.bookingHistoryMeta, isRequestBookingMode]);
 
   /** Passenger detail only sees `booking.bookingHistory` on one row — pass merged ride timeline from here. */
   const computeOwnerBookingHistoryLinesForPassenger = useCallback(
@@ -1582,12 +2101,13 @@ export default function RideDetailScreen(): React.JSX.Element {
         rideBookingHistoryGroups
       );
       const sorted = [...rows].sort((a, b) => bookingTimelineMs(a) - bookingTimelineMs(b));
-      const lineEntries = sorted
+      let lineEntries = sorted
         .map((h) => ({
           line: formatOwnerBookingHistoryLineText(h, sorted),
           timelineMs: bookingTimelineMs(h),
         }))
         .filter((entry) => entry.line.trim().length > 0);
+      lineEntries = collapseAdjacentBookedThenRebookedSameSeatLines(lineEntries);
       const serverCanon = rideUsesServerCanonicalBookingHistory(ride.bookingHistoryMeta);
       // 1) Client near-dedupe only when timeline is not server-canonical (avoids double-processing).
       // 2) Exact line+ms dedupe (unchanged).
@@ -2502,7 +3022,7 @@ export default function RideDetailScreen(): React.JSX.Element {
   }, [ride.id]);
 
   /**
-   * One hint toast per open: backend `viewerBookingNotice` first, else overlap from GET /rides/booked,
+   * One hint toast per open: backend `viewerBookingNotice` first, else overlap (guest / no eligibility only),
    * else same-ride booking when detail omits notice.
    */
   useEffect(() => {
@@ -2536,7 +3056,7 @@ export default function RideDetailScreen(): React.JSX.Element {
       return () => clearTimeout(t);
     }
 
-    if (overlappingPassengerRide) {
+    if (overlappingPassengerRide && !viewerBookingElig.fromServer) {
       const key = `o|${ride.id}|${overlappingPassengerRide.id}`;
       if (viewerBookingNoticeToastKeyRef.current === key) return;
       viewerBookingNoticeToastKeyRef.current = key;
@@ -2577,6 +3097,7 @@ export default function RideDetailScreen(): React.JSX.Element {
     ride.id,
     ride.viewerBookingNotice,
     overlappingPassengerRide?.id,
+    viewerBookingElig.fromServer,
   ]);
 
   /** Keep seat picker within fresh availability whenever server counts change (never trust stale values). */
@@ -2828,16 +3349,21 @@ export default function RideDetailScreen(): React.JSX.Element {
       );
       return;
     }
-    const revokedByOwner =
-      passengers.some(
-        (b) => (b.userId ?? '').trim() === uid && bookingIsCancelledByOwner(b.status)
-      ) || bookingIsCancelledByOwner(ride.myBookingStatus);
-    if (revokedByOwner) {
-      Alert.alert(
-        'Cannot book',
-        'The driver removed you from this ride. You can’t book it again.'
-      );
-      return;
+    if (uid.length > 0) {
+      if (!viewerBookingElig.fromServer && !firstTimePassengerBookListSparse) {
+        Alert.alert(
+          'Ride data incomplete',
+          'Pull to refresh this ride, then try again. Booking rules come from the server.'
+        );
+        return;
+      }
+      if (viewerBookingElig.fromServer) {
+        const allowed = isRequestBookingMode ? viewerBookingElig.canRequest : viewerBookingElig.canBook;
+        if (!allowed) {
+          Alert.alert('Can’t book', viewerBookingNotAllowedMessage(viewerBookingElig));
+          return;
+        }
+      }
     }
     if (!isOwnerStrict && bookButtonBlocked) {
       return;
@@ -2846,9 +3372,13 @@ export default function RideDetailScreen(): React.JSX.Element {
     const stayOnRideDetailAfterBook = Boolean(opts?.stayOnRideDetail);
     setBooking(true);
     try {
+      const previousBookingId = pickPreviousBookingIdForRetry(passengers, uid);
+      const idempotencyKey = Crypto.randomUUID();
       const body: CreateBookingRequest = {
         rideId: ride.id,
         seats: seatsToBook,
+        idempotencyKey,
+        ...(previousBookingId ? { previousBookingId } : {}),
         ...(passengerSearch?.from?.trim() && passengerSearch?.to?.trim()
           ? {
               pickupLocationName: passengerSearch.from.trim(),
@@ -2912,6 +3442,20 @@ export default function RideDetailScreen(): React.JSX.Element {
           message: serverMsg ?? 'Booking was not created.',
           durationMs: 6500,
         });
+      } else if (isBookingRetryCooldownError(e)) {
+        Alert.alert('Please wait', bookingRetryCooldownUserMessage(e));
+      } else if (isInsufficientSeatsBookingError(e)) {
+        Alert.alert(
+          'Not enough seats',
+          pickApiErrorBodyMessage(e) ?? 'This ride no longer has enough seats available.'
+        );
+        void refreshRideDetailEventDriven();
+      } else if (isInvalidPreviousBookingError(e)) {
+        Alert.alert(
+          'Try again',
+          pickApiErrorBodyMessage(e) ?? 'Please refresh the ride and try booking again.'
+        );
+        void refreshRideDetailEventDriven();
       } else {
         const message =
           e && typeof e === 'object' && 'message' in e
@@ -3059,10 +3603,9 @@ export default function RideDetailScreen(): React.JSX.Element {
   }, [cancellingBooking]);
 
   const navigateBackAfterCancel = useCallback(async () => {
-    emitRequestMyRidesBlockingRefresh({
-      blocking: true,
-      expectedRemovedRideId: (ride.id ?? '').trim() || undefined,
-    });
+    // Passenger cancel updates booking status; the ride usually stays in lists — do not wait for the row to
+    // “disappear” (that stalled "Updating rides..." when myBookingStatus stayed `rejected`).
+    emitRequestMyRidesBlockingRefresh({ blocking: true });
     await new Promise<void>((resolve) => {
       InteractionManager.runAfterInteractions(() => resolve());
     });
@@ -3070,7 +3613,7 @@ export default function RideDetailScreen(): React.JSX.Element {
       setTimeout(resolve, Platform.OS === 'android' ? 220 : 280)
     );
     navigation.goBack();
-  }, [navigation, ride.id]);
+  }, [navigation]);
 
   const confirmCancelSeats = useCallback(
     async (seatsToCancel: number) => {
@@ -3086,7 +3629,10 @@ export default function RideDetailScreen(): React.JSX.Element {
           await removePassengerBookingAsOwner(bid);
           invalidateRideDetailCache(initialRide.id);
           await refreshRideDetailEventDriven();
-          Alert.alert('Passenger removed', `${label} was removed from this ride.`);
+          Alert.alert(
+            'Passenger removed',
+            `${label} has been removed from this ride and notified.`
+          );
         } catch (e: unknown) {
           const message =
             e && typeof e === 'object' && 'message' in e
@@ -3766,9 +4312,18 @@ export default function RideDetailScreen(): React.JSX.Element {
           <View style={styles.block}>
             <Text style={styles.passengersHeading}>Passengers</Text>
             {sessionReady && isOwner ? (
-              ownerPassengerSummariesForDisplay.length > 0 ? (
+              ownerPassengerDisplayEntries.length > 0 ? (
                 <View style={styles.passengersList}>
-                  {ownerPassengerSummariesForDisplay.map(({ userId: ownerSummaryUserId, primary, historyChronological }) => {
+                  {ownerPassengerDisplayEntries.map(
+                    ({
+                      listKey,
+                      userId: ownerSummaryUserId,
+                      primary,
+                      historyChronological,
+                      segmentIndex: ownerSegmentIndex,
+                      segmentCount: ownerSegmentCount,
+                      segmentRows: ownerSegmentRows,
+                    }) => {
                     const b = primary;
                     const isMe = (b.userId ?? '').trim() === currentUserId;
                     const displayName = isMe ? (currentUserName || 'You') : bookingPassengerDisplayName(b);
@@ -3781,28 +4336,24 @@ export default function RideDetailScreen(): React.JSX.Element {
                         (b as BookingItem & { ownerPartialSeatRemoval?: boolean }).ownerPartialSeatRemoval
                       );
                     const bookingCancelledForDisplay = bookingCancelled && !partialOwnerRemoveStillBooked;
-                    const lastActiveHistoryRow = [...historyChronological]
-                      .reverse()
-                      .find((h) => {
-                        const s = String(h.status ?? '').trim().toLowerCase();
-                        if (s === 'pending' || s === 'rejected') return false;
-                        if (bookingIsCancelled(h.status)) return false;
-                        return bookingSeatCount(h) > 0;
-                      });
-                    const removedSeatsFromHistory = bookingSeatCount(lastActiveHistoryRow ?? ({} as BookingItem));
-                    const maxSeatsSeenInHistory = historyChronological.reduce(
-                      (max, h) => Math.max(max, bookingSeatCount(h)),
-                      0
-                    );
-                    const currentSeats = effectiveOccupiedSeatsFromBookingRow(b) || bookingSeatCount(b);
-                    const seatCountForOwnerRow =
-                      bookingCancelledForDisplay && bookingIsCancelledByOwner(b.status)
-                        ? Math.max(currentSeats, removedSeatsFromHistory, maxSeatsSeenInHistory)
-                        : currentSeats;
+                    const mergeEmbeddedSeatSnapshots =
+                      rideUsesServerCanonicalBookingHistory(ride.bookingHistoryMeta);
+                    const timelineLastHeld = lastHeldSeatsForOwnerPassengerEntry({
+                      historyChronological,
+                      segmentRows: ownerSegmentRows,
+                      mergeEmbeddedFromBookings: mergeEmbeddedSeatSnapshots,
+                    });
+                    const baseFromRow = effectiveOccupiedSeatsFromBookingRow(b) || bookingSeatCount(b);
+                    const seatCountForOwnerRow = Math.max(timelineLastHeld, baseFromRow);
+                    const separateRowAfterOwnerRemoval =
+                      ownerSegmentCount > 1 &&
+                      ownerSegmentIndex > 0 &&
+                      !bookingIsCancelledByOwner(b.status);
                     const isRebooked =
                       !partialOwnerRemoveStillBooked &&
                       !bookingCancelledForDisplay &&
                       !isPastRide &&
+                      !separateRowAfterOwnerRemoval &&
                       passengerRowShowRebookedBadge(b, passengers);
                     const shouldFadeCancelled = bookingCancelledForDisplay && !isRebooked;
                     const mergedForRoute: BookingItem =
@@ -3817,20 +4368,16 @@ export default function RideDetailScreen(): React.JSX.Element {
                         : b;
                     const { lineShort } = bookingPickupDrop(ride, mergedForRoute);
                     const statusLo = String(b.status ?? '').trim().toLowerCase();
-                    const passengerUid = (b.userId ?? '').trim();
                     const canOwnerRemoveFromAnyHistoryRow = historyChronological.some(
                       (h) => bookingFlag(h as BookingItem, 'canOwnerRemove') === true
                     );
-                    const canOwnerRemoveFromAnyPassengerRow =
-                      passengerUid.length > 0 &&
-                      passengers.some(
-                        (row) =>
-                          (row.userId ?? '').trim() === passengerUid &&
-                          bookingFlag(row, 'canOwnerRemove') === true
-                      );
+                    /** Scope to this owner-list segment only — same userId can have a newer segment with removable rows. */
+                    const canOwnerRemoveFromAnySegmentBookingRow = ownerSegmentRows.some(
+                      (row) => bookingFlag(row, 'canOwnerRemove') === true
+                    );
                     const canOwnerRemovePassenger =
                       ((): boolean => {
-                        if (canOwnerRemoveFromAnyHistoryRow || canOwnerRemoveFromAnyPassengerRow) return true;
+                        if (canOwnerRemoveFromAnyHistoryRow || canOwnerRemoveFromAnySegmentBookingRow) return true;
                         const backendCanOwnerRemove = bookingFlag(b, 'canOwnerRemove');
                         // Keep backward-compatible behavior: honor explicit allow from backend,
                         // but when backend sends false/omits due rollout mismatch, use legacy rule.
@@ -3851,7 +4398,7 @@ export default function RideDetailScreen(): React.JSX.Element {
 
                     return (
                       <View
-                        key={ownerSummaryUserId || b.id}
+                        key={listKey}
                         style={[styles.passengerRowOwner, shouldFadeCancelled && styles.passengerRowCancelled]}
                       >
                         <TouchableOpacity
@@ -4102,14 +4649,7 @@ export default function RideDetailScreen(): React.JSX.Element {
             <Ionicons name="ban-outline" size={22} color={COLORS.textMuted} />
             <Text style={styles.buttonOwnerRideCancelledText}>Ride cancelled by the driver</Text>
           </View>
-        ) : !isOwner && passengerRemovedByOwner && !isPastRide && !rideCancelledByOwner ? (
-          <View style={[styles.button, styles.buttonOwnerRideCancelled]}>
-            <Ionicons name="person-remove-outline" size={22} color={COLORS.textMuted} />
-            <Text style={styles.buttonOwnerRideCancelledText}>
-              The driver removed you from this ride. You can’t book it again.
-            </Text>
-          </View>
-        ) : !isOwner && passengerRemovedByOwner && isPastRide ? (
+        ) : !isOwner && passengerRemovedByOwner && !isBookedByMe && isPastRide ? (
           <View style={[styles.button, styles.buttonBookingCancelled]}>
             <Ionicons name="person-remove-outline" size={22} color={COLORS.error} />
             <Text style={styles.buttonBookingCancelledText}>Removed by the driver</Text>
@@ -4227,6 +4767,10 @@ export default function RideDetailScreen(): React.JSX.Element {
               <View style={styles.footerBookWrap}>
                 {passengerSelfCancelledBooking ? (
                   <Text style={styles.rebookHint}>You cancelled your booking — you can book again.</Text>
+                ) : isMyBookingRejected ? (
+                  <Text style={styles.rebookHint}>
+                    {driverName} declined your request — you can try again if seats are open.
+                  </Text>
                 ) : null}
                 {availableSeatsCount > 1 ? (
                   <View style={styles.seatPickerRow}>
@@ -4276,12 +4820,12 @@ export default function RideDetailScreen(): React.JSX.Element {
                       <Ionicons name="book-outline" size={22} color="#fff" />
                       <Text style={styles.buttonBookText}>
                         {isRequestBookingMode
-                          ? passengerSelfCancelledBooking
+                          ? showRebookActionLabels
                             ? 'Request again'
                             : bookSeatsCount > 1
                               ? 'Request seats'
                               : 'Request to book'
-                          : passengerSelfCancelledBooking
+                          : showRebookActionLabels
                             ? 'Book again'
                             : bookSeatsCount > 1
                               ? 'Book seats'
@@ -4579,7 +5123,7 @@ export default function RideDetailScreen(): React.JSX.Element {
                 {cancelBookingSheetMode === 'request'
                   ? 'Pending request'
                   : cancelBookingSheetMode === 'owner_remove'
-                    ? 'Remove passenger'
+                    ? ownerRemovePassengerSheetTitle(ownerRemovePassengerLabel)
                     : 'Cancel booking'}
               </Text>
               <TouchableOpacity onPress={closeCancelBookingSheet} hitSlop={10} disabled={cancellingBooking}>
@@ -4591,7 +5135,7 @@ export default function RideDetailScreen(): React.JSX.Element {
               {cancelBookingSheetMode === 'request'
                 ? `You requested ${cancelBookingMaxSeats} seat${cancelBookingMaxSeats !== 1 ? 's' : ''}. Select how many request seat${cancelBookingMaxSeats !== 1 ? 's' : ''} to cancel.`
                 : cancelBookingSheetMode === 'owner_remove'
-                  ? `Remove ${ownerRemovePassengerLabel} from this ride? They’ll be notified and won’t be able to book this ride again.`
+                  ? ownerRemovePassengerSheetBody(cancelBookingMaxSeats)
                   : `You booked ${cancelBookingMaxSeats} seat${cancelBookingMaxSeats !== 1 ? 's' : ''}. Select how many to cancel.`}
             </Text>
 
@@ -4643,7 +5187,7 @@ export default function RideDetailScreen(): React.JSX.Element {
               ) : (
                 <Text style={styles.cancelBookingConfirmText}>
                   {cancelBookingSheetMode === 'owner_remove'
-                    ? 'Remove passenger'
+                    ? 'Remove from ride'
                     : cancelBookingSheetMode === 'request'
                       ? `Cancel request ${cancelBookingSeatsToCancel} seat${cancelBookingSeatsToCancel !== 1 ? 's' : ''}`
                       : `Cancel ${cancelBookingSeatsToCancel} seat${cancelBookingSeatsToCancel !== 1 ? 's' : ''}`}
@@ -4658,7 +5202,7 @@ export default function RideDetailScreen(): React.JSX.Element {
               activeOpacity={0.9}
             >
               <Text style={styles.cancelBookingKeepText}>
-                {cancelBookingSheetMode === 'owner_remove' ? 'Keep passenger' : 'Keep booking'}
+                {cancelBookingSheetMode === 'owner_remove' ? 'Not now — keep on ride' : 'Keep booking'}
               </Text>
             </TouchableOpacity>
           </View>

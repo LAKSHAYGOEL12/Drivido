@@ -163,6 +163,18 @@ export function normalizeRideListItemFromApi(raw: Record<string, unknown>): Ride
   if (completedAt) out.completedAt = completedAt;
   const mbs = toStr(r.myBookingStatus ?? r.my_booking_status ?? r.bookingStatus ?? r.booking_status);
   if (mbs) out.myBookingStatus = mbs;
+  const mbr = toStr(
+    r.myBookingStatusReason ?? r.my_booking_status_reason ?? r.statusReason ?? r.status_reason
+  );
+  if (mbr) out.myBookingStatusReason = mbr;
+  const vbc = r.viewer_booking_context;
+  if (vbc && typeof vbc === 'object') {
+    out.viewer_booking_context = vbc as NonNullable<RideListItem['viewer_booking_context']>;
+  }
+  const bm = toStr(r.bookingMode ?? r.booking_mode)?.trim().toLowerCase();
+  if (bm === 'instant' || bm === 'request') out.bookingMode = bm as RideListItem['bookingMode'];
+  if (typeof r.instantBooking === 'boolean') out.instantBooking = r.instantBooking;
+  else if (typeof r.instant_booking === 'boolean') out.instantBooking = r.instant_booking;
   const estDur = num(r.estimatedDurationSeconds ?? r.estimated_duration_seconds);
   if (estDur !== undefined && estDur > 0) {
     out.estimatedDurationSeconds = Math.floor(estDur);

@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
@@ -16,9 +16,9 @@ import type { PublishStackParamList } from '../../navigation/types';
 import { COLORS } from '../../constants/colors';
 import { alertRouteRequiredPriceScreen } from '../../utils/publishAlerts';
 import {
+  allowedPublishFareRange,
   effectivePublishDistanceKm,
   isPublishStopsComplete,
-  recommendedFareRange,
 } from '../../utils/publishFare';
 
 type PriceRouteProp = RouteProp<PublishStackParamList, 'PublishPrice'>;
@@ -70,13 +70,24 @@ export default function PublishPriceScreen(): React.JSX.Element {
     ]
   );
 
-  const { minRecommended, maxRecommended } = recommendedFareRange(distanceKmForReco);
-  const seedPrice =
-    typeof initialPricePerSeat === 'number' &&
-    !Number.isNaN(initialPricePerSeat) &&
-    initialPricePerSeat > 0
-      ? clampPrice(initialPricePerSeat)
-      : minRecommended;
+  const fareBand = useMemo(() => allowedPublishFareRange(distanceKmForReco), [distanceKmForReco]);
+  const { minRecommended, maxRecommended, minAllowed, maxAllowed } = fareBand;
+
+  const clampToFareBand = useCallback(
+    (n: number) => Math.min(maxAllowed, Math.max(minAllowed, clampPrice(n))),
+    [minAllowed, maxAllowed]
+  );
+
+  const seedPrice = useMemo(() => {
+    const raw =
+      typeof initialPricePerSeat === 'number' &&
+      !Number.isNaN(initialPricePerSeat) &&
+      initialPricePerSeat > 0
+        ? clampPrice(initialPricePerSeat)
+        : minRecommended;
+    return clampToFareBand(raw);
+  }, [initialPricePerSeat, minRecommended, clampToFareBand]);
+
   const [price, setPrice] = useState(seedPrice);
   /** Local text while typing so the field can be cleared/edited freely */
   const [inputText, setInputText] = useState(() => String(seedPrice));
@@ -85,7 +96,6 @@ export default function PublishPriceScreen(): React.JSX.Element {
   inputTextRef.current = inputText;
   const inputDigits = inputText.replace(/\D/g, '');
   const inputAmount = inputDigits === '' ? NaN : parseInt(inputDigits, 10);
-  const isPriceInvalid = !Number.isFinite(inputAmount) || inputAmount <= 0;
 
   const stopsAllowed = useMemo(() => isPublishStopsComplete(route.params), [route.params]);
 
@@ -104,37 +114,57 @@ export default function PublishPriceScreen(): React.JSX.Element {
     if (!stopsAllowed) return;
     if (prevDistanceKmRef.current !== distanceKmForReco) {
       prevDistanceKmRef.current = distanceKmForReco;
-      setPrice(minRecommended);
-      setInputText(String(minRecommended));
+      const next = clampToFareBand(minRecommended);
+      setPrice(next);
+      setInputText(String(next));
     }
-  }, [distanceKmForReco, minRecommended, stopsAllowed]);
+  }, [distanceKmForReco, minRecommended, stopsAllowed, clampToFareBand]);
+
+  const isPriceInvalid =
+    !Number.isFinite(inputAmount) || inputAmount <= 0 || inputAmount < minAllowed || inputAmount > maxAllowed;
 
   const isBelowRecommended = price < minRecommended;
   const isAboveRecommended = price > maxRecommended;
   const isWithinRecommended = !isBelowRecommended && !isAboveRecommended;
-  const statusColor = isBelowRecommended
-    ? '#b45309'
-    : isAboveRecommended
-      ? '#dc2626'
-      : '#15803d';
-  const statusBg = isBelowRecommended
-    ? '#fffbeb'
-    : isAboveRecommended
-      ? '#fef2f2'
-      : '#f0fdf4';
-  const statusIcon = isBelowRecommended
-    ? 'trending-down'
-    : isAboveRecommended
-      ? 'alert-circle'
-      : 'checkmark-circle';
-  const helperText = isBelowRecommended
-    ? 'Lower fares mean lower earnings for this trip.'
-    : isAboveRecommended
-      ? 'Very high prices may get fewer bookings.'
-      : 'You’re in the sweet spot for this route distance.';
 
-  const pickupDisplay = selectedFrom?.trim() || 'Pickup not set';
-  const destDisplay = selectedTo?.trim() || 'Destination not set';
+  const statusColor = isPriceInvalid
+    ? COLORS.error
+    : isWithinRecommended
+      ? '#15803d'
+      : '#b45309';
+  const statusBg = isPriceInvalid
+    ? '#fef2f2'
+    : isWithinRecommended
+      ? '#f0fdf4'
+      : '#fffbeb';
+  const statusIcon = isPriceInvalid
+    ? 'alert-circle'
+    : isWithinRecommended
+      ? 'checkmark-circle'
+      : 'trending-down';
+  const statusTitle = isPriceInvalid
+    ? 'Fare not allowed'
+    : isWithinRecommended
+      ? 'Great choice'
+      : isBelowRecommended
+        ? 'Below suggested range'
+        : 'Above suggested range';
+  const helperText = (() => {
+    if (isPriceInvalid) {
+      if (!Number.isFinite(inputAmount) || inputAmount <= 0) {
+        return `Enter an amount between ₹${minAllowed} and ₹${maxAllowed}.`;
+      }
+      if (inputAmount < minAllowed) {
+        return `Minimum is ₹${minAllowed} (up to ₹20 below suggested ₹${minRecommended}).`;
+      }
+      if (inputAmount > maxAllowed) {
+        return `Maximum is ₹${maxAllowed} (up to ₹50 above suggested ₹${maxRecommended}).`;
+      }
+    }
+    if (isWithinRecommended) return 'You’re in the sweet spot for this route distance.';
+    if (isBelowRecommended) return 'Lower fares mean lower earnings for this trip.';
+    return 'Very high prices may get fewer bookings.';
+  })();
 
   const onContinue = () => {
     if (isPriceInvalid) return;
@@ -144,7 +174,8 @@ export default function PublishPriceScreen(): React.JSX.Element {
       return;
     }
     const digits = inputText.replace(/\D/g, '');
-    const finalPrice = clampPrice(digits === '' ? price : parseInt(digits, 10));
+    const finalPrice = clampToFareBand(clampPrice(digits === '' ? price : parseInt(digits, 10)));
+    if (finalPrice < minAllowed || finalPrice > maxAllowed) return;
     setPrice(finalPrice);
     setInputText(String(finalPrice));
     const fallbackSeconds = Math.max(60, Math.round(distanceKmForReco * 2 * 60));
@@ -232,28 +263,6 @@ export default function PublishPriceScreen(): React.JSX.Element {
             <Text style={styles.headerLead}>
               What passengers pay for one seat on this ride.
             </Text>
-
-            <View style={styles.routeCard}>
-              <View style={styles.routeStop}>
-                <View style={styles.routeBulletPickup} />
-                <View style={styles.routeStopText}>
-                  <Text style={styles.routeLabel}>Pickup</Text>
-                  <Text style={styles.routeValue} numberOfLines={2} ellipsizeMode="tail">
-                    {pickupDisplay}
-                  </Text>
-                </View>
-              </View>
-              <View style={styles.routeConnector} />
-              <View style={styles.routeStop}>
-                <View style={styles.routeBulletDest} />
-                <View style={styles.routeStopText}>
-                  <Text style={styles.routeLabel}>Destination</Text>
-                  <Text style={styles.routeValue} numberOfLines={2} ellipsizeMode="tail">
-                    {destDisplay}
-                  </Text>
-                </View>
-              </View>
-            </View>
           </View>
         </View>
 
@@ -263,13 +272,6 @@ export default function PublishPriceScreen(): React.JSX.Element {
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          <View style={styles.distanceCard}>
-            <Ionicons name="navigate-outline" size={20} color={COLORS.secondary} />
-            <Text style={styles.distanceCardText}>
-              {distanceKmForReco.toFixed(distanceKmForReco < 10 ? 1 : 0)} km · suggested from distance
-            </Text>
-          </View>
-
           <View style={styles.priceCard}>
             <Text style={styles.priceCardLabel}>Enter amount (₹)</Text>
             <View style={[styles.inputRow, isPriceInvalid && styles.inputRowInvalid]}>
@@ -305,7 +307,17 @@ export default function PublishPriceScreen(): React.JSX.Element {
                 importantForAutofill="no"
               />
             </View>
-            <Text style={styles.manualHint}>Enter the amount passengers pay for one seat.</Text>
+            <Text style={styles.manualHint}>
+              Allowed ₹{minAllowed}–₹{maxAllowed} · Suggested ₹{minRecommended}–₹{maxRecommended} (max ₹50 above / ₹20
+              below suggested).
+            </Text>
+          </View>
+
+          <View style={styles.distanceCard}>
+            <Ionicons name="navigate-outline" size={20} color={COLORS.secondary} />
+            <Text style={styles.distanceCardText}>
+              {distanceKmForReco.toFixed(distanceKmForReco < 10 ? 1 : 0)} km · suggested from distance
+            </Text>
           </View>
 
           <View style={styles.recoCard}>
@@ -322,13 +334,7 @@ export default function PublishPriceScreen(): React.JSX.Element {
           <View style={[styles.statusCard, { backgroundColor: statusBg }]}>
             <Ionicons name={statusIcon} size={22} color={statusColor} />
             <View style={styles.statusTextWrap}>
-              <Text style={[styles.statusTitle, { color: statusColor }]}>
-                {isWithinRecommended
-                  ? 'Great choice'
-                  : isBelowRecommended
-                    ? 'Below suggested range'
-                    : 'Above suggested range'}
-              </Text>
+              <Text style={[styles.statusTitle, { color: statusColor }]}>{statusTitle}</Text>
               <Text style={styles.statusBody}>{helperText}</Text>
             </View>
           </View>
@@ -404,65 +410,7 @@ const styles = StyleSheet.create({
     color: COLORS.textSecondary,
     lineHeight: 22,
     maxWidth: 340,
-  },
-  routeCard: {
-    marginTop: 18,
-    backgroundColor: COLORS.background,
-    borderRadius: 16,
-    paddingVertical: 14,
-    paddingHorizontal: 16,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    shadowColor: '#0f172a',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.04,
-    shadowRadius: 6,
-    elevation: 1,
-  },
-  routeStop: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 12,
-  },
-  routeBulletPickup: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: COLORS.success,
-    marginTop: 5,
-  },
-  routeBulletDest: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: COLORS.error,
-    marginTop: 5,
-  },
-  routeStopText: {
-    flex: 1,
-    minWidth: 0,
-  },
-  routeLabel: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: COLORS.textMuted,
-    letterSpacing: 0.6,
-    textTransform: 'uppercase',
     marginBottom: 4,
-  },
-  routeValue: {
-    fontSize: 15,
-    fontWeight: '500',
-    color: COLORS.text,
-    lineHeight: 21,
-  },
-  routeConnector: {
-    width: 2,
-    height: 14,
-    marginLeft: 4,
-    marginVertical: 6,
-    borderRadius: 1,
-    backgroundColor: COLORS.border,
   },
   scroll: {
     flex: 1,
@@ -537,9 +485,10 @@ const styles = StyleSheet.create({
   },
   manualHint: {
     marginTop: 12,
-    fontSize: 14,
+    fontSize: 13,
     color: COLORS.textMuted,
-    fontWeight: '500',
+    fontWeight: '600',
+    lineHeight: 18,
   },
   recoCard: {
     backgroundColor: 'rgba(34,197,94,0.08)',

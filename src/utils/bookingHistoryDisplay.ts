@@ -23,6 +23,50 @@ function seatPhrase(n: number): string {
   return `${x} seat${x !== 1 ? 's' : ''}`;
 }
 
+type EmbeddedBookingSnapshot = {
+  seats: number;
+  status?: string;
+  bookedAt?: string;
+  displayKey?: string;
+  displayParams?: { seats?: number; reason?: string };
+  passengerListSegmentId?: string;
+  passenger_list_segment_id?: string;
+};
+
+function embeddedSnapshotSegmentId(h: EmbeddedBookingSnapshot): string {
+  return String(h.passengerListSegmentId ?? h.passenger_list_segment_id ?? '').trim();
+}
+
+function parseBookedAtMs(iso: string | undefined): number | null {
+  if (!iso || !String(iso).trim()) return null;
+  const t = Date.parse(String(iso).trim());
+  return Number.isFinite(t) ? t : null;
+}
+
+/**
+ * When owner nav lines are missing, `booking.bookingHistory` may still list prior-segment snapshots.
+ * Prefer API `passengerListSegmentId` on each snapshot; else drop snapshots strictly before this booking row’s `bookedAt`.
+ */
+function filterEmbeddedSnapshotsForPassengerListSegment(
+  embedded: EmbeddedBookingSnapshot[],
+  scopeSegmentId: string | undefined,
+  floorBookedAt: string | undefined
+): EmbeddedBookingSnapshot[] {
+  const sid = (scopeSegmentId ?? '').trim();
+  if (!sid || sid.toLowerCase().startsWith('legacy-')) return embedded;
+  const hasSnapSeg = embedded.some((h) => embeddedSnapshotSegmentId(h) !== '');
+  if (hasSnapSeg) {
+    return embedded.filter((h) => embeddedSnapshotSegmentId(h) === sid);
+  }
+  const floorMs = parseBookedAtMs(floorBookedAt);
+  if (floorMs == null) return embedded;
+  return embedded.filter((h) => {
+    const m = parseBookedAtMs(h.bookedAt);
+    if (m == null) return true;
+    return m >= floorMs - 2000;
+  });
+}
+
 /** Embedded `bookingHistory[]` snapshots (no ride-level events): best-effort same wording as owner lines. */
 function humanizeEmbeddedBookingSnapshot(
   h: {
@@ -258,25 +302,66 @@ function collapseConsecutiveDuplicateBookingTitles(items: BookingHistoryTimeline
   return out;
 }
 
+/** Request-mode: same seats can appear as both "Booked N" and "Rebooked N" — keep one (Rebooked wins). */
+function collapseAdjacentBookedRebookedSameSeatTitles(items: BookingHistoryTimelineItem[]): BookingHistoryTimelineItem[] {
+  const out: BookingHistoryTimelineItem[] = [];
+  for (let i = 0; i < items.length; i++) {
+    const cur = items[i];
+    const next = items[i + 1];
+    const ct = cur.title.trim().toLowerCase();
+    const nt = next?.title.trim().toLowerCase() ?? '';
+    const toBook = ct.match(/^(booked)\s+(\d+)\s+seats?$/);
+    const toRebook = nt.match(/^(rebooked)\s+(\d+)\s+seats?$/);
+    if (next && toBook && toRebook && toBook[2] === toRebook[2]) {
+      out.push(next);
+      i += 1;
+      continue;
+    }
+    const toRebook2 = ct.match(/^(rebooked)\s+(\d+)\s+seats?$/);
+    const toBook2 = nt.match(/^(booked)\s+(\d+)\s+seats?$/);
+    if (next && toRebook2 && toBook2 && toRebook2[2] === toBook2[2]) {
+      out.push(cur);
+      i += 1;
+      continue;
+    }
+    out.push(cur);
+  }
+  return out;
+}
+
 export function buildBookingHistoryTimelineItems(args: {
   ownerBookingHistoryLines?: string[] | undefined;
-  embedded?: Array<{ seats: number; status?: string; bookedAt?: string }> | undefined;
+  embedded?: EmbeddedBookingSnapshot[] | undefined;
+  /** Non-legacy segment on the booking row — trims embedded fallback to this segment. */
+  scopeToPassengerListSegmentId?: string;
+  /** Current booking `bookedAt` — used when snapshots lack segment ids (drops older-segment events). */
+  scopeEmbeddedSnapshotsAfterBookedAt?: string;
 }): BookingHistoryTimelineItem[] {
   const lines = (args.ownerBookingHistoryLines ?? []).map((l) => String(l).trim()).filter(Boolean);
   if (lines.length > 0) {
-    return collapseConsecutiveDuplicateBookingTitles(
-      lines
-        .map((line, i) => parseOwnerHistoryLineToTimelineItem(line, `nav-${i}`))
-        .filter(isAllowedPassengerHistoryRow)
+    return collapseAdjacentBookedRebookedSameSeatTitles(
+      collapseConsecutiveDuplicateBookingTitles(
+        lines
+          .map((line, i) => parseOwnerHistoryLineToTimelineItem(line, `nav-${i}`))
+          .filter(isAllowedPassengerHistoryRow)
+      )
     );
   }
-  const emb = args.embedded;
-  if (Array.isArray(emb) && emb.length > 0) {
-    return collapseConsecutiveDuplicateBookingTitles(
-      emb
-        .map((h, i) => embeddedBookingSnapshotToTimelineItem(h, i, i > 0 ? emb[i - 1] : undefined))
-        .filter((x): x is BookingHistoryTimelineItem => x != null)
-        .filter(isAllowedPassengerHistoryRow)
+  const embRaw = args.embedded;
+  if (Array.isArray(embRaw) && embRaw.length > 0) {
+    const emb = filterEmbeddedSnapshotsForPassengerListSegment(
+      embRaw as EmbeddedBookingSnapshot[],
+      args.scopeToPassengerListSegmentId,
+      args.scopeEmbeddedSnapshotsAfterBookedAt
+    );
+    if (emb.length === 0) return [];
+    return collapseAdjacentBookedRebookedSameSeatTitles(
+      collapseConsecutiveDuplicateBookingTitles(
+        emb
+          .map((h, i) => embeddedBookingSnapshotToTimelineItem(h, i, i > 0 ? emb[i - 1] : undefined))
+          .filter((x): x is BookingHistoryTimelineItem => x != null)
+          .filter(isAllowedPassengerHistoryRow)
+      )
     );
   }
   return [];

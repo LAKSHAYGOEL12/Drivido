@@ -275,7 +275,7 @@ export default function BottomTabs(): React.JSX.Element {
               name: 'PublishStack',
               params: {
                 screen: 'PublishRide',
-                params: {},
+                params: { _publishTabResetToken: Date.now() },
               },
               merge: false,
             });
@@ -288,6 +288,8 @@ export default function BottomTabs(): React.JSX.Element {
             name === 'Chat' ||
             name === 'LocationPicker' ||
             name === 'PublishRoutePreview' ||
+            name === 'PublishSelectDate' ||
+            name === 'PublishSelectTime' ||
             name === 'PublishPrice' ||
             name === 'PublishRecentEdit';
           return {

@@ -130,6 +130,19 @@ export type SearchStackParamList = {
   };
 };
 
+/** Params threaded from route preview through date/time into fare. */
+export type PublishAfterRouteParams = {
+  selectedFrom?: string;
+  selectedTo?: string;
+  pickupLatitude?: number;
+  pickupLongitude?: number;
+  destinationLatitude?: number;
+  destinationLongitude?: number;
+  selectedDistanceKm?: number;
+  selectedDurationSeconds?: number;
+  publishRestoreKey?: string;
+};
+
 /**
  * Publish tab: stack (PublishRide → LocationPicker)
  */
@@ -151,6 +164,11 @@ export type PublishStackParamList = {
     /** Echo from price screen — used when reopening fare editor. */
     initialPricePerSeat?: number;
     _publishRestoreKey?: string;
+    /**
+     * Bottom tab “Publish” tap sends a new timestamp (same idea as Find’s `_tabResetToken`)
+     * so `PublishRide` can clear local form state — navigating with `params: {}` does not remount the screen.
+     */
+    _publishTabResetToken?: number;
   } | undefined;
   PublishRecentEdit: {
     entry: RecentPublishedEntry;
@@ -183,15 +201,12 @@ export type PublishStackParamList = {
     /** Publish tab: restores form after stack reset */
     publishRestoreKey?: string;
   } | undefined;
-  PublishRoutePreview: {
-    selectedFrom?: string;
-    selectedTo?: string;
-    pickupLatitude?: number;
-    pickupLongitude?: number;
-    destinationLatitude?: number;
-    destinationLongitude?: number;
-    selectedDistanceKm?: number;
-    publishRestoreKey?: string;
+  PublishRoutePreview: PublishAfterRouteParams;
+  PublishSelectDate: PublishAfterRouteParams & { initialSelectedDateIso?: string };
+  PublishSelectTime: PublishAfterRouteParams & {
+    selectedDateIso: string;
+    initialTimeHour?: number;
+    initialTimeMinute?: number;
   };
   PublishPrice: {
     selectedFrom?: string;

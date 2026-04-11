@@ -243,6 +243,22 @@ function normalizeRideItem(raw: Record<string, unknown>): RideListItem {
       return desc ? { description: desc } : {};
     })(),
     ...(pubAvatar ? { publisherAvatarUrl: pubAvatar } : {}),
+    ...(function (): Partial<RideListItem> {
+      const mbs = toStr(r.myBookingStatus ?? r.my_booking_status);
+      const mbr = toStr(r.myBookingStatusReason ?? r.my_booking_status_reason);
+      const vbc = r.viewer_booking_context;
+      const bm = toStr(r.bookingMode ?? r.booking_mode)?.trim().toLowerCase();
+      const o: Partial<RideListItem> = {};
+      if (mbs) o.myBookingStatus = mbs;
+      if (mbr) o.myBookingStatusReason = mbr;
+      if (vbc && typeof vbc === 'object') {
+        o.viewer_booking_context = vbc as NonNullable<RideListItem['viewer_booking_context']>;
+      }
+      if (bm === 'instant' || bm === 'request') o.bookingMode = bm as RideListItem['bookingMode'];
+      if (typeof r.instantBooking === 'boolean') o.instantBooking = r.instantBooking;
+      else if (typeof r.instant_booking === 'boolean') o.instantBooking = r.instant_booking;
+      return o;
+    })(),
   };
 }
 

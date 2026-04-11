@@ -106,3 +106,34 @@ export function recommendedFareRange(distanceKm: number): {
   const maxRecommended = Math.max(minRecommended + 5, Math.round(d * 2.5));
   return { minRecommended, maxRecommended };
 }
+
+/** Hard cap for per-seat fare input (matches {@link PublishPriceScreen}). */
+export const PUBLISH_FARE_INPUT_MAX = 99999;
+
+/** Allowed fare band: at most this many ₹ below {@link recommendedFareRange}'s minimum. */
+export const PUBLISH_FARE_MAX_BELOW_MIN_RECOMMENDED = 20;
+
+/** Allowed fare band: at most this many ₹ above {@link recommendedFareRange}'s maximum. */
+export const PUBLISH_FARE_MAX_ABOVE_MAX_RECOMMENDED = 50;
+
+/**
+ * Enforced limits for publish / price: recommended “sweet spot” plus a small band
+ * (₹{@link PUBLISH_FARE_MAX_BELOW_MIN_RECOMMENDED} below min, ₹{@link PUBLISH_FARE_MAX_ABOVE_MAX_RECOMMENDED} above max).
+ */
+export function allowedPublishFareRange(distanceKm: number): {
+  minRecommended: number;
+  maxRecommended: number;
+  minAllowed: number;
+  maxAllowed: number;
+} {
+  const { minRecommended, maxRecommended } = recommendedFareRange(distanceKm);
+  return {
+    minRecommended,
+    maxRecommended,
+    minAllowed: Math.max(1, minRecommended - PUBLISH_FARE_MAX_BELOW_MIN_RECOMMENDED),
+    maxAllowed: Math.min(
+      PUBLISH_FARE_INPUT_MAX,
+      maxRecommended + PUBLISH_FARE_MAX_ABOVE_MAX_RECOMMENDED
+    ),
+  };
+}

@@ -1,6 +1,7 @@
 /**
  * Keyed drafts so PublishRide can restore form after stack reset (location pick).
- * Key is kept in the map for a short window so React Strict Mode remounts still see data.
+ * Drafts are removed after `DRAFT_TTL_MS` so Strict Mode remounts still see data,
+ * but the window must cover route preview → date → time → price.
  */
 export type PublishRideFormDraft = {
   pickup: string;
@@ -34,8 +35,11 @@ export function getPublishRideDraft(key: string): PublishRideFormDraft | null {
   return draftByKey.get(key) ?? null;
 }
 
+/** Long enough for route preview → date → time → price; 3s was too short and left PublishRide empty. */
+const DRAFT_TTL_MS = 120_000;
+
 export function schedulePublishDraftCleanup(key: string): void {
   setTimeout(() => {
     draftByKey.delete(key);
-  }, 3000);
+  }, DRAFT_TTL_MS);
 }

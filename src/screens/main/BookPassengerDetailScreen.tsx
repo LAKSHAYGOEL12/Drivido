@@ -79,14 +79,21 @@ export default function BookPassengerDetailScreen(): React.JSX.Element {
   const passengerName = bookingPassengerDisplayName(booking);
   const passengerId = booking.userId ?? '';
 
+  const passengerListSegmentScope = useMemo(() => {
+    const ext = booking as { passenger_list_segment_id?: string };
+    return String(booking.passengerListSegmentId ?? ext.passenger_list_segment_id ?? '').trim();
+  }, [booking]);
+
   /** Structured timeline: nav lines from ride detail merge, else embedded `booking.bookingHistory`. */
   const bookingHistoryItems = useMemo(
     () =>
       buildBookingHistoryTimelineItems({
         ownerBookingHistoryLines,
         embedded: booking.bookingHistory,
+        scopeToPassengerListSegmentId: passengerListSegmentScope,
+        scopeEmbeddedSnapshotsAfterBookedAt: booking.bookedAt,
       }),
-    [ownerBookingHistoryLines, booking.bookingHistory]
+    [ownerBookingHistoryLines, booking.bookingHistory, passengerListSegmentScope, booking.bookedAt]
   );
   const passengerAge = calculateAge(booking.dateOfBirth);
   const { pickup, drop } = bookingPickupDrop(ride, booking);

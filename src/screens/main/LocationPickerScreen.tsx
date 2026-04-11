@@ -491,8 +491,20 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
         const hasPickup = hasNumber(pLat) && hasNumber(pLon) && (pLat !== 0 || pLon !== 0);
         const hasDestination = hasNumber(dLat) && hasNumber(dLon) && (dLat !== 0 || dLon !== 0);
 
-        /** Both points set → route selection (km) → price screen → back to Publish (same as before). */
-        if (hasPickup && hasDestination) {
+        /** Opening the picker already had both coords → user is editing one stop; stay on PublishRide. */
+        const hadBothStopsBefore =
+          hasNumber(currentPickupLat) &&
+          hasNumber(currentPickupLon) &&
+          (currentPickupLat !== 0 || currentPickupLon !== 0) &&
+          hasNumber(currentDestLat) &&
+          hasNumber(currentDestLon) &&
+          (currentDestLat !== 0 || currentDestLon !== 0);
+
+        /**
+         * First time both stops are set → route preview → date → time → price.
+         * If both were already set before this picker opened, merge and go back so date/time/fare are not reset.
+         */
+        if (hasPickup && hasDestination && !hadBothStopsBefore) {
           navigation.replace(
             'PublishRoutePreview' as never,
             {
@@ -508,7 +520,7 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
           return;
         }
 
-        /** Only pickup or only destination so far → merge into Publish and pop picker. */
+        /** Only one stop, or both stops after editing an existing pair → merge into Publish and pop picker. */
         const state = navigation.getState();
         const previousRoute = state.routes[state.index - 1];
         if (previousRoute?.key) {

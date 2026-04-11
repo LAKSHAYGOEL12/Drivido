@@ -42,6 +42,8 @@ export const API = {
     bookings: {
       create: '/bookings',
       list: '/bookings',
+      /** GET — passenger booking attempt history (all rows; optional rideId, groupByRide). */
+      history: '/bookings/history',
       approve: (bookingId: string) => `/bookings/${bookingId}/approve`,
       reject: (bookingId: string) => `/bookings/${bookingId}/reject`,
       /** DELETE — cancel passenger's own booking (body optional per backend). */

@@ -241,6 +241,14 @@ function normalizeRideItem(raw: Record<string, unknown>): RideListItem {
       r.notes
   )?.trim();
   if (rideDesc) out.description = rideDesc;
+  const vbc = r.viewer_booking_context;
+  if (vbc && typeof vbc === 'object') {
+    out.viewer_booking_context = vbc as NonNullable<RideListItem['viewer_booking_context']>;
+  }
+  const bm = toStr(r.bookingMode ?? r.booking_mode)?.trim().toLowerCase();
+  if (bm === 'instant' || bm === 'request') out.bookingMode = bm as RideListItem['bookingMode'];
+  if (typeof r.instantBooking === 'boolean') out.instantBooking = r.instantBooking;
+  else if (typeof r.instant_booking === 'boolean') out.instantBooking = r.instant_booking;
   return out;
 }
 

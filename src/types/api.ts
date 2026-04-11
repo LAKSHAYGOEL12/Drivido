@@ -148,6 +148,9 @@ export interface RideBookingHistoryEvent {
   seatsChanged: number;
   seatsAfter: number;
   createdAt: string;
+  /** When set, ride-level timeline events belong to this passenger list segment (owner removal → new id). */
+  passengerListSegmentId?: string;
+  passenger_list_segment_id?: string;
   /** Backend-owned display hint; when present, client should prefer this over inferred copy. */
   displayKey?: string;
   displayParams?: { seats?: number; reason?: string };
@@ -172,6 +175,19 @@ export interface RideBookingHistoryMeta {
   serverAuthoredFields?: string[];
   /** Human-readable deduplication policy (non-empty ⇒ prefer server timeline, skip client merge of embedded snapshots). */
   deduplication?: string;
+}
+
+/**
+ * SSOT for passenger book/request eligibility on a ride (GET /rides, GET /rides/:id).
+ * Snake_case keys only — do not duplicate on ride root when this object is present.
+ */
+export interface ViewerBookingContextSnake {
+  can_book?: boolean;
+  can_request?: boolean;
+  block_reason?: string;
+  block_reason_code?: string;
+  cooldown_ends_at?: string;
+  active_booking_id?: string;
 }
 
 /** Single ride in GET /rides response. For UI labels use ridePublisherDisplayName (name over username). */
@@ -286,8 +302,34 @@ export interface RideListItem {
    * (e.g. cancelled) for list filters and badges.
    */
   myBookingStatus?: string;
+  /** API snake_case alias for `myBookingStatus` (list/detail formatter). */
+  my_booking_status?: string;
   /** Optional reason/details for my booking status (e.g. ride_started auto-reject). */
   myBookingStatusReason?: string;
+  /** API snake_case alias for `myBookingStatusReason`. */
+  my_booking_status_reason?: string;
+  /**
+   * SSOT for viewer book/request rules — use this in preference to root duplicates (when present).
+   */
+  viewer_booking_context?: ViewerBookingContextSnake;
+  /** @deprecated Legacy camel duplicate; prefer `viewer_booking_context`. */
+  viewerBookingContext?: ViewerBookingContextSnake;
+  /**
+   * @deprecated Prefer `viewer_booking_context` — root copies removed when nested context is sent.
+   * Kept for older API responses only.
+   */
+  canBook?: boolean;
+  can_book?: boolean;
+  canRequest?: boolean;
+  can_request?: boolean;
+  blockReason?: string;
+  block_reason?: string;
+  blockReasonCode?: string;
+  block_reason_code?: string;
+  cooldownEndsAt?: string;
+  cooldown_ends_at?: string;
+  activeBookingId?: string;
+  active_booking_id?: string;
   /** Backend chat access policy (single source of truth). */
   canSendChat?: boolean;
   chatClosed?: boolean;
@@ -306,6 +348,13 @@ export interface RideListItem {
     seats: number;
     status: string;
     bookedAt: string;
+    updatedAt?: string;
+    previousBookingId?: string;
+    previous_booking_id?: string;
+    retryOfBookingId?: string;
+    retry_of_booking_id?: string;
+    idempotencyKey?: string;
+    idempotency_key?: string;
     pickupLocationName?: string;
     destinationLocationName?: string;
     avatarUrl?: string;
@@ -333,6 +382,8 @@ export interface RideListItem {
       bookedAt?: string;
       displayKey?: string;
       displayParams?: { seats?: number; reason?: string };
+      passengerListSegmentId?: string;
+      passenger_list_segment_id?: string;
     }>;
     /**
      * When true, `cancelled_by_owner` row still holds seats (partial removal). Omit/false = full removal
@@ -353,6 +404,15 @@ export interface RideListItem {
      * Owner list: `pending_request` | `active_passenger` | `historical_cancelled` — server-owned row role.
      */
     ownerListRole?: string;
+    /**
+     * Server SSOT: group owner passenger rows by `(userId, passenger_list_segment_id)`; new id after owner removal + rebook.
+     * Legacy rows may use `legacy-<bookingId>` — client falls back to status-based split for those-only payloads.
+     */
+    passengerListSegmentId?: string;
+    passenger_list_segment_id?: string;
+    /** Fine-grain cancel/remove reason when `status` is `cancelled_by_owner` (e.g. `owner_removed` starts a new segment). */
+    statusReason?: string;
+    status_reason?: string;
   }>;
   /**
    * Populated from ride detail: `bookingHistory` array grouped by `userId` (owner view).
@@ -422,6 +482,14 @@ export interface CreateBookingRequest {
   rideId: string;
   seats: number;
   note?: string;
+  /** Idempotent create: same key returns existing booking (backend). */
+  idempotencyKey?: string;
+  idempotency_key?: string;
+  /** Prior terminal booking id for this user+ride (retry chain). */
+  previousBookingId?: string;
+  previous_booking_id?: string;
+  retryOfBookingId?: string;
+  retry_of_booking_id?: string;
   /** Passenger's searched trip (may differ from driver's full route). */
   pickupLocationName?: string;
   destinationLocationName?: string;

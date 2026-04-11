@@ -238,6 +238,9 @@ export function mapRawToBookingRow(o: Record<string, unknown>): RideBookingRow |
         const bat = toStr(rec.bookedAt ?? rec.booked_at ?? rec.createdAt ?? rec.created_at) ?? '';
         const embDk = toStr(rec.displayKey ?? rec.display_key);
         const embDp = rec.displayParams ?? rec.display_params;
+        const embSeg = toStr(
+          rec.passengerListSegmentId ?? rec.passenger_list_segment_id
+        );
         let embDisplayParams: { seats?: number; reason?: string } | undefined;
         if (embDp && typeof embDp === 'object' && !Array.isArray(embDp)) {
           const dpr = embDp as Record<string, unknown>;
@@ -256,6 +259,7 @@ export function mapRawToBookingRow(o: Record<string, unknown>): RideBookingRow |
           bookedAt: bat,
           ...(embDk ? { displayKey: embDk } : {}),
           ...(embDisplayParams ? { displayParams: embDisplayParams } : {}),
+          ...(embSeg ? { passengerListSegmentId: embSeg } : {}),
         };
       })
       .filter((x): x is NonNullable<typeof x> => x != null);
@@ -288,6 +292,18 @@ export function mapRawToBookingRow(o: Record<string, unknown>): RideBookingRow |
     (o as Record<string, unknown>).rebooked_badge_source;
   const ownerListRoleRaw =
     (o as Record<string, unknown>).ownerListRole ?? (o as Record<string, unknown>).owner_list_role;
+  const passengerListSegmentId = toStr(
+    (o as Record<string, unknown>).passengerListSegmentId ??
+      (o as Record<string, unknown>).passenger_list_segment_id
+  );
+  const statusReason = toStr(
+    (o as Record<string, unknown>).statusReason ?? (o as Record<string, unknown>).status_reason
+  );
+
+  const updatedAt = toStr(o.updatedAt ?? o.updated_at);
+  const previousBookingId = toStr(o.previousBookingId ?? o.previous_booking_id);
+  const retryOfBookingId = toStr(o.retryOfBookingId ?? o.retry_of_booking_id);
+  const idempotencyKey = toStr(o.idempotencyKey ?? o.idempotency_key);
 
   return {
     id: bookingId || `${userId || 'b'}-${toStr(o.bookedAt) ?? ''}`,
@@ -297,6 +313,10 @@ export function mapRawToBookingRow(o: Record<string, unknown>): RideBookingRow |
     seats: seatsFromRaw(o.seats),
     status,
     bookedAt: toStr(o.bookedAt ?? o.booked_at ?? o.createdAt ?? o.created_at) ?? '',
+    ...(updatedAt ? { updatedAt } : {}),
+    ...(previousBookingId ? { previousBookingId } : {}),
+    ...(retryOfBookingId ? { retryOfBookingId } : {}),
+    ...(idempotencyKey ? { idempotencyKey } : {}),
     ...(pickupLocationName ? { pickupLocationName } : {}),
     ...(destinationLocationName ? { destinationLocationName } : {}),
     ...(avatarUrl ? { avatarUrl } : {}),
@@ -316,6 +336,8 @@ export function mapRawToBookingRow(o: Record<string, unknown>): RideBookingRow |
     ...(typeof ownerListRoleRaw === 'string' && ownerListRoleRaw.trim()
       ? { ownerListRole: ownerListRoleRaw.trim() }
       : {}),
+    ...(passengerListSegmentId ? { passengerListSegmentId } : {}),
+    ...(statusReason ? { statusReason } : {}),
     // Extract dateOfBirth - check root first, then nested objects
     ...((): { dateOfBirth?: string } => {
       const dob = toStr(

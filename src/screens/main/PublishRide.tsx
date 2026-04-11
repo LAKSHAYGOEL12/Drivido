@@ -32,6 +32,7 @@ import {
 import PassengersPickerModal from '../../components/common/PassengersPickerModal';
 import {
   alertDepartureTimeInPast,
+  alertFareOutsideAllowedRange,
   alertFareRequiredBeforePublish,
   alertMissingPickupDestination,
   alertNeedMapLocations,
@@ -39,6 +40,7 @@ import {
   alertRouteRequiredBeforePrice,
 } from '../../utils/publishAlerts';
 import {
+  allowedPublishFareRange,
   effectivePublishDistanceKm,
   isPublishStopsComplete,
   publishStopsCoordKey,
@@ -246,6 +248,8 @@ export default function PublishRide(): React.JSX.Element {
   /** Coords key when `selectedRouteDistanceKm` was applied — drop stale fare if coords change. */
   const lastRouteFareCoordsKeyRef = useRef<string | null>(null);
   const scrollRef = useRef<ScrollView>(null);
+  /** Matches Find tab `_tabResetToken` — tab bar tap must clear form; `navigate` does not remount this screen. */
+  const publishTabResetHandledRef = useRef(0);
 
   const calendarDays = useMemo(
     () => getCalendarDays(calendarMonth.getFullYear(), calendarMonth.getMonth()),
@@ -460,7 +464,6 @@ export default function PublishRide(): React.JSX.Element {
   useLayoutEffect(() => {
     if (!publishRestoreKey) return;
     const d = getPublishRideDraft(publishRestoreKey);
-    if (!d) return;
     const p = (route.params || {}) as {
       selectedFrom?: string;
       selectedTo?: string;
@@ -471,7 +474,69 @@ export default function PublishRide(): React.JSX.Element {
       selectedRate?: string;
       selectedDurationSeconds?: number;
       selectedDistanceKm?: number;
+      /** From PublishPrice after PublishSelectDate / PublishSelectTime — must override draft date/time. */
+      selectedDateIso?: string;
+      selectedTimeHour?: number;
+      selectedTimeMinute?: number;
     };
+
+    const paramsCoordsOk =
+      typeof p.pickupLatitude === 'number' &&
+      !Number.isNaN(p.pickupLatitude) &&
+      typeof p.pickupLongitude === 'number' &&
+      !Number.isNaN(p.pickupLongitude) &&
+      typeof p.destinationLatitude === 'number' &&
+      !Number.isNaN(p.destinationLatitude) &&
+      typeof p.destinationLongitude === 'number' &&
+      !Number.isNaN(p.destinationLongitude);
+
+    if (!d) {
+      if (!paramsCoordsOk) return;
+      setPickup(String(p.selectedFrom ?? ''));
+      setDestination(String(p.selectedTo ?? ''));
+      setPickupLatitude(p.pickupLatitude!);
+      setPickupLongitude(p.pickupLongitude!);
+      setDestinationLatitude(p.destinationLatitude!);
+      setDestinationLongitude(p.destinationLongitude!);
+      if (p.selectedDateIso) {
+        const dt = new Date(p.selectedDateIso);
+        if (!Number.isNaN(dt.getTime())) {
+          setSelectedDate(dt);
+          setDateLabel(formatPublishStyleDateLabel(dt));
+          setCalendarMonth(new Date(dt.getFullYear(), dt.getMonth(), 1));
+        }
+      }
+      if (
+        typeof p.selectedTimeHour === 'number' &&
+        typeof p.selectedTimeMinute === 'number' &&
+        !Number.isNaN(p.selectedTimeHour) &&
+        !Number.isNaN(p.selectedTimeMinute)
+      ) {
+        const h = Math.max(0, Math.min(23, Math.floor(p.selectedTimeHour)));
+        const m = Math.max(0, Math.min(59, Math.floor(p.selectedTimeMinute)));
+        setSelectedTime({ hour: h, minute: m });
+        setTimeLabel(formatTimeLabel(h, m));
+        setClockHour24(h);
+        setClockMinute(Math.round(m / 5) * 5 % 60);
+      }
+      if (typeof p.selectedRate === 'string') setRate(p.selectedRate);
+      if (typeof p.selectedDurationSeconds === 'number' && !Number.isNaN(p.selectedDurationSeconds)) {
+        setRouteDurationSeconds(Math.max(0, Math.floor(p.selectedDurationSeconds)));
+      }
+      if (typeof p.selectedDistanceKm === 'number' && !Number.isNaN(p.selectedDistanceKm)) {
+        const pk = publishStopsCoordKey(
+          p.pickupLatitude!,
+          p.pickupLongitude!,
+          p.destinationLatitude!,
+          p.destinationLongitude!
+        );
+        setSelectedRouteDistanceKm(Math.max(1, p.selectedDistanceKm));
+        lastRouteFareCoordsKeyRef.current = pk;
+      }
+      schedulePublishDraftCleanup(publishRestoreKey);
+      return;
+    }
+
     setPickup(String(p.selectedFrom ?? d.pickup ?? ''));
     setDestination(String(p.selectedTo ?? d.destination ?? ''));
     const plat =
@@ -486,37 +551,60 @@ export default function PublishRide(): React.JSX.Element {
     setPickupLongitude(plon);
     setDestinationLatitude(dlat);
     setDestinationLongitude(dlon);
-    try {
-      setSelectedDate(new Date(d.selectedDateIso));
-    } catch {
-      setSelectedDate(new Date());
+    if (p.selectedDateIso) {
+      const dt = new Date(p.selectedDateIso);
+      if (!Number.isNaN(dt.getTime())) {
+        setSelectedDate(dt);
+        setDateLabel(formatPublishStyleDateLabel(dt));
+        setCalendarMonth(new Date(dt.getFullYear(), dt.getMonth(), 1));
+      }
+    } else {
+      try {
+        setSelectedDate(new Date(d.selectedDateIso));
+      } catch {
+        setSelectedDate(new Date());
+      }
+      setDateLabel(d.dateLabel);
+      try {
+        setCalendarMonth(new Date(d.calendarMonthIso));
+      } catch {
+        setCalendarMonth(new Date());
+      }
     }
-    setDateLabel(d.dateLabel);
-    setSelectedTime(d.selectedTime);
-    setTimeLabel(d.timeLabel);
+    if (
+      typeof p.selectedTimeHour === 'number' &&
+      typeof p.selectedTimeMinute === 'number' &&
+      !Number.isNaN(p.selectedTimeHour) &&
+      !Number.isNaN(p.selectedTimeMinute)
+    ) {
+      const h = Math.max(0, Math.min(23, Math.floor(p.selectedTimeHour)));
+      const m = Math.max(0, Math.min(59, Math.floor(p.selectedTimeMinute)));
+      setSelectedTime({ hour: h, minute: m });
+      setTimeLabel(formatTimeLabel(h, m));
+      setClockHour24(h);
+      setClockMinute(Math.round(m / 5) * 5 % 60);
+    } else {
+      setSelectedTime(d.selectedTime);
+      setTimeLabel(d.timeLabel);
+      const draftHour24 =
+        typeof (d as { clockHour24?: unknown }).clockHour24 === 'number'
+          ? Math.max(0, Math.min(23, Math.floor((d as { clockHour24: number }).clockHour24)))
+          : (() => {
+              const h12 = typeof (d as { clockHour12?: unknown }).clockHour12 === 'number'
+                ? Math.max(1, Math.min(12, Math.floor((d as { clockHour12: number }).clockHour12)))
+                : 12;
+              const am = typeof (d as { clockAM?: unknown }).clockAM === 'boolean'
+                ? Boolean((d as { clockAM: boolean }).clockAM)
+                : true;
+              return h12 === 12 ? (am ? 0 : 12) : (am ? h12 : h12 + 12);
+            })();
+      setClockHour24(draftHour24);
+      setClockMinute(d.clockMinute);
+    }
     setSeats(d.seats || 1);
     setRate(typeof p.selectedRate === 'string' ? p.selectedRate : d.rate);
     setInstantBooking(d.instantBooking);
     setRideDescription(typeof d.rideDescription === 'string' ? d.rideDescription : '');
-    try {
-      setCalendarMonth(new Date(d.calendarMonthIso));
-    } catch {
-      setCalendarMonth(new Date());
-    }
-    const draftHour24 =
-      typeof (d as { clockHour24?: unknown }).clockHour24 === 'number'
-        ? Math.max(0, Math.min(23, Math.floor((d as { clockHour24: number }).clockHour24)))
-        : (() => {
-            const h12 = typeof (d as { clockHour12?: unknown }).clockHour12 === 'number'
-              ? Math.max(1, Math.min(12, Math.floor((d as { clockHour12: number }).clockHour12)))
-              : 12;
-            const am = typeof (d as { clockAM?: unknown }).clockAM === 'boolean'
-              ? Boolean((d as { clockAM: boolean }).clockAM)
-              : true;
-            return h12 === 12 ? (am ? 0 : 12) : (am ? h12 : h12 + 12);
-          })();
-    setClockHour24(draftHour24);
-    setClockMinute(d.clockMinute);
     schedulePublishDraftCleanup(publishRestoreKey);
 
     if (typeof p.selectedDurationSeconds === 'number' && !Number.isNaN(p.selectedDurationSeconds)) {
@@ -535,8 +623,8 @@ export default function PublishRide(): React.JSX.Element {
       lastRouteFareCoordsKeyRef.current = pk;
     }
     // Don't call setParams(all undefined) — RN dispatches SET_PARAMS with {} and no navigator handles it.
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- draft restore + price return (duration/km)
-  }, [publishRestoreKey, navigation, prDurSec, prDistKm]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- draft restore + price return; route.params ensures merge payloads apply
+  }, [publishRestoreKey, navigation, prDurSec, prDistKm, route.params]);
 
   useFocusEffect(
     React.useCallback(() => {
@@ -568,7 +656,6 @@ export default function PublishRide(): React.JSX.Element {
         _publishRestoreKey?: string;
       } | undefined;
       if (!p) return;
-      if (p._publishRestoreKey) return;
       if (p.selectedFrom !== undefined) setPickup(p.selectedFrom ?? '');
       if (p.selectedTo !== undefined) setDestination(p.selectedTo ?? '');
       if (p.pickupLatitude !== undefined) setPickupLatitude(p.pickupLatitude);
@@ -702,6 +789,29 @@ export default function PublishRide(): React.JSX.Element {
     lastRouteFareCoordsKeyRef.current = null;
   }, []);
 
+  useEffect(() => {
+    const p = route.params as Record<string, unknown> | undefined;
+    const token = p?._publishTabResetToken;
+    if (typeof token !== 'number' || Number.isNaN(token)) return;
+    if (token === publishTabResetHandledRef.current) return;
+
+    /**
+     * Tab bar sends `_publishTabResetToken` alone to clear the form. After Set price, navigators sometimes
+     * merge that token with the return payload — running `resetFormToDefault` here would wipe the restored
+     * pickup, fare, etc. Only clear when params look like a deliberate tab reset, not a price/route return.
+     */
+    const hasPublishFlowPayload =
+      typeof p._publishRestoreKey === 'string' ||
+      (typeof p.selectedRate === 'string' && String(p.selectedRate).trim() !== '') ||
+      (typeof p.selectedFrom === 'string' && String(p.selectedFrom).trim() !== '') ||
+      (typeof p.selectedDistanceKm === 'number' && !Number.isNaN(p.selectedDistanceKm));
+
+    publishTabResetHandledRef.current = token;
+    if (hasPublishFlowPayload) return;
+
+    resetFormToDefault();
+  }, [route.params, resetFormToDefault]);
+
   const onRemovePublishedRecent = useCallback(
     async (id: string) => {
       await removeRecentPublished(id, recentUserKey);
@@ -737,6 +847,31 @@ export default function PublishRide(): React.JSX.Element {
       }
       if (!validation.rideDescription(rideDescription)) {
         Alert.alert('Ride description', validationErrors.rideDescription);
+        return;
+      }
+      const parsedFare = parseInt(rate.trim(), 10);
+      if (Number.isNaN(parsedFare) || parsedFare <= 0) {
+        alertFareRequiredBeforePublish();
+        return;
+      }
+      const rpKm = route.params as { selectedDistanceKm?: number } | undefined;
+      const rawKm = rpKm?.selectedDistanceKm;
+      const paramKmPub =
+        typeof rawKm === 'number' && !Number.isNaN(rawKm) ? rawKm : undefined;
+      const storedKmPub =
+        selectedRouteDistanceKm ??
+        (typeof paramKmPub === 'number' && paramKmPub > 0 ? paramKmPub : undefined);
+      const distKmPub = effectivePublishDistanceKm({
+        selectedDistanceKm: storedKmPub,
+        pickupLatitude,
+        pickupLongitude,
+        destinationLatitude,
+        destinationLongitude,
+        preferStoredRouteDistance: storedKmPub != null,
+      });
+      const { minAllowed: minFareAllowed, maxAllowed: maxFareAllowed } = allowedPublishFareRange(distKmPub);
+      if (parsedFare < minFareAllowed || parsedFare > maxFareAllowed) {
+        alertFareOutsideAllowedRange(minFareAllowed, maxFareAllowed);
         return;
       }
       const vc = (resolved?.vehicleColor ?? user?.vehicleColor ?? '').trim();
@@ -858,6 +993,8 @@ export default function PublishRide(): React.JSX.Element {
       mergedVehicles,
       selectedVehicleId,
       rideDescription,
+      route.params,
+      selectedRouteDistanceKm,
     ]
   );
 
@@ -1161,17 +1298,36 @@ export default function PublishRide(): React.JSX.Element {
 
         <View style={styles.section}>
           <Text style={styles.cardSectionLabel}>Booking</Text>
-          <View style={styles.toggleCard}>
-            <View style={styles.toggleCardBody}>
-              <Text style={styles.toggleTitle}>Instant booking</Text>
-              <Text style={styles.toggleDesc}>Bookings are confirmed without you approving each one</Text>
+          <View style={[styles.instantBookingRow, instantBooking && styles.instantBookingRowOn]}>
+            <View
+              style={[
+                styles.instantBookingIconWrap,
+                instantBooking && styles.instantBookingIconWrapOn,
+              ]}
+            >
+              <Ionicons
+                name="flash"
+                size={20}
+                color={instantBooking ? COLORS.primary : COLORS.textMuted}
+              />
             </View>
-            <View style={styles.toggleSwitchWrap}>
+            <View style={styles.instantBookingBody}>
+              <Text style={[styles.instantBookingTitle, instantBooking && styles.instantBookingTitleOn]}>
+                Instant booking
+              </Text>
+              <Text style={[styles.instantBookingDesc, instantBooking && styles.instantBookingDescOn]}>
+                Bookings are confirmed without you approving each one
+              </Text>
+            </View>
+            <View style={styles.instantBookingSwitchWrap}>
               <Switch
                 value={instantBooking}
                 onValueChange={setInstantBooking}
-                trackColor={{ false: COLORS.border, true: COLORS.primaryLight }}
-                thumbColor={instantBooking ? COLORS.primary : COLORS.background}
+                trackColor={{
+                  false: '#d1d5db',
+                  true: COLORS.primaryLight,
+                }}
+                thumbColor={instantBooking ? COLORS.primary : '#e5e7eb'}
               />
             </View>
           </View>
@@ -1820,38 +1976,63 @@ const styles = StyleSheet.create({
     color: COLORS.textMuted,
     marginTop: 4,
   },
-  toggleCard: {
+  instantBookingRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
-    backgroundColor: COLORS.background,
+    backgroundColor: '#f4f4f5',
     borderRadius: 12,
     paddingVertical: 14,
     paddingHorizontal: 14,
     marginBottom: 12,
     borderWidth: 1,
-    borderColor: COLORS.borderLight,
-    overflow: 'hidden',
+    borderColor: '#e4e4e7',
+    borderLeftWidth: 3,
+    borderLeftColor: '#d4d4d8',
   },
-  toggleCardBody: {
+  instantBookingRowOn: {
+    backgroundColor: 'rgba(41, 190, 139, 0.14)',
+    borderColor: 'rgba(41, 190, 139, 0.38)',
+    borderLeftColor: COLORS.primary,
+  },
+  instantBookingIconWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#e4e4e7',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  instantBookingIconWrapOn: {
+    backgroundColor: 'rgba(41, 190, 139, 0.22)',
+  },
+  instantBookingBody: {
     flex: 1,
     minWidth: 0,
   },
-  toggleSwitchWrap: {
-    flexShrink: 0,
-    justifyContent: 'center',
+  instantBookingTitle: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: '#3f3f46',
+    letterSpacing: -0.2,
   },
-  toggleTitle: {
-    fontSize: 16,
-    fontWeight: '600',
+  instantBookingTitleOn: {
     color: COLORS.text,
   },
-  toggleDesc: {
+  instantBookingDesc: {
     fontSize: 13,
     lineHeight: 18,
-    color: COLORS.textSecondary,
+    fontWeight: '500',
+    color: COLORS.textMuted,
     marginTop: 4,
-    flexShrink: 1,
+  },
+  instantBookingDescOn: {
+    fontWeight: '600',
+    color: '#3f7668',
+  },
+  instantBookingSwitchWrap: {
+    flexShrink: 0,
+    justifyContent: 'center',
   },
   publishButton: {
     flexDirection: 'row',

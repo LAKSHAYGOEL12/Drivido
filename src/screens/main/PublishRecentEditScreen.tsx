@@ -37,6 +37,7 @@ import {
 } from '../../services/recent-published-storage';
 import {
   alertDepartureTimeInPast,
+  alertFareOutsideAllowedRange,
   alertFareRequiredBeforePublish,
   alertMissingPickupDestination,
   alertNeedMapLocations,
@@ -44,6 +45,7 @@ import {
   alertRouteRequiredBeforePrice,
 } from '../../utils/publishAlerts';
 import {
+  allowedPublishFareRange,
   effectivePublishDistanceKm,
   isPublishStopsComplete,
   publishStopsCoordKey,
@@ -430,6 +432,30 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
         Alert.alert('Vehicle required', 'Add your vehicle name and license plate to your profile to publish rides.');
         return;
       }
+      const parsedFareRe = parseInt(rate.trim(), 10);
+      if (Number.isNaN(parsedFareRe) || parsedFareRe <= 0) {
+        alertFareRequiredBeforePublish();
+        return;
+      }
+      const rawKmRe = route.params?.selectedDistanceKm;
+      const paramKmRe =
+        typeof rawKmRe === 'number' && !Number.isNaN(rawKmRe) ? rawKmRe : undefined;
+      const storedKmRe =
+        selectedRouteDistanceKm ??
+        (typeof paramKmRe === 'number' && paramKmRe > 0 ? paramKmRe : undefined);
+      const distKmRe = effectivePublishDistanceKm({
+        selectedDistanceKm: storedKmRe,
+        pickupLatitude,
+        pickupLongitude,
+        destinationLatitude,
+        destinationLongitude,
+        preferStoredRouteDistance: storedKmRe != null,
+      });
+      const { minAllowed: minFareRe, maxAllowed: maxFareRe } = allowedPublishFareRange(distKmRe);
+      if (parsedFareRe < minFareRe || parsedFareRe > maxFareRe) {
+        alertFareOutsideAllowedRange(minFareRe, maxFareRe);
+        return;
+      }
       const vc = (resolved?.vehicleColor ?? user?.vehicleColor ?? '').trim();
       const stableVehicleId =
         rideOpts?.vehicleId ??
@@ -565,6 +591,8 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
       routeDurationSeconds,
       mergedVehicles,
       selectedVehicleId,
+      route.params,
+      selectedRouteDistanceKm,
     ]
   );
 

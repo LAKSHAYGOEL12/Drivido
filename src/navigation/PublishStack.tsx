@@ -6,6 +6,8 @@ import { COLORS } from '../constants/colors';
 import PublishRide from '../screens/main/PublishRide';
 import LocationPickerScreen from '../screens/main/LocationPickerScreen';
 import PublishRoutePreviewScreen from '../screens/main/PublishRoutePreviewScreen';
+import PublishSelectDateScreen from '../screens/main/PublishSelectDateScreen';
+import PublishSelectTimeScreen from '../screens/main/PublishSelectTimeScreen';
 import PublishPriceScreen from '../screens/main/PublishPriceScreen';
 import PublishRecentEditScreen from '../screens/main/PublishRecentEditScreen';
 
@@ -29,6 +31,8 @@ export default function PublishStack(): React.JSX.Element {
       <Stack.Screen name="PublishRecentEdit" component={PublishRecentEditScreen} />
       <Stack.Screen name="LocationPicker" component={LocationPickerScreen} />
       <Stack.Screen name="PublishRoutePreview" component={PublishRoutePreviewScreen} />
+      <Stack.Screen name="PublishSelectDate" component={PublishSelectDateScreen} />
+      <Stack.Screen name="PublishSelectTime" component={PublishSelectTimeScreen} />
       <Stack.Screen name="PublishPrice" component={PublishPriceScreen} />
     </Stack.Navigator>
   );

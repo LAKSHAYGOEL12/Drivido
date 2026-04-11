@@ -1,6 +1,7 @@
 /**
- * Driver removed this passenger from the ride — not eligible to book this ride again
- * (backend must enforce; client blocks UX). API may use canceled / removed variants.
+ * Driver removed this passenger (status shape). Whether they may re-book is decided by the backend
+ * (`canBook` / `canRequest` on ride); the app must not permanently block on this flag alone when SSOT fields exist.
+ * API may use canceled / removed variants.
  */
 export function bookingIsCancelledByOwner(status: string | undefined | null): boolean {
   const s = (status ?? '').trim().toLowerCase();
@@ -82,24 +83,49 @@ export function bookingRowHoldsOccupiedSeats(b: { status?: string; seats?: numbe
 export function pickPreferredBookingStatus(statuses: string[]): string {
   const list = statuses.map((s) => (s ?? '').trim()).filter((s) => s.length > 0);
   if (list.length === 0) return '';
-  const active = list.find((s) => !bookingIsCancelled(s));
-  return active ?? list[list.length - 1] ?? '';
+  const sl = (x: string) => x.trim().toLowerCase();
+  // `rejected` is not bookingIsCancelled — without this, stale rejected wins over a newer self-cancel.
+  const active = list.find((s) => !bookingIsCancelled(s) && sl(s) !== 'rejected');
+  if (active) return active;
+  const pending = list.find((s) => bookingIsPendingLike(s));
+  if (pending) return pending;
+  const cancelled = list.find((s) => bookingIsCancelled(s));
+  if (cancelled) return cancelled;
+  const open = list.find((s) => !bookingIsCancelled(s));
+  if (open) return open;
+  return list[list.length - 1] ?? '';
 }
 
 /** Same ride may list cancelled + active rows for one user (re-book) — use the active row for UI and cancel. */
-export function pickPreferredBookingForUser<T extends { userId?: string; status?: string }>(
-  bookings: T[],
-  userId: string
-): T | undefined {
+export function pickPreferredBookingForUser<
+  T extends { userId?: string; status?: string; seats?: number },
+>(bookings: T[], userId: string): T | undefined {
   const uid = userId.trim();
   if (!uid) return undefined;
   const mine = bookings.filter((b) => (b.userId ?? '').trim() === uid);
   if (mine.length === 0) return undefined;
-  const active =
-    mine.find((b) => !bookingIsCancelled(b.status)) ??
-    mine.find((b) => bookingRowHoldsOccupiedSeats(b));
-  if (active) return active;
-  return mine[mine.length - 1];
+
+  const statusLo = (b: T) => String(b.status ?? '').trim().toLowerCase();
+
+  // 1) Confirmed / accepted (real seat on the ride)
+  const confirmed =
+    mine.find(
+      (b) =>
+        !bookingIsCancelled(b.status) &&
+        bookingIsAcceptedLike(b.status) &&
+        bookingRowHoldsOccupiedSeats(b)
+    ) ?? mine.find((b) => !bookingIsCancelled(b.status) && bookingIsAcceptedLike(b.status));
+  if (confirmed) return confirmed;
+
+  // 2) Request-mode / instant pending — must win over an older `rejected` row when user requests again
+  const pending = mine.find((b) => bookingIsPendingLike(statusLo(b)));
+  if (pending) return pending;
+
+  // 3) Newest row wins among terminals (self-cancel after reject, etc.) — avoids stale `rejected` before `cancelled`.
+  const sorted = [...mine].sort(
+    (a, b) => bookingTimelineMsForHistory(b) - bookingTimelineMsForHistory(a)
+  );
+  return sorted[0] ?? mine[mine.length - 1];
 }
 
 function bookingTimelineMsForHistory(b: {

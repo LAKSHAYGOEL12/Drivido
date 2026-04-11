@@ -52,6 +52,10 @@ function distanceKm(lat1: number, lon1: number, lat2: number, lon2: number): num
   return R * c;
 }
 
+/** Route lines on map — blue only (UI chrome stays theme primary). */
+const ROUTE_LINE_SELECTED = COLORS.secondary;
+const ROUTE_LINE_UNSELECTED = 'rgba(37, 99, 235, 0.38)';
+
 export default function PublishRoutePreviewScreen(): React.JSX.Element {
   const navigation = useNavigation<any>();
   const route = useRoute<RoutePreviewRouteProp>();
@@ -155,7 +159,7 @@ export default function PublishRoutePreviewScreen(): React.JSX.Element {
                   <Polyline
                     key={`route_${idx}`}
                     coordinates={r.overviewPolyline}
-                    strokeColor={idx === selectedRouteIndex ? '#1976ff' : 'rgba(25,118,255,0.35)'}
+                    strokeColor={idx === selectedRouteIndex ? ROUTE_LINE_SELECTED : ROUTE_LINE_UNSELECTED}
                     strokeWidth={idx === selectedRouteIndex ? 6 : 3}
                   />
                 ))
@@ -166,14 +170,14 @@ export default function PublishRoutePreviewScreen(): React.JSX.Element {
                   { latitude: pickupLatitude!, longitude: pickupLongitude! },
                   { latitude: destinationLatitude!, longitude: destinationLongitude! },
                 ]}
-                strokeColor="#2b7bff"
+                strokeColor={ROUTE_LINE_SELECTED}
                 strokeWidth={5}
               />
             ) : null}
             {Marker ? (
               <>
-                <Marker coordinate={{ latitude: pickupLatitude!, longitude: pickupLongitude! }} title="Pickup" pinColor="#16a34a" />
-                <Marker coordinate={{ latitude: destinationLatitude!, longitude: destinationLongitude! }} title="Destination" pinColor="#ef4444" />
+                <Marker coordinate={{ latitude: pickupLatitude!, longitude: pickupLongitude! }} title="Pickup" pinColor={COLORS.primary} />
+                <Marker coordinate={{ latitude: destinationLatitude!, longitude: destinationLongitude! }} title="Destination" pinColor={COLORS.error} />
               </>
             ) : null}
           </MapView>
@@ -184,7 +188,7 @@ export default function PublishRoutePreviewScreen(): React.JSX.Element {
         )}
 
         <TouchableOpacity onPress={backToPublish} style={styles.backFab} hitSlop={10}>
-          <Ionicons name="chevron-back" size={24} color={COLORS.secondary} />
+          <Ionicons name="chevron-back" size={24} color={COLORS.text} />
         </TouchableOpacity>
       </View>
 
@@ -207,7 +211,7 @@ export default function PublishRoutePreviewScreen(): React.JSX.Element {
                 <Ionicons
                   name={idx === selectedRouteIndex ? 'radio-button-on' : 'radio-button-off'}
                   size={22}
-                  color={idx === selectedRouteIndex ? '#1d7df2' : '#60a5fa'}
+                  color={idx === selectedRouteIndex ? COLORS.primary : COLORS.textMuted}
                 />
                 <View style={styles.routeTextWrap}>
                   <Text style={styles.routePrimary}>
@@ -239,7 +243,7 @@ export default function PublishRoutePreviewScreen(): React.JSX.Element {
               routes.length > 0 && routes[selectedRouteIndex]?.durationSeconds
                 ? Math.max(60, Math.round(routes[selectedRouteIndex].durationSeconds))
                 : Math.max(60, Math.round(selectedDistanceKm * 2 * 60));
-            navigation.navigate('PublishPrice', {
+            navigation.navigate('PublishSelectDate', {
               selectedFrom,
               selectedTo,
               pickupLatitude,
@@ -298,7 +302,7 @@ const styles = StyleSheet.create({
   sheetTitle: {
     fontSize: 22,
     fontWeight: '800',
-    color: '#0b2a57',
+    color: COLORS.text,
     marginBottom: 14,
     lineHeight: 26,
   },
@@ -324,7 +328,7 @@ const styles = StyleSheet.create({
   routePrimary: {
     fontSize: 17,
     fontWeight: '700',
-    color: '#133a70',
+    color: COLORS.text,
     lineHeight: 20,
   },
   routeSecondary: {
@@ -341,7 +345,7 @@ const styles = StyleSheet.create({
     width: 56,
     height: 56,
     borderRadius: 28,
-    backgroundColor: '#1d7df2',
+    backgroundColor: COLORS.primary,
     alignItems: 'center',
     justifyContent: 'center',
     shadowColor: '#000',
