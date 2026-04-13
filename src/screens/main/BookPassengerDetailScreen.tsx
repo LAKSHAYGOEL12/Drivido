@@ -27,6 +27,7 @@ import { BookingHistoryTimeline } from '../../components/common/BookingHistoryTi
 import { calculateAge } from '../../utils/calculateAge';
 import { buildBookingHistoryTimelineItems } from '../../utils/bookingHistoryDisplay';
 import { findMainTabNavigatorWithOptions } from '../../navigation/findMainTabNavigator';
+import { MAIN_TAB_PRIMARY_NESTED_ROUTE } from '../../navigation/mainTabPrimaryNestedRoute';
 
 type BookPassengerRouteProp =
   | RouteProp<RidesStackParamList, 'BookPassengerDetail'>
@@ -57,15 +58,9 @@ export default function BookPassengerDetailScreen(): React.JSX.Element {
               | undefined;
             const nestedState = activeTabRoute?.state;
             const nestedName = nestedState?.routes?.[nestedState?.index ?? 0]?.name;
-            const hideTabsOn = new Set([
-              'RideDetail',
-              'RideDetailScreen',
-              'BookPassengerDetail',
-              'Chat',
-              'OwnerProfileModal',
-              'OwnerRatingsModal',
-            ]);
-            if (!nestedName || !hideTabsOn.has(nestedName)) {
+            const tabKey = activeTabRoute?.name as keyof typeof MAIN_TAB_PRIMARY_NESTED_ROUTE | undefined;
+            const primary = tabKey ? MAIN_TAB_PRIMARY_NESTED_ROUTE[tabKey] : undefined;
+            if (!nestedName || !primary || nestedName === primary) {
               tabsNav?.setOptions?.({ tabBarStyle: undefined });
             }
           } catch {

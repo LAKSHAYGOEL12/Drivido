@@ -137,7 +137,7 @@ export default function PublishedRideRouteMapScreen(): React.JSX.Element {
     return `${h} hr ${m} min`;
   };
 
-  const mapHeight = Math.max(280, Dimensions.get('window').height * 0.42);
+  const mapHeight = Math.max(340, Dimensions.get('window').height * 0.62);
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -210,8 +210,7 @@ export default function PublishedRideRouteMapScreen(): React.JSX.Element {
         showsVerticalScrollIndicator={false}
       >
         <Text style={styles.sheetHint}>
-          Lines show the driving routes Google returned for this pickup and destination (up to several
-          alternatives). Times and paths can change with live traffic.
+          For reference only. Driver route can differ.
         </Text>
 
         <View style={styles.stopsCard}>
@@ -261,7 +260,7 @@ export default function PublishedRideRouteMapScreen(): React.JSX.Element {
           </View>
         ) : hasCoords ? (
           <Text style={styles.fallbackNote}>
-            No driving routes returned. The line on the map is a straight path between the two stops.
+            No route details. Driver route can differ.
           </Text>
         ) : null}
       </ScrollView>
@@ -314,14 +313,14 @@ const styles = StyleSheet.create({
   },
   sheetContent: {
     paddingHorizontal: 18,
-    paddingTop: 16,
+    paddingTop: 12,
     paddingBottom: 28,
   },
   sheetHint: {
     fontSize: 13,
-    lineHeight: 19,
+    lineHeight: 18,
     color: COLORS.textSecondary,
-    marginBottom: 14,
+    marginBottom: 12,
   },
   stopsCard: {
     backgroundColor: COLORS.backgroundSecondary,

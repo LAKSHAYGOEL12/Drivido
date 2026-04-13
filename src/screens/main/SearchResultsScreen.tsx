@@ -50,6 +50,11 @@ import {
 } from '../../services/place-recent-storage';
 import { pickPublisherAvatarUrl } from '../../utils/avatarUrl';
 import RideCardSkeleton from '../../components/rides/RideCardSkeleton';
+import {
+  getSearchResultsCache,
+  setSearchResultsCache,
+  searchResultsCacheKey,
+} from '../../utils/searchResultsCache';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -75,7 +80,8 @@ const ALONG_SEGMENT_T_MIN = 0.008;
 
 const MINUTES_AHEAD = 15;
 const MIN_MS = MINUTES_AHEAD * 60 * 1000;
-const RIDES_FETCH_MIN_GAP_MS = 3500;
+/** Throttle rapid re-fetches; keep low enough that repeat visits don’t feel stuck (was 3500ms). */
+const RIDES_FETCH_MIN_GAP_MS = 900;
 
 function toStr(v: unknown): string | undefined {
   return v === undefined || v === null ? undefined : String(v);
@@ -816,6 +822,7 @@ export default function SearchResultsScreen(): React.JSX.Element {
   /** Rides where the current user has a confirmed booking (GET /bookings). */
   const [myConfirmedRideIds, setMyConfirmedRideIds] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
+  const [listRefreshing, setListRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const lastFetchAtRef = useRef(0);
   const inFlightRef = useRef(false);
@@ -865,61 +872,94 @@ export default function SearchResultsScreen(): React.JSX.Element {
     recentUserKey,
   ]);
 
-  const runFetchRides = useCallback(async () => {
-    setError(null);
-    setLoading(true);
-    try {
-      const fromCoordsFromParams =
-        searchFromLat != null && searchFromLon != null
-          ? { latitude: searchFromLat, longitude: searchFromLon }
-          : null;
-      const toCoordsFromParams =
-        searchToLat != null && searchToLon != null
-          ? { latitude: searchToLat, longitude: searchToLon }
-          : null;
-      const [data, geocodedFrom, geocodedTo, bookingsRes] = await Promise.all([
-        api.get<RidesResponse>(API.endpoints.rides.list),
-        fromCoordsFromParams ? null : (searchFrom.trim() ? geocodeAddressWithFallbacks(searchFrom) : Promise.resolve(null)),
-        toCoordsFromParams ? null : (searchTo.trim() ? geocodeAddressWithFallbacks(searchTo) : Promise.resolve(null)),
-        api.get<unknown>(API.endpoints.bookings.list).catch(() => null),
-      ]);
-      const myConfirmedRideIds = new Set<string>();
-      if (bookingsRes) {
-        const arr = extractBookingsListArray(bookingsRes);
-        for (const raw of arr) {
-          const rideId = rideIdFromBookingListRow(raw as Record<string, unknown>);
-          const row = mapRawToBookingRow(raw as Record<string, unknown>);
-          if (!rideId || !row || bookingIsCancelled(row.status)) continue;
-          myConfirmedRideIds.add(rideId);
-        }
+  const performFetchRides = useCallback(
+    async (silent: boolean) => {
+      setError(null);
+      if (silent) {
+        setListRefreshing(true);
+      } else {
+        setLoading(true);
       }
-      const searchFromCoords = fromCoordsFromParams ?? geocodedFrom ?? null;
-      const searchToCoords = toCoordsFromParams ?? geocodedTo ?? null;
-      const d = data as Record<string, unknown> | unknown[];
-      const rawList = Array.isArray(d)
-        ? d
-        : (d?.rides as unknown[] | undefined) ?? (d?.data as Record<string, unknown> | undefined)?.rides ?? [];
-      const all = (rawList as Record<string, unknown>[]).map(normalizeRideItem);
-      const filtered = all.filter((ride) => {
-        const rideDate = getRideDateYMD(ride);
-        if (rideDate !== searchDate) return false;
-        if (!routeMatches(ride, searchFrom, searchTo, searchFromCoords, searchToCoords)) return false;
-        if (currentUserId && isViewerRideOwner(ride, currentUserId)) return false;
-        if (isRideCancelledByOwner(ride)) return false;
-        if (!isAtLeast15MinsLater(ride)) return false;
-        return true;
-      });
-      setMyConfirmedRideIds(myConfirmedRideIds);
-      setRides(filtered);
-    } catch (e: unknown) {
-      const message = e && typeof e === 'object' && 'message' in e
-        ? String((e as { message: unknown }).message)
-        : 'Failed to load rides.';
-      setError(message);
-    } finally {
-      setLoading(false);
-    }
-  }, [searchFrom, searchTo, searchDate, searchFromLat, searchFromLon, searchToLat, searchToLon, currentUserId]);
+      try {
+        const fromCoordsFromParams =
+          searchFromLat != null && searchFromLon != null
+            ? { latitude: searchFromLat, longitude: searchFromLon }
+            : null;
+        const toCoordsFromParams =
+          searchToLat != null && searchToLon != null
+            ? { latitude: searchToLat, longitude: searchToLon }
+            : null;
+        const [data, geocodedFrom, geocodedTo, bookingsRes] = await Promise.all([
+          api.get<RidesResponse>(API.endpoints.rides.list),
+          fromCoordsFromParams ? null : (searchFrom.trim() ? geocodeAddressWithFallbacks(searchFrom) : Promise.resolve(null)),
+          toCoordsFromParams ? null : (searchTo.trim() ? geocodeAddressWithFallbacks(searchTo) : Promise.resolve(null)),
+          api.get<unknown>(API.endpoints.bookings.list).catch(() => null),
+        ]);
+        const myConfirmedRideIds = new Set<string>();
+        if (bookingsRes) {
+          const arr = extractBookingsListArray(bookingsRes);
+          for (const raw of arr) {
+            const rideId = rideIdFromBookingListRow(raw as Record<string, unknown>);
+            const row = mapRawToBookingRow(raw as Record<string, unknown>);
+            if (!rideId || !row || bookingIsCancelled(row.status)) continue;
+            myConfirmedRideIds.add(rideId);
+          }
+        }
+        const searchFromCoords = fromCoordsFromParams ?? geocodedFrom ?? null;
+        const searchToCoords = toCoordsFromParams ?? geocodedTo ?? null;
+        const d = data as Record<string, unknown> | unknown[];
+        const rawList = Array.isArray(d)
+          ? d
+          : (d?.rides as unknown[] | undefined) ?? (d?.data as Record<string, unknown> | undefined)?.rides ?? [];
+        const all = (rawList as Record<string, unknown>[]).map(normalizeRideItem);
+        const filtered = all.filter((ride) => {
+          const rideDate = getRideDateYMD(ride);
+          if (rideDate !== searchDate) return false;
+          if (!routeMatches(ride, searchFrom, searchTo, searchFromCoords, searchToCoords)) return false;
+          if (currentUserId && isViewerRideOwner(ride, currentUserId)) return false;
+          if (isRideCancelledByOwner(ride)) return false;
+          if (!isAtLeast15MinsLater(ride)) return false;
+          return true;
+        });
+        setMyConfirmedRideIds(myConfirmedRideIds);
+        setRides(filtered);
+        setSearchResultsCache(
+          searchResultsCacheKey({
+            searchFrom,
+            searchTo,
+            searchDate,
+            searchPassengers,
+            fromLat: searchFromLat,
+            fromLon: searchFromLon,
+            toLat: searchToLat,
+            toLon: searchToLon,
+          }),
+          filtered,
+          myConfirmedRideIds
+        );
+      } catch (e: unknown) {
+        const message =
+          e && typeof e === 'object' && 'message' in e
+            ? String((e as { message: unknown }).message)
+            : 'Failed to load rides.';
+        setError(message);
+      } finally {
+        setLoading(false);
+        setListRefreshing(false);
+      }
+    },
+    [
+      searchFrom,
+      searchTo,
+      searchDate,
+      searchPassengers,
+      searchFromLat,
+      searchFromLon,
+      searchToLat,
+      searchToLon,
+      currentUserId,
+    ]
+  );
 
   const fetchRides = useCallback(() => {
     const run = async () => {
@@ -929,7 +969,7 @@ export default function SearchResultsScreen(): React.JSX.Element {
       }
       inFlightRef.current = true;
       try {
-        await runFetchRides();
+        await performFetchRides(false);
         lastFetchAtRef.current = Date.now();
       } finally {
         inFlightRef.current = false;
@@ -957,18 +997,50 @@ export default function SearchResultsScreen(): React.JSX.Element {
       trailingTimerRef.current = null;
       void run();
     }, RIDES_FETCH_MIN_GAP_MS - elapsed);
-  }, [runFetchRides]);
+  }, [performFetchRides]);
 
   React.useEffect(() => {
     if (sameRouteWarning) {
       setLoading(false);
+      setListRefreshing(false);
       setError(null);
       setRides([]);
       setMyConfirmedRideIds(new Set());
       return;
     }
+    const key = searchResultsCacheKey({
+      searchFrom,
+      searchTo,
+      searchDate,
+      searchPassengers,
+      fromLat: searchFromLat,
+      fromLon: searchFromLon,
+      toLat: searchToLat,
+      toLon: searchToLon,
+    });
+    const cached = getSearchResultsCache(key);
+    if (cached) {
+      setRides(cached.rides);
+      setMyConfirmedRideIds(new Set(cached.myConfirmedIds));
+      setError(null);
+      setLoading(false);
+      void performFetchRides(true);
+      return;
+    }
     fetchRides();
-  }, [sameRouteWarning, fetchRides]);
+  }, [
+    sameRouteWarning,
+    fetchRides,
+    performFetchRides,
+    searchFrom,
+    searchTo,
+    searchDate,
+    searchPassengers,
+    searchFromLat,
+    searchFromLon,
+    searchToLat,
+    searchToLon,
+  ]);
 
   React.useEffect(() => {
     return () => {
@@ -1111,7 +1183,11 @@ export default function SearchResultsScreen(): React.JSX.Element {
             keyExtractor={(item) => item.id}
             contentContainerStyle={rides.length === 0 ? styles.emptyList : styles.list}
             refreshControl={
-              <RefreshControl refreshing={loading} onRefresh={fetchRides} colors={[COLORS.primary]} />
+              <RefreshControl
+                refreshing={loading || listRefreshing}
+                onRefresh={fetchRides}
+                colors={[COLORS.primary]}
+              />
             }
             ListEmptyComponent={
               <View style={styles.empty}>

@@ -28,6 +28,8 @@ import { showToast } from '../../utils/toast';
 import { bookingIsCancelled } from '../../utils/bookingStatus';
 import { formatPublishStyleDateLabel } from '../../utils/rideDisplay';
 import { findMainTabNavigatorWithOptions } from '../../navigation/findMainTabNavigator';
+import PublishFareBottomSheet from '../../components/publish/PublishFareBottomSheet';
+import { allowedPublishFareRange, straightLineKmBetweenStops } from '../../utils/publishFare';
 
 const MIN_LEAD_MINUTES = 30;
 const CLOCK_SIZE = 232;
@@ -99,11 +101,7 @@ export default function EditRideScreen(): React.JSX.Element {
   );
   const [showDateModal, setShowDateModal] = useState(false);
   const [showSeatsModal, setShowSeatsModal] = useState(false);
-  const [showPriceModal, setShowPriceModal] = useState(false);
-  const [priceDraft, setPriceDraft] = useState(() => {
-    const n = parseInt(String(ride.price ?? '').trim(), 10);
-    return Number.isNaN(n) ? 100 : Math.max(1, n);
-  });
+  const [showFareBottomSheet, setShowFareBottomSheet] = useState(false);
   const [showTimeModal, setShowTimeModal] = useState(false);
   const initialTime = useMemo(() => {
     const [hh, mm] = timeValue.split(':').map(Number);
@@ -122,6 +120,23 @@ export default function EditRideScreen(): React.JSX.Element {
 
   const majorFieldLocked = hasBookings;
 
+  const fareDistanceKm = useMemo(
+    () =>
+      straightLineKmBetweenStops({
+        pickupLatitude: ride.pickupLatitude,
+        pickupLongitude: ride.pickupLongitude,
+        destinationLatitude: ride.destinationLatitude,
+        destinationLongitude: ride.destinationLongitude,
+      }) ?? 1,
+    [ride.pickupLatitude, ride.pickupLongitude, ride.destinationLatitude, ride.destinationLongitude]
+  );
+
+  const fareSheetInitialAmount = useMemo(() => {
+    const n = parseInt(String(price ?? '').trim(), 10);
+    if (!Number.isNaN(n) && n > 0) return n;
+    const { minRecommended } = allowedPublishFareRange(fareDistanceKm);
+    return minRecommended;
+  }, [price, fareDistanceKm]);
 
   const dateObj = useMemo(() => {
     const [y, m, d] = dateValue.split('-').map(Number);
@@ -141,7 +156,6 @@ export default function EditRideScreen(): React.JSX.Element {
   }, [dateValue]);
 
   const timeLabel = `${String(timeHour).padStart(2, '0')}:${String(timeMinute).padStart(2, '0')}`;
-  const PRICE_STEP = 5;
 
   const openTimeModal = () => {
     const parts = timeValue.split(':').map(Number);
@@ -487,7 +501,7 @@ export default function EditRideScreen(): React.JSX.Element {
           <View style={styles.rowDivider} />
           <TouchableOpacity
             style={[styles.fieldRow, majorFieldLocked && styles.fieldRowDisabled]}
-            onPress={() => !majorFieldLocked && setShowPriceModal(true)}
+            onPress={() => !majorFieldLocked && setShowFareBottomSheet(true)}
             activeOpacity={majorFieldLocked ? 1 : 0.75}
           >
             <View style={styles.fieldLeft}>
@@ -587,50 +601,16 @@ export default function EditRideScreen(): React.JSX.Element {
         onDone={(n) => setTotalSeats(String(n))}
       />
 
-      <Modal visible={showPriceModal} transparent animationType="slide" onRequestClose={() => setShowPriceModal(false)}>
-        <TouchableOpacity
-          style={styles.bottomOverlay}
-          activeOpacity={1}
-          onPress={() => {
-            setPrice(String(priceDraft));
-            setShowPriceModal(false);
-          }}
-        >
-          <View style={styles.bottomSheet} onStartShouldSetResponder={() => true}>
-            <Text style={styles.bottomTitle}>Set fare</Text>
-            <View style={styles.priceStepper}>
-              <TouchableOpacity
-                style={[styles.priceStepBtn, priceDraft <= 1 && styles.priceStepBtnDisabled]}
-                onPress={() => setPriceDraft((p) => Math.max(1, p - PRICE_STEP))}
-                disabled={priceDraft <= 1}
-                activeOpacity={0.75}
-              >
-                <Ionicons name="remove" size={24} color={priceDraft <= 1 ? COLORS.textMuted : COLORS.text} />
-              </TouchableOpacity>
-              <View style={styles.priceValueWrap}>
-                <Text style={styles.priceValue}>₹{priceDraft}</Text>
-                <Text style={styles.priceStepHint}>per seat</Text>
-              </View>
-              <TouchableOpacity
-                style={styles.priceStepBtn}
-                onPress={() => setPriceDraft((p) => p + PRICE_STEP)}
-                activeOpacity={0.75}
-              >
-                <Ionicons name="add" size={24} color={COLORS.text} />
-              </TouchableOpacity>
-            </View>
-            <TouchableOpacity
-              style={styles.bottomDoneBtn}
-              onPress={() => {
-                setPrice(String(priceDraft));
-                setShowPriceModal(false);
-              }}
-            >
-              <Text style={styles.bottomDoneText}>Done</Text>
-            </TouchableOpacity>
-          </View>
-        </TouchableOpacity>
-      </Modal>
+      <PublishFareBottomSheet
+        visible={showFareBottomSheet}
+        onClose={() => setShowFareBottomSheet(false)}
+        distanceKm={fareDistanceKm}
+        initialAmount={fareSheetInitialAmount}
+        onConfirm={(amount) => {
+          setPrice(String(amount));
+          setShowFareBottomSheet(false);
+        }}
+      />
 
       <Modal visible={showTimeModal} transparent animationType="slide" onRequestClose={cancelTimeModal}>
         <View style={styles.bottomOverlay}>
@@ -1059,61 +1039,6 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: COLORS.text,
     marginBottom: 12,
-  },
-  bottomInput: {
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-    fontSize: 16,
-    color: COLORS.text,
-    backgroundColor: COLORS.backgroundSecondary,
-  },
-  priceStepper: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 14,
-    marginTop: 4,
-  },
-  priceStepBtn: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    backgroundColor: COLORS.backgroundSecondary,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  priceStepBtnDisabled: {
-    opacity: 0.45,
-  },
-  priceValueWrap: {
-    minWidth: 120,
-    alignItems: 'center',
-  },
-  priceValue: {
-    fontSize: 34,
-    fontWeight: '800',
-    color: COLORS.text,
-  },
-  priceStepHint: {
-    marginTop: 2,
-    fontSize: 12,
-    color: COLORS.textMuted,
-    fontWeight: '600',
-  },
-  bottomDoneBtn: {
-    alignItems: 'center',
-    paddingVertical: 12,
-    marginTop: 10,
-  },
-  bottomDoneText: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: COLORS.primary,
   },
   timeModalActionsRow: {
     flexDirection: 'row',

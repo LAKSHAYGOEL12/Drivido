@@ -232,78 +232,75 @@ export default function Profile(): React.JSX.Element {
       setLoading(showBlockingLoader);
       setBackgroundRefreshing(!showBlockingLoader);
       setMemberSinceLabel(formatMemberSinceLabel(isSelf ? user?.createdAt : undefined));
+      const tripsSubjectChanged = prevTripsSubjectIdRef.current !== targetUserId;
+      prevTripsSubjectIdRef.current = targetUserId;
+      if (tripsSubjectChanged) {
+        setTripsLoading(true);
+      }
+      const viewerForTrips = isSelf
+        ? (user?.id?.trim() || targetUserId)
+        : user?.id?.trim();
       void (async () => {
         try {
-          // Ratings API is fast; Firestore inside `refreshUser()` can hang — never block the profile spinner on it.
-          const summary = await getUserRatingsSummary(targetUserId);
+          const [summaryResult, aggResult] = await Promise.all([
+            getUserRatingsSummary(targetUserId)
+              .then((summary) => ({ ok: true as const, summary }))
+              .catch(() => ({ ok: false as const })),
+            fetchTripsForProfileSubject(targetUserId, viewerForTrips || undefined)
+              .then((agg) => ({ ok: true as const, agg }))
+              .catch(() => ({ ok: false as const })),
+          ]);
           if (cancelled) return;
-          setProfileName(targetDisplayName);
-          setAvgRating(summary.avgRating);
-          setTotalRatings(summary.totalRatings);
-          if (summary.subjectDeactivated) {
+
+          if (summaryResult.ok) {
+            const summary = summaryResult.summary;
+            setProfileName(targetDisplayName);
+            setAvgRating(summary.avgRating);
+            setTotalRatings(summary.totalRatings);
+            if (summary.subjectDeactivated) {
+              setSubjectBioFromApi('');
+              setSubjectOccupationFromApi('');
+              setSubjectRidePrefsFromApi([]);
+            } else {
+              setSubjectBioFromApi((summary.subjectBio ?? '').trim());
+              setSubjectOccupationFromApi((summary.subjectOccupation ?? '').trim());
+              setSubjectRidePrefsFromApi(
+                normalizeRidePreferenceIds(summary.subjectRidePreferences ?? [])
+              );
+            }
+            setMemberSinceLabel(
+              formatMemberSinceLabel(
+                summary.subjectCreatedAt ?? (isSelf ? user?.createdAt : undefined)
+              )
+            );
+          } else {
+            setProfileName(targetDisplayName);
+            setAvgRating(0);
+            setTotalRatings(0);
             setSubjectBioFromApi('');
             setSubjectOccupationFromApi('');
             setSubjectRidePrefsFromApi([]);
-          } else {
-            setSubjectBioFromApi((summary.subjectBio ?? '').trim());
-            setSubjectOccupationFromApi((summary.subjectOccupation ?? '').trim());
-            setSubjectRidePrefsFromApi(
-              normalizeRidePreferenceIds(summary.subjectRidePreferences ?? [])
-            );
+            setMemberSinceLabel(formatMemberSinceLabel(isSelf ? user?.createdAt : undefined));
           }
-          setMemberSinceLabel(
-            formatMemberSinceLabel(
-              summary.subjectCreatedAt ?? (isSelf ? user?.createdAt : undefined)
-            )
-          );
-        } catch {
-          if (cancelled) return;
-          setProfileName(targetDisplayName);
-          setAvgRating(0);
-          setTotalRatings(0);
-          setSubjectBioFromApi('');
-          setSubjectOccupationFromApi('');
-          setSubjectRidePrefsFromApi([]);
-          setMemberSinceLabel(formatMemberSinceLabel(isSelf ? user?.createdAt : undefined));
+
+          if (aggResult.ok) {
+            const agg = aggResult.agg;
+            const { completed, cancelled: cx } = tripCountsFromAggregate(agg);
+            setTripsCompleted(completed);
+            setTripsCancelled(cx);
+            setTripsCompletedThisMonth(Math.max(0, agg?.completedThisMonth ?? 0));
+          } else {
+            setTripsCompleted(0);
+            setTripsCancelled(0);
+            setTripsCompletedThisMonth(0);
+          }
         } finally {
           if (!cancelled) {
             setLoading(false);
             setBackgroundRefreshing(false);
             setHasLoadedOnce(true);
+            setTripsLoading(false);
           }
-        }
-        if (!cancelled && targetUserId) {
-          const tripsSubjectChanged = prevTripsSubjectIdRef.current !== targetUserId;
-          prevTripsSubjectIdRef.current = targetUserId;
-          if (tripsSubjectChanged) {
-            setTripsLoading(true);
-          }
-          try {
-            /** When viewing yourself, always treat viewer as the subject if `user.id` is momentarily missing — otherwise we hit the public summary path and counts can stay 0. */
-            const viewerForTrips = isSelf
-              ? (user?.id?.trim() || targetUserId)
-              : user?.id?.trim();
-            const agg = await fetchTripsForProfileSubject(targetUserId, viewerForTrips || undefined);
-            if (!cancelled) {
-              const { completed, cancelled: cx } = tripCountsFromAggregate(agg);
-              setTripsCompleted(completed);
-              setTripsCancelled(cx);
-              setTripsCompletedThisMonth(Math.max(0, agg?.completedThisMonth ?? 0));
-            }
-          } catch {
-            if (!cancelled) {
-              setTripsCompleted(0);
-              setTripsCancelled(0);
-              setTripsCompletedThisMonth(0);
-            }
-          } finally {
-            if (!cancelled) setTripsLoading(false);
-          }
-        } else if (!cancelled) {
-          setTripsCompleted(0);
-          setTripsCancelled(0);
-          setTripsCompletedThisMonth(0);
-          setTripsLoading(false);
         }
         if (!cancelled && isSelf) {
           void refreshUser();

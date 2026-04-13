@@ -17,7 +17,7 @@ import { Ionicons } from '@expo/vector-icons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { CommonActions, useFocusEffect, useRoute } from '@react-navigation/native';
 import type { PublishStackParamList } from '../../navigation/types';
-import { findMainTabNavigator } from '../../navigation/findMainTabNavigator';
+import { findMainTabNavigator, findMainTabNavigatorWithOptions } from '../../navigation/findMainTabNavigator';
 import { COLORS } from '../../constants/colors';
 import { useAuth } from '../../contexts/AuthContext';
 import api from '../../services/api';
@@ -28,6 +28,7 @@ import PassengersPickerModal from '../../components/common/PassengersPickerModal
 import SelectVehicleBottomSheet, {
   type VehicleFormValues,
 } from '../../components/publish/SelectVehicleBottomSheet';
+import PublishFareBottomSheet from '../../components/publish/PublishFareBottomSheet';
 import { vehicleListToAuthPatch, vehiclesFromUser } from '../../utils/userVehicle';
 import { createUserVehicle, listUserVehicles } from '../../services/userVehicles';
 import {
@@ -167,6 +168,7 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
   const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null);
   const [showDateModal, setShowDateModal] = useState(false);
   const [showPassengersModal, setShowPassengersModal] = useState(false);
+  const [showFareBottomSheet, setShowFareBottomSheet] = useState(false);
   const [showTimeModal, setShowTimeModal] = useState(false);
   const [clockMode, setClockMode] = useState<'hour' | 'minute'>('hour');
   const [clockHour24, setClockHour24] = useState(9);
@@ -227,6 +229,16 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
     });
     return unsub;
   }, [navigation, returnToRide, goBackFromRepublish]);
+
+  useFocusEffect(
+    useCallback(() => {
+      const mainTabs = findMainTabNavigatorWithOptions(navigation as { getParent?: () => unknown });
+      mainTabs?.setOptions?.({ tabBarStyle: { display: 'none' } });
+      return () => {
+        mainTabs?.setOptions?.({ tabBarStyle: undefined });
+      };
+    }, [navigation])
+  );
 
   useFocusEffect(
     useCallback(() => {
@@ -360,6 +372,38 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
     destinationLongitude,
     route.params,
   ]);
+
+  const fareSheetDistanceKm = useMemo(() => {
+    const p = route.params as { selectedDistanceKm?: number } | undefined;
+    const paramKm =
+      typeof p?.selectedDistanceKm === 'number' && !Number.isNaN(p.selectedDistanceKm)
+        ? p.selectedDistanceKm
+        : undefined;
+    const storedKm =
+      selectedRouteDistanceKm ?? (typeof paramKm === 'number' && paramKm > 0 ? paramKm : undefined);
+    return effectivePublishDistanceKm({
+      selectedDistanceKm: storedKm,
+      pickupLatitude,
+      pickupLongitude,
+      destinationLatitude,
+      destinationLongitude,
+      preferStoredRouteDistance: storedKm != null,
+    });
+  }, [
+    route.params,
+    selectedRouteDistanceKm,
+    pickupLatitude,
+    pickupLongitude,
+    destinationLatitude,
+    destinationLongitude,
+  ]);
+
+  const fareSheetInitialAmount = useMemo(() => {
+    const n = parseInt(rate.trim(), 10);
+    if (!Number.isNaN(n) && n > 0) return n;
+    const { minRecommended } = allowedPublishFareRange(fareSheetDistanceKm);
+    return minRecommended;
+  }, [rate, fareSheetDistanceKm]);
 
   const isTimeInPast = isSelectedDateTimeInPast(selectedDate, selectedTime);
   const isTimeTooSoon = isSelectedDateTimeTooSoon(selectedDate, selectedTime, MIN_LEAD_MINUTES);
@@ -779,59 +823,13 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
     setShowTimeModal(true);
   };
 
-  const openPublishPrice = () => {
+  const openFareBottomSheet = () => {
     if (!canSetFare) {
       alertRouteRequiredBeforePrice();
       return;
     }
     if (!baseEntry) return;
-    const p = route.params as { selectedDistanceKm?: number } | undefined;
-    const paramKm =
-      typeof p?.selectedDistanceKm === 'number' && !Number.isNaN(p.selectedDistanceKm)
-        ? p.selectedDistanceKm
-        : undefined;
-    const storedKm =
-      selectedRouteDistanceKm ?? (typeof paramKm === 'number' && paramKm > 0 ? paramKm : undefined);
-    const straightKm = straightLineKmBetweenStops({
-      pickupLatitude,
-      pickupLongitude,
-      destinationLatitude,
-      destinationLongitude,
-    });
-    const distKm = effectivePublishDistanceKm({
-      selectedDistanceKm: storedKm,
-      pickupLatitude,
-      pickupLongitude,
-      destinationLatitude,
-      destinationLongitude,
-      preferStoredRouteDistance: storedKm != null,
-    });
-    const durationSec =
-      routeDurationSeconds > 0
-        ? routeDurationSeconds
-        : Math.max(60, Math.round((straightKm ?? distKm) * 2 * 60));
-    const parsedExistingRate = parseInt(rate.trim(), 10);
-    const initialPricePerSeat =
-      !Number.isNaN(parsedExistingRate) && parsedExistingRate > 0 ? parsedExistingRate : undefined;
-    navigation.navigate({
-      name: 'PublishPrice',
-      params: {
-        selectedFrom: pickup,
-        selectedTo: destination,
-        pickupLatitude,
-        pickupLongitude,
-        destinationLatitude,
-        destinationLongitude,
-        selectedDateIso: selectedDate.toISOString(),
-        selectedTimeHour: selectedTime.hour,
-        selectedTimeMinute: selectedTime.minute,
-        selectedDistanceKm: distKm,
-        selectedDurationSeconds: durationSec,
-        publishRecentEditEntry: baseEntry,
-        ...(initialPricePerSeat !== undefined ? { initialPricePerSeat } : {}),
-      },
-      merge: false,
-    });
+    setShowFareBottomSheet(true);
   };
 
   const swapStops = () => {
@@ -945,7 +943,7 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
                 alertRouteRequiredBeforePrice();
                 return;
               }
-              openPublishPrice();
+              openFareBottomSheet();
             }}
             activeOpacity={canSetFare ? 0.75 : 1}
           >
@@ -1219,6 +1217,17 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
         onSaveNewVehicle={handleSaveNewVehicle}
         onConfirmSelection={handleConfirmVehicleSelection}
         busy={addVehicleBusy || publishLoading}
+      />
+
+      <PublishFareBottomSheet
+        visible={showFareBottomSheet}
+        onClose={() => setShowFareBottomSheet(false)}
+        distanceKm={fareSheetDistanceKm}
+        initialAmount={fareSheetInitialAmount}
+        onConfirm={(amount) => {
+          setRate(String(amount));
+          setShowFareBottomSheet(false);
+        }}
       />
     </SafeAreaView>
   );

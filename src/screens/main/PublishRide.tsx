@@ -50,6 +50,7 @@ import {
 import SelectVehicleBottomSheet, {
   type VehicleFormValues,
 } from '../../components/publish/SelectVehicleBottomSheet';
+import PublishFareBottomSheet from '../../components/publish/PublishFareBottomSheet';
 import { vehicleListToAuthPatch, vehiclesFromUser } from '../../utils/userVehicle';
 import { createUserVehicle, listUserVehicles } from '../../services/userVehicles';
 import {
@@ -235,6 +236,7 @@ export default function PublishRide(): React.JSX.Element {
   const [showDateModal, setShowDateModal] = useState(false);
   const [showTimeModal, setShowTimeModal] = useState(false);
   const [showPassengersModal, setShowPassengersModal] = useState(false);
+  const [showFareBottomSheet, setShowFareBottomSheet] = useState(false);
   const [calendarMonth, setCalendarMonth] = useState(() => new Date());
   const [clockMode, setClockMode] = useState<'hour' | 'minute'>('hour');
   const [clockHour24, setClockHour24] = useState(9);
@@ -268,6 +270,39 @@ export default function PublishRide(): React.JSX.Element {
       }),
     [pickup, destination, pickupLatitude, pickupLongitude, destinationLatitude, destinationLongitude]
   );
+
+  const fareSheetDistanceKm = useMemo(() => {
+    const p = route.params as { selectedDistanceKm?: number } | undefined;
+    const paramKm =
+      typeof p?.selectedDistanceKm === 'number' && !Number.isNaN(p.selectedDistanceKm)
+        ? p.selectedDistanceKm
+        : undefined;
+    const storedKm =
+      selectedRouteDistanceKm ??
+      (typeof paramKm === 'number' && paramKm > 0 ? paramKm : undefined);
+    return effectivePublishDistanceKm({
+      selectedDistanceKm: storedKm,
+      pickupLatitude,
+      pickupLongitude,
+      destinationLatitude,
+      destinationLongitude,
+      preferStoredRouteDistance: storedKm != null,
+    });
+  }, [
+    route.params,
+    selectedRouteDistanceKm,
+    pickupLatitude,
+    pickupLongitude,
+    destinationLatitude,
+    destinationLongitude,
+  ]);
+
+  const fareSheetInitialAmount = useMemo(() => {
+    const n = parseInt(rate.trim(), 10);
+    if (!Number.isNaN(n) && n > 0) return n;
+    const { minRecommended } = allowedPublishFareRange(fareSheetDistanceKm);
+    return minRecommended;
+  }, [rate, fareSheetDistanceKm]);
 
   const estimatedFareLabel = useMemo(() => {
     const r = rate.trim();
@@ -1127,10 +1162,7 @@ export default function PublishRide(): React.JSX.Element {
         <ScrollView
             ref={scrollRef}
           style={styles.scroll}
-          contentContainerStyle={[
-            styles.scrollContent,
-            { paddingBottom: SCROLL_BOTTOM_PADDING },
-          ]}
+          contentContainerStyle={styles.scrollContent}
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode="on-drag"
           showsVerticalScrollIndicator={false}
@@ -1164,7 +1196,7 @@ export default function PublishRide(): React.JSX.Element {
               setPickupLatitude(dLat); setPickupLongitude(dLon);
               setDestinationLatitude(pLat); setDestinationLongitude(pLon);
             }}>
-              <Ionicons name="swap-vertical" size={22} color={COLORS.primary} />
+              <Ionicons name="swap-vertical" size={21} color={COLORS.primary} />
             </TouchableOpacity>
           </TouchableOpacity>
 
@@ -1179,31 +1211,31 @@ export default function PublishRide(): React.JSX.Element {
               </Text>
               <Text style={[styles.fieldLabel, styles.destinationLabel]}>DESTINATION</Text>
             </View>
-            <Ionicons name="chevron-forward" size={22} color={COLORS.textMuted} />
+            <Ionicons name="chevron-forward" size={21} color={COLORS.textMuted} />
           </TouchableOpacity>
 
           <View style={styles.rowDivider} />
           <TouchableOpacity style={styles.fieldRow} onPress={() => { setCalendarMonth(selectedDate); setShowDateModal(true); }} activeOpacity={0.75}>
-            <View style={styles.fieldLeft}><Ionicons name="calendar-outline" size={24} color={COLORS.textSecondary} /></View>
+            <View style={styles.fieldLeft}><Ionicons name="calendar-outline" size={23} color={COLORS.textSecondary} /></View>
             <View style={styles.fieldInputWrap}>
               <Text style={styles.fieldValue}>{dateLabel}</Text>
               <Text style={styles.fieldLabel}>DATE</Text>
             </View>
-            <Ionicons name="chevron-forward" size={22} color={COLORS.textMuted} />
+            <Ionicons name="chevron-forward" size={21} color={COLORS.textMuted} />
           </TouchableOpacity>
 
           <View style={styles.rowDivider} />
           <TouchableOpacity style={styles.fieldRow} onPress={openTimeModal} activeOpacity={0.75}>
             <View style={styles.fieldLeft}>
               <View style={styles.timeIconCircle}>
-                <Ionicons name="time-outline" size={22} color="#6366f1" />
+                <Ionicons name="time-outline" size={21} color="#6366f1" />
               </View>
             </View>
             <View style={styles.fieldInputWrap}>
               <Text style={[styles.fieldValue, styles.timeValue]}>{timeLabel}</Text>
               <Text style={styles.fieldLabel}>TIME</Text>
             </View>
-            <Ionicons name="chevron-forward" size={22} color={COLORS.textMuted} />
+            <Ionicons name="chevron-forward" size={21} color={COLORS.textMuted} />
           </TouchableOpacity>
 
           <View style={styles.rowDivider} />
@@ -1215,62 +1247,13 @@ export default function PublishRide(): React.JSX.Element {
                 alertRouteRequiredBeforePrice();
                 return;
               }
-              const p = route.params as { selectedDistanceKm?: number } | undefined;
-              const paramKm =
-                typeof p?.selectedDistanceKm === 'number' && !Number.isNaN(p.selectedDistanceKm)
-                  ? p.selectedDistanceKm
-                  : undefined;
-              /** State can be cleared by a ref/coord mismatch bug; route params still hold last confirmed km. */
-              const storedKm =
-                selectedRouteDistanceKm ??
-                (typeof paramKm === 'number' && paramKm > 0 ? paramKm : undefined);
-              const straightKm = straightLineKmBetweenStops({
-                pickupLatitude,
-                pickupLongitude,
-                destinationLatitude,
-                destinationLongitude,
-              });
-              const distKm = effectivePublishDistanceKm({
-                selectedDistanceKm: storedKm,
-                pickupLatitude,
-                pickupLongitude,
-                destinationLatitude,
-                destinationLongitude,
-                preferStoredRouteDistance: storedKm != null,
-              });
-              const durationSec =
-                routeDurationSeconds > 0
-                  ? routeDurationSeconds
-                  : Math.max(60, Math.round((straightKm ?? distKm) * 2 * 60));
-              const parsedExistingRate = parseInt(rate.trim(), 10);
-              const initialPricePerSeat =
-                !Number.isNaN(parsedExistingRate) && parsedExistingRate > 0
-                  ? parsedExistingRate
-                  : undefined;
-              navigation.navigate({
-                name: 'PublishPrice',
-                params: {
-                  selectedFrom: pickup,
-                  selectedTo: destination,
-                  pickupLatitude,
-                  pickupLongitude,
-                  destinationLatitude,
-                  destinationLongitude,
-                  selectedDateIso: selectedDate.toISOString(),
-                  selectedTimeHour: selectedTime.hour,
-                  selectedTimeMinute: selectedTime.minute,
-                  selectedDistanceKm: distKm,
-                  selectedDurationSeconds: durationSec,
-                  ...(initialPricePerSeat !== undefined ? { initialPricePerSeat } : {}),
-                },
-                merge: false,
-              });
+              setShowFareBottomSheet(true);
             }}
             activeOpacity={canSetFare ? 0.75 : 1}
           >
             <View style={styles.fieldLeft}>
               <View style={styles.fareIconCircle}>
-                <Ionicons name="wallet-outline" size={22} color="#6366f1" />
+                <Ionicons name="wallet-outline" size={21} color="#6366f1" />
               </View>
             </View>
             <View style={styles.fieldInputWrap}>
@@ -1278,26 +1261,26 @@ export default function PublishRide(): React.JSX.Element {
               <Text style={styles.fieldLabel}>FARE PER SEAT</Text>
             </View>
             {canSetFare ? (
-              <Ionicons name="chevron-forward" size={22} color={COLORS.textMuted} />
+              <Ionicons name="chevron-forward" size={21} color={COLORS.textMuted} />
             ) : (
-              <Ionicons name="lock-closed-outline" size={20} color={COLORS.textMuted} />
+              <Ionicons name="lock-closed-outline" size={19} color={COLORS.textMuted} />
             )}
           </TouchableOpacity>
 
           <View style={styles.rowDivider} />
           <Text style={styles.cardSectionLabel}>Seats</Text>
           <TouchableOpacity style={styles.fieldRow} onPress={() => setShowPassengersModal(true)} activeOpacity={0.75}>
-            <View style={styles.fieldLeft}><Ionicons name="people-outline" size={24} color="#6b7280" /></View>
+            <View style={styles.fieldLeft}><Ionicons name="people-outline" size={23} color="#6b7280" /></View>
             <View style={styles.fieldInputWrap}>
               <Text style={styles.fieldValue}>{seats} seat{seats !== 1 ? 's' : ''} offered</Text>
               <Text style={styles.fieldLabel}>PASSENGERS</Text>
             </View>
-            <Ionicons name="chevron-forward" size={22} color={COLORS.textMuted} />
+            <Ionicons name="chevron-forward" size={21} color={COLORS.textMuted} />
           </TouchableOpacity>
         </View>
 
         <View style={styles.section}>
-          <Text style={styles.cardSectionLabel}>Booking</Text>
+          <Text style={[styles.cardSectionLabel, styles.instantBookingSectionLabel]}>Booking</Text>
           <View style={[styles.instantBookingRow, instantBooking && styles.instantBookingRowOn]}>
             <View
               style={[
@@ -1307,7 +1290,7 @@ export default function PublishRide(): React.JSX.Element {
             >
               <Ionicons
                 name="flash"
-                size={20}
+                size={18}
                 color={instantBooking ? COLORS.primary : COLORS.textMuted}
               />
             </View>
@@ -1333,7 +1316,7 @@ export default function PublishRide(): React.JSX.Element {
           </View>
         </View>
 
-        <View style={styles.section}>
+        <View style={[styles.section, styles.sectionRideDetailsAfterBooking]}>
           <Text style={styles.cardSectionLabel}>Ride details</Text>
           <Text style={styles.rideDescriptionHint}>Optional. Add any details passengers should know before booking.</Text>
           <View style={styles.rideDescriptionCard}>
@@ -1624,6 +1607,17 @@ export default function PublishRide(): React.JSX.Element {
         onConfirmSelection={handleConfirmVehicleSelection}
         busy={addVehicleBusy || publishLoading}
       />
+
+      <PublishFareBottomSheet
+        visible={showFareBottomSheet}
+        onClose={() => setShowFareBottomSheet(false)}
+        distanceKm={fareSheetDistanceKm}
+        initialAmount={fareSheetInitialAmount}
+        onConfirm={(amount) => {
+          setRate(String(amount));
+          setShowFareBottomSheet(false);
+        }}
+      />
     </SafeAreaView>
   );
 }
@@ -1651,7 +1645,7 @@ const styles = StyleSheet.create({
     fontSize: 15,
     lineHeight: 22,
     color: COLORS.textSecondary,
-    marginBottom: 22,
+    marginBottom: 18,
     maxWidth: 340,
   },
   cardSectionLabel: {
@@ -1659,8 +1653,8 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: COLORS.textMuted,
     letterSpacing: 0.8,
-    marginTop: 12,
-    marginBottom: 4,
+    marginTop: 9,
+    marginBottom: 3,
     marginLeft: 2,
   },
   cardSectionLabelFirst: {
@@ -1668,6 +1662,10 @@ const styles = StyleSheet.create({
   },
   section: {
     marginTop: 20,
+  },
+  /** Tighter gap under Instant booking — sits closer to Ride details. */
+  sectionRideDetailsAfterBooking: {
+    marginTop: 10,
   },
   rideDescriptionHint: {
     fontSize: 13,
@@ -1711,11 +1709,11 @@ const styles = StyleSheet.create({
   singleCard: {
     marginTop: 0,
     backgroundColor: COLORS.background,
-    borderRadius: 16,
+    borderRadius: 15,
     borderWidth: 1,
     borderColor: COLORS.borderLight,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingHorizontal: 11,
+    paddingVertical: 7,
     ...Platform.select({
       ios: {
         shadowColor: '#000',
@@ -1750,20 +1748,20 @@ const styles = StyleSheet.create({
   fieldRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 4,
-    paddingVertical: 9,
+    paddingHorizontal: 3,
+    paddingVertical: 7,
   },
   fieldRowDisabled: {
     opacity: 0.55,
   },
   fieldLeft: {
-    width: 32,
+    width: 30,
     alignItems: 'center',
   },
   greenDot: {
-    width: 14,
-    height: 14,
-    borderRadius: 7,
+    width: 13,
+    height: 13,
+    borderRadius: 6.5,
     borderWidth: 2,
     borderColor: COLORS.primary,
     backgroundColor: COLORS.background,
@@ -1771,19 +1769,19 @@ const styles = StyleSheet.create({
   dottedLine: {
     width: 2,
     flex: 1,
-    minHeight: 12,
-    marginVertical: 3,
+    minHeight: 10,
+    marginVertical: 2,
     borderLeftWidth: 2,
     borderLeftColor: COLORS.border,
     borderStyle: 'dashed',
   },
   redPin: {
-    width: 12,
-    height: 16,
+    width: 11,
+    height: 15,
     backgroundColor: COLORS.error,
-    borderRadius: 6,
+    borderRadius: 5.5,
   },
-  fieldInputWrap: { flex: 1, marginLeft: 14 },
+  fieldInputWrap: { flex: 1, marginLeft: 11 },
   fieldLabel: {
     fontSize: 10,
     fontWeight: '600',
@@ -1807,17 +1805,17 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   timeIconCircle: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     backgroundColor: '#eef2ff',
     alignItems: 'center',
     justifyContent: 'center',
   },
   fareIconCircle: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     backgroundColor: '#eef2ff',
     alignItems: 'center',
     justifyContent: 'center',
@@ -1831,12 +1829,12 @@ const styles = StyleSheet.create({
   rowDivider: {
     height: StyleSheet.hairlineWidth,
     backgroundColor: '#e5e7eb',
-    marginLeft: 46,
+    marginLeft: 44,
   },
   swapBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: 'rgba(41,190,139,0.12)',
@@ -1976,15 +1974,18 @@ const styles = StyleSheet.create({
     color: COLORS.textMuted,
     marginTop: 4,
   },
+  instantBookingSectionLabel: {
+    marginBottom: 1,
+  },
   instantBookingRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: 10,
     backgroundColor: '#f4f4f5',
-    borderRadius: 12,
-    paddingVertical: 14,
-    paddingHorizontal: 14,
-    marginBottom: 12,
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    marginBottom: 8,
     borderWidth: 1,
     borderColor: '#e4e4e7',
     borderLeftWidth: 3,
@@ -1996,9 +1997,9 @@ const styles = StyleSheet.create({
     borderLeftColor: COLORS.primary,
   },
   instantBookingIconWrap: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     backgroundColor: '#e4e4e7',
     alignItems: 'center',
     justifyContent: 'center',
@@ -2011,7 +2012,7 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   instantBookingTitle: {
-    fontSize: 17,
+    fontSize: 16,
     fontWeight: '700',
     color: '#3f3f46',
     letterSpacing: -0.2,
@@ -2020,11 +2021,11 @@ const styles = StyleSheet.create({
     color: COLORS.text,
   },
   instantBookingDesc: {
-    fontSize: 13,
-    lineHeight: 18,
+    fontSize: 12,
+    lineHeight: 16,
     fontWeight: '500',
     color: COLORS.textMuted,
-    marginTop: 4,
+    marginTop: 2,
   },
   instantBookingDescOn: {
     fontWeight: '600',
@@ -2033,6 +2034,7 @@ const styles = StyleSheet.create({
   instantBookingSwitchWrap: {
     flexShrink: 0,
     justifyContent: 'center',
+    transform: [{ scale: 0.92 }],
   },
   publishButton: {
     flexDirection: 'row',

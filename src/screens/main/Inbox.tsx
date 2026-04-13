@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   StyleSheet,
   Text,
@@ -38,11 +38,17 @@ export default function Inbox(): React.JSX.Element {
   const { conversations, markConversationAsRead, refreshConversations } = useInbox();
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
+  const conversationsRef = useRef(conversations);
+  useEffect(() => {
+    conversationsRef.current = conversations;
+  }, [conversations]);
 
   useFocusEffect(
     React.useCallback(() => {
       let cancelled = false;
-      setLoading(true);
+      if (conversationsRef.current.length === 0) {
+        setLoading(true);
+      }
       void refreshConversations().finally(() => {
         if (!cancelled) setLoading(false);
       });
@@ -70,7 +76,7 @@ export default function Inbox(): React.JSX.Element {
     navigation.navigate('Chat', {
       ride: conv.ride,
       otherUserName: conv.otherUserName,
-      otherUserId: conv.otherUserId,
+      otherUserId: conv.otherUserId ?? '',
       ...(conv.otherUserAvatarUrl ? { otherUserAvatarUrl: conv.otherUserAvatarUrl } : {}),
       ...(conv.otherUserDeactivated === true ||
       ridePeerDeactivated(conv.ride, (conv.otherUserId ?? '').trim())

@@ -392,7 +392,7 @@ function mergeBrowseCatalogIntoList(list: RideListItem[], browse: RideListItem[]
 type RidesResponse = { rides?: RideListItem[] } | RideListItem[];
 
 /** Space out ride-list calls so strict backends don’t return 429 for 3× parallel GET /rides*. */
-const RIDE_LIST_STAGGER_MS = 150;
+const RIDE_LIST_STAGGER_MS = 90;
 
 function rideListStagger(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, RIDE_LIST_STAGGER_MS));
@@ -536,7 +536,7 @@ function YourRidesRideCard({
           <Text style={styles.republishOnlyTitle}>Republish this ride</Text>
         </View>
         <Text style={styles.republishOnlyRoute} numberOfLines={1}>
-          {from} -> {to}
+          {`${from} → ${to}`}
         </Text>
         <Text style={styles.republishOnlyHint}>
           Update details and publish as a new ride
@@ -917,7 +917,10 @@ export default function YourRides(): React.JSX.Element {
       }
 
       await rideListStagger();
-      const bookedResult = await apiGetOrNull(API.endpoints.rides.booked);
+      const [bookedResult, bookingsWrap] = await Promise.all([
+        apiGetOrNull(API.endpoints.rides.booked),
+        apiGetOrNull(API.endpoints.bookings.list),
+      ]);
       if (bookedResult.status === 429) saw429 = true;
       let bookedRaw: Record<string, unknown>[] = [];
       if (bookedResult.data != null) {
@@ -937,8 +940,6 @@ export default function YourRides(): React.JSX.Element {
 
       let bookedIds = new Set<string>();
       const myBookingStatusByRideId = new Map<string, string>();
-      await rideListStagger();
-      const bookingsWrap = await apiGetOrNull(API.endpoints.bookings.list);
       if (bookingsWrap.status === 429) saw429 = true;
       try {
         if (bookingsWrap.data == null) {

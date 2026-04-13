@@ -17,8 +17,32 @@ import { COLORS } from '../constants/colors';
 import { navigateToGuestLogin } from './navigateToGuestLogin';
 import { findMainTabNavigator } from './findMainTabNavigator';
 import { emitRequestMyRidesListRefresh } from '../services/myRidesListRefreshEvents';
+import { MAIN_TAB_PRIMARY_NESTED_ROUTE } from './mainTabPrimaryNestedRoute';
 
 const Tab = createBottomTabNavigator<MainTabParamList>();
+
+/** `navigation.getState()` on a Tab.Screen can be the tab navigator, not the nested stack — ignore these. */
+const MAIN_TAB_NAVIGATOR_ROUTE_NAMES = new Set([
+  'SearchStack',
+  'PublishStack',
+  'YourRides',
+  'Inbox',
+  'Profile',
+]);
+
+/**
+ * Focused screen inside this tab’s stack for tab-bar visibility.
+ * Prefer live stack `navigation.getState()` when it’s clearly nested; otherwise `route` (correct on primary).
+ */
+function nestedRouteForTabBarVisibility(
+  route: { state?: unknown },
+  navigation: { getState?: () => { routes?: { name?: string }[]; index?: number } }
+): string | undefined {
+  const live = getTabNestedStackFocusedName(navigation);
+  if (live && !MAIN_TAB_NAVIGATOR_ROUTE_NAMES.has(live)) return live;
+  const fromRoute = getFocusedRouteNameFromRoute(route);
+  return typeof fromRoute === 'string' ? fromRoute : undefined;
+}
 
 /** Slightly enlarges the focused tab icon vs inactive tabs. */
 const TAB_ICON_FOCUS_SCALE = 1.14;
@@ -76,13 +100,40 @@ function ProfileTabBarIcon({
   );
 }
 
+type NavStateLite = {
+  index?: number;
+  routes?: Array<{ name?: string; state?: NavStateLite }>;
+};
+
+/**
+ * Leaf focused route (e.g. `LocationPicker`) even when `getState()` returns a tab row whose entry is
+ * `PublishStack` / `SearchStack` with nested `state` — a single-level read wrongly kept the tab bar visible.
+ */
+function getDeepestFocusedRouteName(state: NavStateLite | undefined): string | undefined {
+  if (!state?.routes?.length) return undefined;
+  const idx = typeof state.index === 'number' ? state.index : state.routes.length - 1;
+  const r = state.routes[idx];
+  if (!r?.name) return undefined;
+  if (r.state?.routes?.length) {
+    const inner = getDeepestFocusedRouteName(r.state);
+    if (inner) return inner;
+  }
+  return r.name;
+}
+
+/**
+ * Focused route on the stack inside this tab (`Tab.Screen` `navigation` / same shape as inbox/rides listeners).
+ * Prefer over `getFocusedRouteNameFromRoute(route)` — tab `route` can lag after `navigate`.
+ */
+function getTabNestedStackFocusedName(navigation: {
+  getState?: () => NavStateLite;
+}): string | undefined {
+  return getDeepestFocusedRouteName(navigation?.getState?.());
+}
+
 /** Nested screen name at top of Inbox stack (InboxList, Chat, RideDetail, …). */
 function getInboxStackFocusedName(navigation: { getState?: () => { routes?: { name?: string }[]; index?: number } }): string | undefined {
-  const st = navigation?.getState?.();
-  const routes = st?.routes;
-  if (!routes?.length) return undefined;
-  const idx = typeof st?.index === 'number' ? st.index : routes.length - 1;
-  return routes[idx]?.name;
+  return getTabNestedStackFocusedName(navigation);
 }
 
 function resetInboxTabToInboxList(mainTabs: { dispatch: (a: unknown) => void; getState: () => { routes?: any[]; index?: number } }): void {
@@ -112,11 +163,7 @@ function resetInboxTabToInboxList(mainTabs: { dispatch: (a: unknown) => void; ge
 function getRidesStackFocusedName(navigation: {
   getState?: () => { routes?: { name?: string }[]; index?: number };
 }): string | undefined {
-  const st = navigation?.getState?.();
-  const routes = st?.routes;
-  if (!routes?.length) return undefined;
-  const idx = typeof st?.index === 'number' ? st.index : routes.length - 1;
-  return routes[idx]?.name;
+  return getTabNestedStackFocusedName(navigation);
 }
 
 function resetRidesTabToYourRidesList(mainTabs: {
@@ -235,18 +282,10 @@ export default function BottomTabs(): React.JSX.Element {
             });
           },
         })}
-        options={({ route }) => {
-          const name = getFocusedRouteNameFromRoute(route) ?? 'SearchRides';
-          const hideTabs =
-            name === 'RideDetail' ||
-            name === 'RideDetailScreen' ||
-            name === 'EditRide' ||
-            name === 'LocationPicker' ||
-            name === 'PublishedRideRouteMap' ||
-            name === 'BookPassengerDetail' ||
-            name === 'Chat' ||
-            name === 'OwnerProfileModal' ||
-            name === 'OwnerRatingsModal';
+        options={({ route, navigation }) => {
+          const primary = MAIN_TAB_PRIMARY_NESTED_ROUTE.SearchStack;
+          const effective = nestedRouteForTabBarVisibility(route, navigation) ?? primary;
+          const hideTabs = effective !== primary;
           return {
             headerShown: false,
             title: 'Find',
@@ -281,17 +320,10 @@ export default function BottomTabs(): React.JSX.Element {
             });
           },
         })}
-        options={({ route }) => {
-          const name = getFocusedRouteNameFromRoute(route) ?? 'PublishRide';
-          const hideTabs =
-            name === 'RideDetail' ||
-            name === 'Chat' ||
-            name === 'LocationPicker' ||
-            name === 'PublishRoutePreview' ||
-            name === 'PublishSelectDate' ||
-            name === 'PublishSelectTime' ||
-            name === 'PublishPrice' ||
-            name === 'PublishRecentEdit';
+        options={({ route, navigation }) => {
+          const primary = MAIN_TAB_PRIMARY_NESTED_ROUTE.PublishStack;
+          const effective = nestedRouteForTabBarVisibility(route, navigation) ?? primary;
+          const hideTabs = effective !== primary;
           return {
             headerShown: false,
             title: 'Publish a Ride',
@@ -345,18 +377,10 @@ export default function BottomTabs(): React.JSX.Element {
             resetRidesTabToYourRidesList(mainTabs);
           },
         })}
-        options={({ route }) => {
-          const name = getFocusedRouteNameFromRoute(route) ?? 'YourRidesList';
-          const hideTabs =
-            name === 'RideDetail' ||
-            name === 'RideDetailScreen' ||
-            name === 'PublishRecentEdit' ||
-            name === 'EditRide' ||
-            name === 'BookPassengerDetail' ||
-            name === 'PublishedRideRouteMap' ||
-            name === 'Chat' ||
-            name === 'OwnerProfileModal' ||
-            name === 'OwnerRatingsModal';
+        options={({ route, navigation }) => {
+          const primary = MAIN_TAB_PRIMARY_NESTED_ROUTE.YourRides;
+          const effective = nestedRouteForTabBarVisibility(route, navigation) ?? primary;
+          const hideTabs = effective !== primary;
           return {
             headerShown: false,
             title: 'Your Rides',
@@ -414,18 +438,10 @@ export default function BottomTabs(): React.JSX.Element {
             resetInboxTabToInboxList(mainTabs);
           },
         })}
-        options={({ route }) => {
-          const name = getFocusedRouteNameFromRoute(route) ?? 'InboxList';
-          const hideTabs =
-            name === 'RideDetail' ||
-            name === 'RideDetailScreen' ||
-            name === 'BookPassengerDetail' ||
-            name === 'PublishedRideRouteMap' ||
-            name === 'LocationPicker' ||
-            name === 'EditRide' ||
-            name === 'Chat' ||
-            name === 'OwnerProfileModal' ||
-            name === 'OwnerRatingsModal';
+        options={({ route, navigation }) => {
+          const primary = MAIN_TAB_PRIMARY_NESTED_ROUTE.Inbox;
+          const effective = nestedRouteForTabBarVisibility(route, navigation) ?? primary;
+          const hideTabs = effective !== primary;
           return {
             headerShown: false,
             title: 'Chats',
@@ -473,16 +489,10 @@ export default function BottomTabs(): React.JSX.Element {
             } as never);
           },
         })}
-        options={({ route }) => {
-          const name = getFocusedRouteNameFromRoute(route) ?? 'ProfileHome';
-          // Show tabs on your main Profile screen, hide only for nested views.
-          const hideTabs =
-            name === 'ProfileEntry' ||
-            name === 'EditProfile' ||
-            name === 'AccountSecurity' ||
-            name === 'Trips' ||
-            name === 'Ratings' ||
-            name === 'RatingsScreen';
+        options={({ route, navigation }) => {
+          const primary = MAIN_TAB_PRIMARY_NESTED_ROUTE.Profile;
+          const effective = nestedRouteForTabBarVisibility(route, navigation) ?? primary;
+          const hideTabs = effective !== primary;
           return {
             headerShown: false,
             title: 'Profile',
