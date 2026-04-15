@@ -1,7 +1,8 @@
 import React, { useEffect, useRef } from 'react';
 import { AppState, type AppStateStatus, StyleSheet, View } from 'react-native';
-import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { CommonActions, getFocusedRouteNameFromRoute } from '@react-navigation/native';
+import { BottomTabBar, createBottomTabNavigator, type BottomTabBarProps } from '@react-navigation/bottom-tabs';
+import { CommonActions, useNavigationState } from '@react-navigation/native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import type { MainTabParamList } from './types';
 import UserAvatar from '../components/common/UserAvatar';
@@ -17,31 +18,57 @@ import { COLORS } from '../constants/colors';
 import { navigateToGuestLogin } from './navigateToGuestLogin';
 import { findMainTabNavigator } from './findMainTabNavigator';
 import { emitRequestMyRidesListRefresh } from '../services/myRidesListRefreshEvents';
-import { MAIN_TAB_PRIMARY_NESTED_ROUTE } from './mainTabPrimaryNestedRoute';
+import {
+  MAIN_TAB_PRIMARY_NESTED_ROUTE,
+  shouldShowMainTabBar,
+  type MainTabScreenName,
+} from './mainTabPrimaryNestedRoute';
 
 const Tab = createBottomTabNavigator<MainTabParamList>();
 
-/** `navigation.getState()` on a Tab.Screen can be the tab navigator, not the nested stack — ignore these. */
-const MAIN_TAB_NAVIGATOR_ROUTE_NAMES = new Set([
-  'SearchStack',
-  'PublishStack',
-  'YourRides',
-  'Inbox',
-  'Profile',
-]);
+/** Extra gap above the home indicator / bottom edge; applied via tab `safeAreaInsets`, not `tabBarStyle.paddingBottom`. */
+const TAB_BAR_EXTRA_BOTTOM_INSET = 6;
+
+type NavStateLite = {
+  index?: number;
+  routes?: Array<{ name?: string; state?: NavStateLite }>;
+};
 
 /**
- * Focused screen inside this tab’s stack for tab-bar visibility.
- * Prefer live stack `navigation.getState()` when it’s clearly nested; otherwise `route` (correct on primary).
+ * Leaf focused route inside a stack (e.g. `RideDetail`) — matches nested stack `navigation.getState()`.
  */
-function nestedRouteForTabBarVisibility(
-  route: { state?: unknown },
-  navigation: { getState?: () => { routes?: { name?: string }[]; index?: number } }
-): string | undefined {
-  const live = getTabNestedStackFocusedName(navigation);
-  if (live && !MAIN_TAB_NAVIGATOR_ROUTE_NAMES.has(live)) return live;
-  const fromRoute = getFocusedRouteNameFromRoute(route);
-  return typeof fromRoute === 'string' ? fromRoute : undefined;
+function getDeepestFocusedRouteName(state: NavStateLite | undefined): string | undefined {
+  if (!state?.routes?.length) return undefined;
+  const idx = typeof state.index === 'number' ? state.index : state.routes.length - 1;
+  const r = state.routes[idx];
+  if (!r?.name) return undefined;
+  if (r.state?.routes?.length) {
+    const inner = getDeepestFocusedRouteName(r.state);
+    if (inner) return inner;
+  }
+  return r.name;
+}
+
+/**
+ * Tab bar visibility: **only** the five “home” nested routes in `MAIN_TAB_PRIMARY_NESTED_ROUTE`
+ * show the bar. Implemented here via `useNavigationState` so it updates on every nested push/pop
+ * (per-screen `options.tabBarStyle` alone can miss updates).
+ */
+function MainBottomTabBar(props: BottomTabBarProps): React.JSX.Element {
+  const hideTabs = useNavigationState((root) => {
+    if (!root?.routes?.length || root.index == null || root.index < 0) return false;
+    const tabRoute = root.routes[root.index] as { name?: string; state?: NavStateLite };
+    const tabName = tabRoute.name as MainTabScreenName | undefined;
+    if (!tabName || !(tabName in MAIN_TAB_PRIMARY_NESTED_ROUTE)) return false;
+    const leaf = getDeepestFocusedRouteName(tabRoute.state);
+    return !shouldShowMainTabBar(tabName, leaf);
+  });
+
+  return (
+    <View style={hideTabs ? { display: 'none' } : undefined} collapsable={false}>
+      <BottomTabBar {...props} />
+    </View>
+  );
 }
 
 /** Slightly enlarges the focused tab icon vs inactive tabs. */
@@ -98,27 +125,6 @@ function ProfileTabBarIcon({
       />
     </View>
   );
-}
-
-type NavStateLite = {
-  index?: number;
-  routes?: Array<{ name?: string; state?: NavStateLite }>;
-};
-
-/**
- * Leaf focused route (e.g. `LocationPicker`) even when `getState()` returns a tab row whose entry is
- * `PublishStack` / `SearchStack` with nested `state` — a single-level read wrongly kept the tab bar visible.
- */
-function getDeepestFocusedRouteName(state: NavStateLite | undefined): string | undefined {
-  if (!state?.routes?.length) return undefined;
-  const idx = typeof state.index === 'number' ? state.index : state.routes.length - 1;
-  const r = state.routes[idx];
-  if (!r?.name) return undefined;
-  if (r.state?.routes?.length) {
-    const inner = getDeepestFocusedRouteName(r.state);
-    if (inner) return inner;
-  }
-  return r.name;
 }
 
 /**
@@ -214,6 +220,7 @@ function RidesTabIconWithDot({
 }
 
 export default function BottomTabs(): React.JSX.Element {
+  const { bottom: safeBottom } = useSafeAreaInsets();
   const { hasUnread } = useInbox();
   const { hasOwnerPendingSeatRequests } = useOwnerPendingRequests();
   const { user, isAuthenticated, needsProfileCompletion } = useAuth();
@@ -249,12 +256,17 @@ export default function BottomTabs(): React.JSX.Element {
 
   return (
     <Tab.Navigator
+      /** Avoid Android back jumping to the first tab (Search); walk tab visit history instead. */
+      backBehavior="history"
+      tabBar={(props) => <MainBottomTabBar {...props} />}
+      safeAreaInsets={{ bottom: safeBottom + TAB_BAR_EXTRA_BOTTOM_INSET }}
       /** Keep tab screens mounted so Rides (etc.) state isn’t wiped when switching tabs — avoids empty flashes. */
       detachInactiveScreens={false}
       screenOptions={{
         headerShown: true,
         tabBarActiveTintColor: COLORS.primary,
         tabBarInactiveTintColor: '#64748b',
+        tabBarStyle: { paddingTop: 4 },
         tabBarIconStyle: { marginBottom: -2 },
         tabBarHideOnKeyboard: true,
         /** Lazy mount tab screens — smoother first open of BottomTabs. */
@@ -282,22 +294,16 @@ export default function BottomTabs(): React.JSX.Element {
             });
           },
         })}
-        options={({ route, navigation }) => {
-          const primary = MAIN_TAB_PRIMARY_NESTED_ROUTE.SearchStack;
-          const effective = nestedRouteForTabBarVisibility(route, navigation) ?? primary;
-          const hideTabs = effective !== primary;
-          return {
+        options={() => ({
             headerShown: false,
             title: 'Find',
             tabBarLabel: 'Find',
-            tabBarStyle: hideTabs ? { display: 'none' } : undefined,
             tabBarIcon: ({ focused, color, size }: { focused: boolean; color: string; size: number }) => (
               <ScaledTabIcon focused={focused}>
                 <Ionicons name={focused ? 'search' : 'search-outline'} size={size} color={color} />
               </ScaledTabIcon>
             ),
-          };
-        }}
+        })}
       />
       <Tab.Screen
         name="PublishStack"
@@ -310,6 +316,11 @@ export default function BottomTabs(): React.JSX.Element {
               return;
             }
             e.preventDefault();
+            /**
+             * Nested `params.state` reset caused a double transition (tab focus + stack replace slide).
+             * Use normal nested navigation; stale republish stacks are cleared after publish
+             * (`resetPublishTabAndFocusYourRidesInMainTabs` in `PublishRecentEditScreen`).
+             */
             (navigation as { navigate: (config: Record<string, unknown>) => void }).navigate({
               name: 'PublishStack',
               params: {
@@ -320,22 +331,16 @@ export default function BottomTabs(): React.JSX.Element {
             });
           },
         })}
-        options={({ route, navigation }) => {
-          const primary = MAIN_TAB_PRIMARY_NESTED_ROUTE.PublishStack;
-          const effective = nestedRouteForTabBarVisibility(route, navigation) ?? primary;
-          const hideTabs = effective !== primary;
-          return {
+        options={() => ({
             headerShown: false,
             title: 'Publish a Ride',
             tabBarLabel: 'Publish',
-            tabBarStyle: hideTabs ? { display: 'none' } : undefined,
             tabBarIcon: ({ focused, color, size }: { focused: boolean; color: string; size: number }) => (
               <ScaledTabIcon focused={focused}>
                 <Ionicons name={focused ? 'add-circle' : 'add-circle-outline'} size={size} color={color} />
               </ScaledTabIcon>
             ),
-          };
-        }}
+        })}
       />
       <Tab.Screen
         name="YourRides"
@@ -377,15 +382,10 @@ export default function BottomTabs(): React.JSX.Element {
             resetRidesTabToYourRidesList(mainTabs);
           },
         })}
-        options={({ route, navigation }) => {
-          const primary = MAIN_TAB_PRIMARY_NESTED_ROUTE.YourRides;
-          const effective = nestedRouteForTabBarVisibility(route, navigation) ?? primary;
-          const hideTabs = effective !== primary;
-          return {
+        options={() => ({
             headerShown: false,
             title: 'Your Rides',
             tabBarLabel: 'Rides',
-            tabBarStyle: hideTabs ? { display: 'none' } : undefined,
             tabBarIcon: ({ focused, color, size }: { focused: boolean; color: string; size: number }) => (
               <RidesTabIconWithDot
                 focused={focused}
@@ -394,8 +394,7 @@ export default function BottomTabs(): React.JSX.Element {
                 showNotificationDot={sessionReady && hasOwnerPendingSeatRequests}
               />
             ),
-          };
-        }}
+        })}
       />
       <Tab.Screen
         name="Inbox"
@@ -438,23 +437,17 @@ export default function BottomTabs(): React.JSX.Element {
             resetInboxTabToInboxList(mainTabs);
           },
         })}
-        options={({ route, navigation }) => {
-          const primary = MAIN_TAB_PRIMARY_NESTED_ROUTE.Inbox;
-          const effective = nestedRouteForTabBarVisibility(route, navigation) ?? primary;
-          const hideTabs = effective !== primary;
-          return {
+        options={() => ({
             headerShown: false,
             title: 'Chats',
             tabBarLabel: 'Chats',
             tabBarBadge: hasUnread ? 1 : undefined,
-            tabBarStyle: hideTabs ? { display: 'none' } : undefined,
             tabBarIcon: ({ focused, color, size }) => (
               <ScaledTabIcon focused={focused}>
                 <Ionicons name={focused ? 'chatbubbles' : 'chatbubbles-outline'} size={size} color={color} />
               </ScaledTabIcon>
             ),
-          };
-        }}
+        })}
       />
       <Tab.Screen
         name="Profile"
@@ -489,15 +482,10 @@ export default function BottomTabs(): React.JSX.Element {
             } as never);
           },
         })}
-        options={({ route, navigation }) => {
-          const primary = MAIN_TAB_PRIMARY_NESTED_ROUTE.Profile;
-          const effective = nestedRouteForTabBarVisibility(route, navigation) ?? primary;
-          const hideTabs = effective !== primary;
-          return {
+        options={() => ({
             headerShown: false,
             title: 'Profile',
             tabBarLabel: 'Profile',
-            tabBarStyle: hideTabs ? { display: 'none' } : undefined,
             tabBarIcon: ({ focused, color, size }) => (
               <ScaledTabIcon focused={focused}>
                 <ProfileTabBarIcon
@@ -509,8 +497,7 @@ export default function BottomTabs(): React.JSX.Element {
                 />
               </ScaledTabIcon>
             ),
-          };
-        }}
+        })}
       />
     </Tab.Navigator>
   );

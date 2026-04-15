@@ -718,7 +718,7 @@ export default function ChatScreen(): React.JSX.Element {
             <Ionicons name="lock-closed-outline" size={18} color={COLORS.textSecondary} />
             <Text style={styles.chatEndedBannerText}>
               {backendChatClosedReason === 'grace_window_elapsed'
-                ? 'Chat closed more than 2 hours after this ride was completed.'
+                ? 'Chat Closed'
                 : 'This ride is completed. This chat is read-only.'}
             </Text>
           </View>
@@ -805,7 +805,7 @@ export default function ChatScreen(): React.JSX.Element {
             <View style={styles.chatClosedRow}>
               <Text style={styles.chatClosedText}>
                 {backendChatClosedReason === 'grace_window_elapsed'
-                  ? 'Chat closed more than 2 hours after this ride was completed.'
+                  ? 'Chat Closed'
                   : 'This ride is completed. Chat is closed.'}
               </Text>
             </View>

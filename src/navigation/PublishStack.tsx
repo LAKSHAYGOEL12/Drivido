@@ -9,6 +9,7 @@ import PublishRoutePreviewScreen from '../screens/main/PublishRoutePreviewScreen
 import PublishSelectDateScreen from '../screens/main/PublishSelectDateScreen';
 import PublishSelectTimeScreen from '../screens/main/PublishSelectTimeScreen';
 import PublishPriceScreen from '../screens/main/PublishPriceScreen';
+import PublishSelectSeatsScreen from '../screens/main/PublishSelectSeatsScreen';
 import PublishRecentEditScreen from '../screens/main/PublishRecentEditScreen';
 
 const Stack = createNativeStackNavigator<PublishStackParamList>();
@@ -34,6 +35,7 @@ export default function PublishStack(): React.JSX.Element {
       <Stack.Screen name="PublishSelectDate" component={PublishSelectDateScreen} />
       <Stack.Screen name="PublishSelectTime" component={PublishSelectTimeScreen} />
       <Stack.Screen name="PublishPrice" component={PublishPriceScreen} />
+      <Stack.Screen name="PublishSelectSeats" component={PublishSelectSeatsScreen} />
     </Stack.Navigator>
   );
 }

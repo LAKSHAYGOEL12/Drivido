@@ -32,6 +32,7 @@ import {
   isViewerRideOwner,
 } from '../../utils/rideDisplay';
 import { isRideSeatsFull } from '../../utils/rideSeats';
+import { pickRoutePolylineEncodedFromRecord } from '../../utils/ridePublisherCoords';
 import { addRecentSearch } from '../../services/recent-search-storage';
 import DatePickerModal from '../../components/common/DatePickerModal';
 import PassengersPickerModal from '../../components/common/PassengersPickerModal';
@@ -176,6 +177,7 @@ function normalizeRideItem(raw: Record<string, unknown>): RideListItem {
   const destLat = num(r.destinationLatitude ?? r.destination_latitude);
   const destLon = num(r.destinationLongitude ?? r.destination_longitude);
   const estDur = num(r.estimatedDurationSeconds ?? r.estimated_duration_seconds);
+  const routePolylineEncodedRaw = pickRoutePolylineEncodedFromRecord(r as Record<string, unknown>);
   const nestedUser =
     r.user && typeof r.user === 'object' ? (r.user as Record<string, unknown>) : undefined;
   const driverDisplayName = toStr(
@@ -237,6 +239,7 @@ function normalizeRideItem(raw: Record<string, unknown>): RideListItem {
       return undefined;
     })(),
     ...(estDur !== undefined && estDur > 0 ? { estimatedDurationSeconds: Math.floor(estDur) } : {}),
+    ...(routePolylineEncodedRaw ? { routePolylineEncoded: routePolylineEncodedRaw } : {}),
     ...(function (): { viewerIsOwner?: boolean } {
       const rawVi = r.viewerIsOwner ?? r.viewer_is_owner;
       if (typeof rawVi === 'boolean') return { viewerIsOwner: rawVi };

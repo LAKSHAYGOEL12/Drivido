@@ -329,6 +329,8 @@ export async function getPlaceCoordinates(
 
 export type DirectionAlternative = {
   overviewPolyline: { latitude: number; longitude: number }[];
+  /** Raw `overview_polyline.points` from Directions — use for POST/storage so the line matches the map. */
+  overviewPolylineEncoded?: string;
   distanceMeters: number;
   durationSeconds: number;
   summary: string;
@@ -440,9 +442,10 @@ export async function getDirectionsAlternatives(
         const leg = r?.legs?.[0];
         const poly = r?.overview_polyline?.points;
         if (!leg || !poly) return null;
-        const enc = String(poly);
+        const enc = String(poly).trim();
         return {
           overviewPolyline: decodePolylineInternal(enc),
+          overviewPolylineEncoded: enc,
           distanceMeters: Number(leg?.distance?.value ?? 0),
           durationSeconds: Number(leg?.duration?.value ?? 0),
           summary: String(r?.summary ?? ''),

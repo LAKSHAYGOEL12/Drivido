@@ -26,7 +26,7 @@ import DatePickerModal from '../../components/common/DatePickerModal';
 import PassengersPickerModal from '../../components/common/PassengersPickerModal';
 import { showToast } from '../../utils/toast';
 import { bookingIsCancelled } from '../../utils/bookingStatus';
-import { formatPublishStyleDateLabel } from '../../utils/rideDisplay';
+import { formatPublishStyleDateLabel, isPublishedRideLiveNow } from '../../utils/rideDisplay';
 import { findMainTabNavigatorWithOptions } from '../../navigation/findMainTabNavigator';
 import PublishFareBottomSheet from '../../components/publish/PublishFareBottomSheet';
 import { allowedPublishFareRange, straightLineKmBetweenStops } from '../../utils/publishFare';
@@ -87,6 +87,16 @@ export default function EditRideScreen(): React.JSX.Element {
     return activeFromArray > 0 || activeFromBookedSeats > 0;
   }, [ride.bookings, ride.bookedSeats]);
 
+  /**
+   * Same “live” notion as Your Rides: published, not cancelled/completed, not past the arrival window.
+   * Locks pickup/destination even with zero passengers (matches driver expectation for an active listing).
+   */
+  const rideIsLiveListed = useMemo(() => isPublishedRideLiveNow(ride), [ride]);
+  /** Pickup / destination: locked for any live listed ride or when anyone has booked. */
+  const routeEndpointsLocked = hasBookings || rideIsLiveListed;
+  /** Date, time, price, seats: locked only when there are active bookings. */
+  const bookingLockedFields = hasBookings;
+
   const dt = parseDateTimeParts(ride);
   const [pickupLocation, setPickupLocation] = useState((ride.pickupLocationName ?? ride.from ?? '').trim());
   const [dropLocation, setDropLocation] = useState((ride.destinationLocationName ?? ride.to ?? '').trim());
@@ -117,8 +127,6 @@ export default function EditRideScreen(): React.JSX.Element {
   const timeModalToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [saving, setSaving] = useState(false);
   const scrollRef = useRef<ScrollView | null>(null);
-
-  const majorFieldLocked = hasBookings;
 
   const fareDistanceKm = useMemo(
     () =>
@@ -196,7 +204,7 @@ export default function EditRideScreen(): React.JSX.Element {
   };
 
   const openLocationPicker = (field: 'from' | 'to') => {
-    if (majorFieldLocked) return;
+    if (routeEndpointsLocked) return;
     (navigation as { navigate: (screen: string, params: Record<string, unknown>) => void }).navigate('LocationPicker', {
       field,
       currentFrom: pickupLocation,
@@ -213,6 +221,7 @@ export default function EditRideScreen(): React.JSX.Element {
 
   useFocusEffect(
     React.useCallback(() => {
+      if (routeEndpointsLocked) return;
       const p = route.params as (RidesStackParamList['EditRide'] & {
         selectedFrom?: string;
         selectedTo?: string;
@@ -234,7 +243,7 @@ export default function EditRideScreen(): React.JSX.Element {
         preservedDate: undefined,
         preservedPassengers: undefined,
       });
-    }, [route.params, navigation])
+    }, [route.params, navigation, routeEndpointsLocked])
   );
 
   // Ensure bottom tabs stay hidden while EditRide is focused, regardless of nested route timing.
@@ -276,7 +285,13 @@ export default function EditRideScreen(): React.JSX.Element {
   }, []);
 
   const handleUpdateRide = async () => {
-    if (!pickupLocation.trim() || !dropLocation.trim()) {
+    const pickupResolved = routeEndpointsLocked
+      ? (ride.pickupLocationName ?? ride.from ?? '').trim()
+      : pickupLocation.trim();
+    const dropResolved = routeEndpointsLocked
+      ? (ride.destinationLocationName ?? ride.to ?? '').trim()
+      : dropLocation.trim();
+    if (!pickupResolved || !dropResolved) {
       Alert.alert('Missing fields', 'Pickup and destination are required.');
       return;
     }
@@ -294,8 +309,8 @@ export default function EditRideScreen(): React.JSX.Element {
     }
     const descriptionTrimmed = description.trim();
     const payload: Record<string, unknown> = {
-      pickupLocationName: pickupLocation.trim(),
-      destinationLocationName: dropLocation.trim(),
+      pickupLocationName: pickupResolved,
+      destinationLocationName: dropResolved,
       price: price.trim(),
       seats: Math.max(1, Math.floor(Number(totalSeats))),
       description: descriptionTrimmed,
@@ -313,8 +328,8 @@ export default function EditRideScreen(): React.JSX.Element {
       if (/^\d{4}-\d{2}-\d{2}$/.test(ymd)) {
         await addRecentPublished({
           rideId: String(ride.id ?? '').trim() || undefined,
-          pickup: pickupLocation.trim(),
-          destination: dropLocation.trim(),
+          pickup: pickupResolved,
+          destination: dropResolved,
           pickupLatitude: Number(ride.pickupLatitude ?? 0),
           pickupLongitude: Number(ride.pickupLongitude ?? 0),
           destinationLatitude: Number(ride.destinationLatitude ?? 0),
@@ -396,7 +411,9 @@ export default function EditRideScreen(): React.JSX.Element {
             <Text style={styles.headerSubtitle}>Update your trip details</Text>
           </View>
           <View style={styles.headerRightChip}>
-            <Text style={styles.headerRightChipText}>{hasBookings ? 'Limited edit' : 'Editable'}</Text>
+            <Text style={styles.headerRightChipText}>
+              {hasBookings ? 'Limited edit' : rideIsLiveListed ? 'Partial edit' : 'Editable'}
+            </Text>
           </View>
         </View>
 
@@ -416,11 +433,19 @@ export default function EditRideScreen(): React.JSX.Element {
             </Text>
           </View>
         ) : null}
+        {rideIsLiveListed && !hasBookings ? (
+          <View style={styles.bannerInfo}>
+            <Ionicons name="information-circle-outline" size={18} color={COLORS.info} />
+            <Text style={styles.bannerInfoText}>
+              This ride is live on your list. Pickup and destination cannot be changed.
+            </Text>
+          </View>
+        ) : null}
 
         <View style={styles.card}>
           <View style={styles.sectionHeaderRow}>
             <Text style={styles.sectionTitle}>Ride details</Text>
-            {majorFieldLocked ? (
+            {routeEndpointsLocked ? (
               <View style={styles.lockPill}>
                 <Ionicons name="lock-closed-outline" size={12} color={COLORS.textMuted} />
                 <Text style={styles.lockPillText}>Locked</Text>
@@ -428,15 +453,17 @@ export default function EditRideScreen(): React.JSX.Element {
             ) : null}
           </View>
           <Text style={styles.sectionHint}>
-            {majorFieldLocked
+            {hasBookings
               ? 'Pickup, drop, schedule, price and seats are read-only after bookings.'
-              : 'These details are visible to all passengers.'}
+              : rideIsLiveListed
+                ? 'Pickup and destination are fixed while this ride is live. You can still update departure, price and seats.'
+                : 'These details are visible to all passengers.'}
           </Text>
 
           <TouchableOpacity
-            style={[styles.pickRow, majorFieldLocked && styles.pickRowLocked]}
+            style={[styles.pickRow, routeEndpointsLocked && styles.pickRowLocked]}
             onPress={() => openLocationPicker('from')}
-            activeOpacity={majorFieldLocked ? 1 : 0.75}
+            activeOpacity={routeEndpointsLocked ? 1 : 0.75}
           >
             <View style={styles.pickIconCol}>
               <View style={styles.greenDot} />
@@ -446,13 +473,13 @@ export default function EditRideScreen(): React.JSX.Element {
               <Text style={styles.pickMainText} numberOfLines={1}>{pickupLocation || 'Where from?'}</Text>
               <Text style={styles.pickSubText}>PICKUP</Text>
             </View>
-            <Ionicons name={majorFieldLocked ? 'lock-closed-outline' : 'chevron-forward'} size={20} color={COLORS.textMuted} />
+            <Ionicons name={routeEndpointsLocked ? 'lock-closed-outline' : 'chevron-forward'} size={20} color={COLORS.textMuted} />
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={[styles.pickRow, majorFieldLocked && styles.pickRowLocked]}
+            style={[styles.pickRow, routeEndpointsLocked && styles.pickRowLocked]}
             onPress={() => openLocationPicker('to')}
-            activeOpacity={majorFieldLocked ? 1 : 0.75}
+            activeOpacity={routeEndpointsLocked ? 1 : 0.75}
           >
             <View style={styles.pickIconCol}>
               <View style={styles.redPin} />
@@ -461,14 +488,14 @@ export default function EditRideScreen(): React.JSX.Element {
               <Text style={styles.pickMainText} numberOfLines={1}>{dropLocation || 'Add destination'}</Text>
               <Text style={styles.pickSubText}>DESTINATION</Text>
             </View>
-            <Ionicons name={majorFieldLocked ? 'lock-closed-outline' : 'chevron-forward'} size={20} color={COLORS.textMuted} />
+            <Ionicons name={routeEndpointsLocked ? 'lock-closed-outline' : 'chevron-forward'} size={20} color={COLORS.textMuted} />
           </TouchableOpacity>
 
           <View style={styles.rowDivider} />
           <TouchableOpacity
-            style={[styles.fieldRow, majorFieldLocked && styles.fieldRowDisabled]}
-            onPress={() => !majorFieldLocked && setShowDateModal(true)}
-            activeOpacity={majorFieldLocked ? 1 : 0.75}
+            style={[styles.fieldRow, bookingLockedFields && styles.fieldRowDisabled]}
+            onPress={() => !bookingLockedFields && setShowDateModal(true)}
+            activeOpacity={bookingLockedFields ? 1 : 0.75}
           >
             <View style={styles.fieldLeft}>
               <Ionicons name="calendar-outline" size={24} color={COLORS.textSecondary} />
@@ -477,14 +504,14 @@ export default function EditRideScreen(): React.JSX.Element {
               <Text style={styles.fieldValue}>{dateDisplayLabel || 'Select date'}</Text>
               <Text style={styles.fieldLabel}>DATE</Text>
             </View>
-            <Ionicons name={majorFieldLocked ? 'lock-closed-outline' : 'chevron-forward'} size={22} color={COLORS.textMuted} />
+            <Ionicons name={bookingLockedFields ? 'lock-closed-outline' : 'chevron-forward'} size={22} color={COLORS.textMuted} />
           </TouchableOpacity>
 
           <View style={styles.rowDivider} />
           <TouchableOpacity
-            style={[styles.fieldRow, majorFieldLocked && styles.fieldRowDisabled]}
-            onPress={() => !majorFieldLocked && openTimeModal()}
-            activeOpacity={majorFieldLocked ? 1 : 0.75}
+            style={[styles.fieldRow, bookingLockedFields && styles.fieldRowDisabled]}
+            onPress={() => !bookingLockedFields && openTimeModal()}
+            activeOpacity={bookingLockedFields ? 1 : 0.75}
           >
             <View style={styles.fieldLeft}>
               <View style={styles.timeIconCircle}>
@@ -495,14 +522,14 @@ export default function EditRideScreen(): React.JSX.Element {
               <Text style={[styles.fieldValue, styles.timeValue]}>{timeLabel}</Text>
               <Text style={styles.fieldLabel}>TIME</Text>
             </View>
-            <Ionicons name={majorFieldLocked ? 'lock-closed-outline' : 'chevron-forward'} size={22} color={COLORS.textMuted} />
+            <Ionicons name={bookingLockedFields ? 'lock-closed-outline' : 'chevron-forward'} size={22} color={COLORS.textMuted} />
           </TouchableOpacity>
 
           <View style={styles.rowDivider} />
           <TouchableOpacity
-            style={[styles.fieldRow, majorFieldLocked && styles.fieldRowDisabled]}
-            onPress={() => !majorFieldLocked && setShowFareBottomSheet(true)}
-            activeOpacity={majorFieldLocked ? 1 : 0.75}
+            style={[styles.fieldRow, bookingLockedFields && styles.fieldRowDisabled]}
+            onPress={() => !bookingLockedFields && setShowFareBottomSheet(true)}
+            activeOpacity={bookingLockedFields ? 1 : 0.75}
           >
             <View style={styles.fieldLeft}>
               <View style={styles.fareIconCircle}>
@@ -513,14 +540,14 @@ export default function EditRideScreen(): React.JSX.Element {
               <Text style={[styles.fieldValue, styles.fareValue]}>{price ? `₹${price}` : 'Set fare'}</Text>
               <Text style={styles.fieldLabel}>ESTIMATED FARE</Text>
             </View>
-            <Ionicons name={majorFieldLocked ? 'lock-closed-outline' : 'chevron-forward'} size={22} color={COLORS.textMuted} />
+            <Ionicons name={bookingLockedFields ? 'lock-closed-outline' : 'chevron-forward'} size={22} color={COLORS.textMuted} />
           </TouchableOpacity>
 
           <View style={styles.rowDivider} />
           <TouchableOpacity
-            style={[styles.fieldRow, majorFieldLocked && styles.fieldRowDisabled]}
-            onPress={() => !majorFieldLocked && setShowSeatsModal(true)}
-            activeOpacity={majorFieldLocked ? 1 : 0.75}
+            style={[styles.fieldRow, bookingLockedFields && styles.fieldRowDisabled]}
+            onPress={() => !bookingLockedFields && setShowSeatsModal(true)}
+            activeOpacity={bookingLockedFields ? 1 : 0.75}
           >
             <View style={styles.fieldLeft}>
               <Ionicons name="people-outline" size={22} color="#6b7280" />
@@ -529,7 +556,7 @@ export default function EditRideScreen(): React.JSX.Element {
               <Text style={styles.fieldValue}>{totalSeats ? `${totalSeats} passenger${totalSeats === '1' ? '' : 's'}` : 'Set seats'}</Text>
               <Text style={styles.fieldLabel}>SEATING SPACE</Text>
             </View>
-            <Ionicons name={majorFieldLocked ? 'lock-closed-outline' : 'chevron-forward'} size={22} color={COLORS.textMuted} />
+            <Ionicons name={bookingLockedFields ? 'lock-closed-outline' : 'chevron-forward'} size={22} color={COLORS.textMuted} />
           </TouchableOpacity>
         </View>
 
@@ -784,6 +811,24 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   bannerText: { flex: 1, color: '#7c2d12', fontSize: 13, lineHeight: 18, fontWeight: '500' },
+  bannerInfo: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    backgroundColor: '#eff6ff',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    padding: 11,
+    marginBottom: 12,
+  },
+  bannerInfoText: {
+    flex: 1,
+    color: COLORS.text,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '500',
+  },
   card: {
     backgroundColor: COLORS.background,
     borderWidth: 1,

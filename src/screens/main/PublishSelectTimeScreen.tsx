@@ -99,7 +99,9 @@ export default function PublishSelectTimeScreen(): React.JSX.Element {
     destinationLongitude,
     selectedDistanceKm,
     selectedDurationSeconds,
+    routePolylineEncoded,
     publishRestoreKey,
+    publishRecentEditEntry,
     selectedDateIso,
     initialTimeHour,
     initialTimeMinute,
@@ -177,10 +179,12 @@ export default function PublishSelectTimeScreen(): React.JSX.Element {
       destinationLongitude,
       selectedDistanceKm,
       selectedDurationSeconds,
+      routePolylineEncoded: routePolylineEncoded ?? '',
       publishRestoreKey,
       selectedDateIso,
       selectedTimeHour: clockHour24,
       selectedTimeMinute: clockMinute,
+      ...(publishRecentEditEntry ? { publishRecentEditEntry } : {}),
     });
   };
 
@@ -202,7 +206,6 @@ export default function PublishSelectTimeScreen(): React.JSX.Element {
       <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
         <Text style={styles.leadBlock}>
           <Text style={styles.leadEmph}>Set your departure time.</Text>
-          <Text style={styles.leadRest}> Tap the clock to choose hour, then minutes — same picker as on the publish form (5-minute steps).</Text>
         </Text>
 
         <View style={styles.timeCard}>
@@ -320,12 +323,6 @@ export default function PublishSelectTimeScreen(): React.JSX.Element {
             </Pressable>
           </View>
 
-          <Text style={styles.clockHint}>
-            {clockMode === 'hour'
-              ? 'Tap the clock to pick hour (outer ring 0–11, inner ring 12–23)'
-              : 'Tap the clock to pick minutes (0–55 in 5 min steps)'}
-          </Text>
-
           <View style={styles.timePreviewRow}>
             <Text style={styles.timePreviewLabel}>Selected</Text>
             <Text style={styles.timePreviewValue}>{formatTimeLabel(clockHour24, clockMinute)}</Text>
@@ -363,11 +360,6 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '800',
     color: COLORS.text,
-  },
-  leadRest: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: COLORS.textSecondary,
   },
   timeCard: {
     backgroundColor: COLORS.background,
@@ -531,15 +523,6 @@ const styles = StyleSheet.create({
     height: 42,
     backgroundColor: COLORS.primary,
     borderRadius: 1.5,
-  },
-  clockHint: {
-    fontSize: 12,
-    color: COLORS.textSecondary,
-    marginTop: 4,
-    marginBottom: 8,
-    textAlign: 'center',
-    paddingHorizontal: 8,
-    lineHeight: 17,
   },
   timePreviewRow: {
     flexDirection: 'row',

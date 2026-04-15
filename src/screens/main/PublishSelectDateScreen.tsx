@@ -48,7 +48,9 @@ export default function PublishSelectDateScreen(): React.JSX.Element {
     destinationLongitude,
     selectedDistanceKm,
     selectedDurationSeconds,
+    routePolylineEncoded,
     publishRestoreKey,
+    publishRecentEditEntry,
     initialSelectedDateIso,
   } = route.params;
 
@@ -84,7 +86,9 @@ export default function PublishSelectDateScreen(): React.JSX.Element {
     destinationLongitude,
     selectedDistanceKm,
     selectedDurationSeconds,
+    routePolylineEncoded: routePolylineEncoded ?? '',
     publishRestoreKey,
+    ...(publishRecentEditEntry ? { publishRecentEditEntry } : {}),
   };
 
   const onContinue = () => {

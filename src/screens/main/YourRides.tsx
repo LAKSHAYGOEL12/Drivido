@@ -26,10 +26,13 @@ import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../contexts/AuthContext';
 import { useOwnerPendingRequests } from '../../contexts/OwnerPendingRequestsContext';
 import api from '../../services/api';
+import { extractRideListFromResponse } from '../../services/fetchPassengerBookedRides';
 import { clearRideDetailCache, fetchRideDetailRaw } from '../../services/rideDetailCache';
 import {
   mergeRideListRowWithDetailSnapshot,
+  rideListItemFromDetailApiPayload,
   RIDE_LIST_MERGE_FROM_DETAIL,
+  type RideListMergeFromDetailPayload,
 } from '../../services/rideListFromDetailSync';
 import {
   REQUEST_MY_RIDES_LIST_REFRESH,
@@ -41,10 +44,14 @@ import type { RideListItem } from '../../types/api';
 import { COLORS } from '../../constants/colors';
 import RideListCard from '../../components/rides/RideListCard';
 import {
+  getRideScheduledAt,
+  isPublishedRideLiveNow,
   isRideCancelledByOwner,
   isRideCompletedForDisplay,
+  isRidePastArrivalWindow,
   isViewerRideOwner,
 } from '../../utils/rideDisplay';
+import { pickRoutePolylineEncodedFromRecord } from '../../utils/ridePublisherCoords';
 import {
   extractBookingsListArray,
   groupBookingListByRideId,
@@ -216,8 +223,12 @@ function normalizeRideItem(raw: Record<string, unknown>): RideListItem {
     ),
   };
   const estDur = num(r.estimatedDurationSeconds ?? r.estimated_duration_seconds);
+  const routePolyRaw = pickRoutePolylineEncodedFromRecord(r as Record<string, unknown>);
   if (estDur !== undefined && estDur > 0) {
     out.estimatedDurationSeconds = Math.floor(estDur);
+  }
+  if (routePolyRaw) {
+    out.routePolylineEncoded = routePolyRaw;
   }
   const rawBookings = r.bookings;
   if (Array.isArray(rawBookings)) {
@@ -279,42 +290,6 @@ function appendMissingRidesFromEmbeddedBookings(
     });
   });
   return [...list, ...extras];
-}
-
-function rideListItemFromDetailPayload(res: unknown): RideListItem | null {
-  if (!res || typeof res !== 'object') return null;
-  const root = res as Record<string, unknown>;
-  const candidate =
-    (root.ride && typeof root.ride === 'object' ? (root.ride as Record<string, unknown>) : null) ??
-    (root.data && typeof root.data === 'object'
-      ? (((root.data as Record<string, unknown>).ride &&
-          typeof (root.data as Record<string, unknown>).ride === 'object')
-          ? ((root.data as Record<string, unknown>).ride as Record<string, unknown>)
-          : (root.data as Record<string, unknown>))
-      : null) ??
-    root;
-  return normalizeRideItem(candidate as Record<string, unknown>);
-}
-
-/**
- * Parse list payloads: top-level array, `{ rides }`, `{ data: [...] }`, `{ data: { rides } }`,
- * or `{ items }` — otherwise “All rides” / “My rides” look empty while the network returns 200.
- */
-function extractRawList(res: unknown): Record<string, unknown>[] {
-  if (res == null) return [];
-  if (Array.isArray(res)) return res as Record<string, unknown>[];
-  const d = res as Record<string, unknown>;
-  if (Array.isArray(d.rides)) return d.rides as Record<string, unknown>[];
-  if (Array.isArray(d.items)) return d.items as Record<string, unknown>[];
-  const data = d.data;
-  if (Array.isArray(data)) return data as Record<string, unknown>[];
-  if (data && typeof data === 'object') {
-    const inner = data as Record<string, unknown>;
-    if (Array.isArray(inner.rides)) return inner.rides as Record<string, unknown>[];
-    if (Array.isArray(inner.items)) return inner.items as Record<string, unknown>[];
-    if (Array.isArray(inner.data)) return inner.data as Record<string, unknown>[];
-  }
-  return [];
 }
 
 /**
@@ -415,6 +390,73 @@ async function apiGetOrNull(path: string): Promise<{ data: unknown | null; statu
   } catch (e: unknown) {
     return { data: null, status: apiErrorStatus(e) };
   }
+}
+
+/**
+ * Dev-only: why “My rides” shows N cards vs how many came from GET /my-rides.
+ * Logs each tab-visible row with route + schedule; second line is driver-endpoint rows only.
+ */
+function devLogYourRidesMyTabScheduleBreakdown(
+  mergedList: RideListItem[],
+  publishedFromDriverEndpoint: RideListItem[],
+  devCtx: YourRidesListContext,
+  ownerId: string
+): void {
+  if (!__DEV__) return;
+  const scheduleIso = (r: RideListItem): string | undefined => {
+    const d = getRideScheduledAt(r);
+    return d && !Number.isNaN(d.getTime()) ? d.toISOString() : undefined;
+  };
+  const summarize = (r: RideListItem, role: 'driving' | 'passenger') => ({
+    role,
+    id: r.id,
+    pickup: (r.pickupLocationName ?? r.from ?? '').trim() || undefined,
+    destination: (r.destinationLocationName ?? r.to ?? '').trim() || undefined,
+    rideDate: r.rideDate ?? r.scheduledDate,
+    rideTime: r.rideTime ?? r.scheduledTime,
+    scheduledAt: r.scheduledAt,
+    scheduleIso,
+    status: r.status,
+    viewerIsOwner: r.viewerIsOwner,
+    userId: r.userId,
+  });
+  const myTab = mergedList.filter((r) => matchesMyRidesTab(r, devCtx));
+  console.log(
+    '[YourRides] My rides tab (same filter as UI) — each card:',
+    myTab.map((r) => summarize(r, isViewerRideOwner(r, ownerId) ? 'driving' : 'passenger'))
+  );
+  console.log(
+    '[YourRides] Published driver list only (GET /my-rides or /rides/mine), after normalize:',
+    publishedFromDriverEndpoint
+      .filter((r) => String(r.id ?? '').trim() !== '')
+      .map((r) => summarize(r, 'driving'))
+  );
+}
+
+function rawRideListRowId(raw: Record<string, unknown>): string {
+  return String(raw.id ?? raw._id ?? '').trim();
+}
+
+/** Dev-only: full JSON for every published ride that is still live (driver list only). */
+function devLogLivePublishedRidePayloads(
+  published: RideListItem[],
+  publishedRaw: Record<string, unknown>[]
+): void {
+  if (!__DEV__) return;
+  const live = published.filter(isPublishedRideLiveNow);
+  const liveIds = new Set(live.map((r) => r.id));
+  const liveRaw = publishedRaw.filter((row) => {
+    const id = rawRideListRowId(row);
+    return id !== '' && liveIds.has(id);
+  });
+  console.log(
+    `[YourRides] LIVE published only — normalized (${live.length} rides, RideListItem shape):`,
+    JSON.stringify(live, null, 2)
+  );
+  console.log(
+    `[YourRides] LIVE published only — raw API rows from driver list (${liveRaw.length} rows):`,
+    JSON.stringify(liveRaw, null, 2)
+  );
 }
 
 type YourRidesNavProp = NativeStackNavigationProp<RidesStackParamList, 'YourRidesList'>;
@@ -717,11 +759,23 @@ export default function YourRides(): React.JSX.Element {
   useEffect(() => {
     const sub = DeviceEventEmitter.addListener(
       RIDE_LIST_MERGE_FROM_DETAIL,
-      (detail: RideListItem) => {
+      (payload: RideListMergeFromDetailPayload) => {
+        const detail = payload?.ride;
         if (!detail?.id) return;
-        setRides((prev) =>
-          prev.map((r) => (r.id === detail.id ? mergeRideListRowWithDetailSnapshot(r, detail) : r))
-        );
+        setRides((prev) => {
+          const idx = prev.findIndex((r) => r.id === detail.id);
+          if (idx >= 0) {
+            return prev.map((r) => (r.id === detail.id ? mergeRideListRowWithDetailSnapshot(r, detail) : r));
+          }
+          if (payload.insertIfMissing) {
+            const row: RideListItem = {
+              ...detail,
+              viewerIsOwner: detail.viewerIsOwner === false ? false : true,
+            };
+            return [row, ...prev];
+          }
+          return prev;
+        });
       }
     );
     return () => sub.remove();
@@ -882,7 +936,7 @@ export default function YourRides(): React.JSX.Element {
       /** Driver’s published rides only — never treat full GET /rides as “published” (would mark everyone as owner). */
       let publishedRaw: Record<string, unknown>[] = [];
       if (myPublishedRes.data != null) {
-        publishedRaw = extractRawList(myPublishedRes.data);
+        publishedRaw = extractRideListFromResponse(myPublishedRes.data);
         if (__DEV__) {
           console.log('========== GET /my-rides – API response ==========');
           console.log(JSON.stringify(myPublishedRes.data, null, 2));
@@ -892,9 +946,17 @@ export default function YourRides(): React.JSX.Element {
         console.log('========== GET /my-rides failed — driver list empty; catalog still from GET /rides ==========');
       }
 
+      /** Legacy backends: driver list only on GET /rides/mine when /my-rides errors out. */
+      if (publishedRaw.length === 0 && myPublishedRes.data == null) {
+        const mineRes = await apiGetOrNull(API.endpoints.rides.mine);
+        if (mineRes.data != null) {
+          publishedRaw = extractRideListFromResponse(mineRes.data);
+        }
+      }
+
       let browseRaw: Record<string, unknown>[] = [];
       if (browseListResult.data != null) {
-        browseRaw = extractRawList(browseListResult.data);
+        browseRaw = extractRideListFromResponse(browseListResult.data);
         if (__DEV__) {
           console.log('========== GET /rides (browse catalog) – API response ==========');
           console.log(JSON.stringify(browseListResult.data, null, 2));
@@ -905,7 +967,7 @@ export default function YourRides(): React.JSX.Element {
         try {
           await rideListStagger();
           const ridesRes = await api.get<RidesResponse>(API.endpoints.rides.list);
-          browseRaw = extractRawList(ridesRes);
+          browseRaw = extractRideListFromResponse(ridesRes);
           if (__DEV__) {
             console.log('========== GET /rides (browse retry) – API response ==========');
             console.log(JSON.stringify(ridesRes, null, 2));
@@ -924,7 +986,7 @@ export default function YourRides(): React.JSX.Element {
       if (bookedResult.status === 429) saw429 = true;
       let bookedRaw: Record<string, unknown>[] = [];
       if (bookedResult.data != null) {
-        bookedRaw = extractRawList(bookedResult.data);
+        bookedRaw = extractRideListFromResponse(bookedResult.data);
         if (__DEV__) {
           console.log('========== GET /rides/booked – API response ==========');
           console.log(JSON.stringify(bookedResult.data, null, 2));
@@ -940,12 +1002,14 @@ export default function YourRides(): React.JSX.Element {
 
       let bookedIds = new Set<string>();
       const myBookingStatusByRideId = new Map<string, string>();
+      let bookingsPayloadRowCount = 0;
       if (bookingsWrap.status === 429) saw429 = true;
       try {
         if (bookingsWrap.data == null) {
           bookedIds = new Set();
         } else {
           const arr = extractBookingsListArray(bookingsWrap.data);
+          bookingsPayloadRowCount = arr.length;
           bookedIds = new Set<string>();
         /** Same ride may appear twice after re-book (cancelled + active) — prefer active status. */
         const myStatusesPerRide = new Map<string, string[]>();
@@ -982,7 +1046,7 @@ export default function YourRides(): React.JSX.Element {
                   force: true,
                   viewerUserId: ownerId,
                 });
-                const item = rideListItemFromDetailPayload(res);
+                const item = rideListItemFromDetailApiPayload(res);
                 if (!item) return null;
                 const rows = byRide.get(rideId) ?? [];
                 const st = myBookingStatusByRideId.get(rideId);
@@ -1101,6 +1165,26 @@ export default function YourRides(): React.JSX.Element {
       }
 
       setCachedAllRidesCount(list.filter(matchesAllRidesTab).length);
+      if (__DEV__) {
+        const devCtx: YourRidesListContext = { userId: ownerId, bookedRideIds: bookedIds };
+        const mergedWithId = list.filter((r) => (r.id ?? '').trim() !== '').length;
+        console.log('[YourRides] ride payload / display counts', {
+          payloadRowsFromMyRidesOrMine: publishedRaw.length,
+          payloadRowsFromRidesBooked: bookedRaw.length,
+          payloadRowsFromRidesBrowse: browseRaw.length,
+          payloadRowsFromBookingsList: bookingsPayloadRowCount,
+          normalizedDriverRides: published.filter((r) => (r.id ?? '').trim() !== '').length,
+          normalizedBookedRides: bookedPassenger.filter((r) => (r.id ?? '').trim() !== '').length,
+          normalizedBrowseRides: browseCatalog.filter((r) => (r.id ?? '').trim() !== '').length,
+          mergedUniqueRidesInList: list.length,
+          mergedRidesWithNonEmptyId: mergedWithId,
+          cardsShownMyRidesTab: countForTab(list, 'myRides', devCtx),
+          cardsShownAllRidesTab: countForTab(list, 'allRides', devCtx),
+          cardsShownPastRidesTab: countForTab(list, 'pastRides', devCtx),
+        });
+        devLogYourRidesMyTabScheduleBreakdown(list, published, devCtx, ownerId);
+        devLogLivePublishedRidePayloads(published, publishedRaw);
+      }
       setRides(list);
       setBookedRideIds(bookedIds);
     } catch (e: unknown) {

@@ -9,7 +9,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { CommonActions, useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
+import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import type { PublishStackParamList } from '../../navigation/types';
@@ -45,6 +45,7 @@ export default function PublishPriceScreen(): React.JSX.Element {
     selectedTimeMinute,
     selectedDistanceKm,
     selectedDurationSeconds: durationFromRoute,
+    routePolylineEncoded,
     publishRestoreKey,
     initialPricePerSeat,
     publishRecentEditEntry,
@@ -143,7 +144,7 @@ export default function PublishPriceScreen(): React.JSX.Element {
       ? 'checkmark-circle'
       : 'trending-down';
   const statusTitle = isPriceInvalid
-    ? 'Fare not allowed'
+    ? 'Price out of range'
     : isWithinRecommended
       ? 'Great choice'
       : isBelowRecommended
@@ -155,10 +156,10 @@ export default function PublishPriceScreen(): React.JSX.Element {
         return `Enter an amount between ₹${minAllowed} and ₹${maxAllowed}.`;
       }
       if (inputAmount < minAllowed) {
-        return `Minimum is ₹${minAllowed} (up to ₹20 below suggested ₹${minRecommended}).`;
+        return `Minimum allowed is ₹${minAllowed}.`;
       }
       if (inputAmount > maxAllowed) {
-        return `Maximum is ₹${maxAllowed} (up to ₹50 above suggested ₹${maxRecommended}).`;
+        return `Maximum allowed is ₹${maxAllowed}.`;
       }
     }
     if (isWithinRecommended) return 'You’re in the sweet spot for this route distance.';
@@ -179,7 +180,7 @@ export default function PublishPriceScreen(): React.JSX.Element {
     setPrice(finalPrice);
     setInputText(String(finalPrice));
     const fallbackSeconds = Math.max(60, Math.round(distanceKmForReco * 2 * 60));
-    const params: Record<string, unknown> = {
+    navigation.navigate('PublishSelectSeats', {
       selectedFrom,
       selectedTo,
       pickupLatitude,
@@ -189,55 +190,25 @@ export default function PublishPriceScreen(): React.JSX.Element {
       ...(selectedDateIso ? { selectedDateIso } : {}),
       ...(typeof selectedTimeHour === 'number' ? { selectedTimeHour } : {}),
       ...(typeof selectedTimeMinute === 'number' ? { selectedTimeMinute } : {}),
-      selectedRate: String(finalPrice),
-      initialPricePerSeat: finalPrice,
       selectedDistanceKm: distanceKmForReco,
       selectedDurationSeconds:
         typeof durationFromRoute === 'number' && !Number.isNaN(durationFromRoute)
           ? durationFromRoute
           : fallbackSeconds,
-    };
-    if (publishRestoreKey) params._publishRestoreKey = publishRestoreKey;
-
-    if (publishRecentEditEntry) {
-      navigation.dispatch(
-        CommonActions.reset({
-          index: 0,
-          routes: [
-            {
-              name: 'PublishRecentEdit',
-              params: {
-                entry: publishRecentEditEntry,
-                selectedFrom,
-                selectedTo,
-                pickupLatitude,
-                pickupLongitude,
-                destinationLatitude,
-                destinationLongitude,
-                selectedRate: String(finalPrice),
-                initialPricePerSeat: finalPrice,
-                selectedDistanceKm: distanceKmForReco,
-                selectedDurationSeconds:
-                  typeof durationFromRoute === 'number' && !Number.isNaN(durationFromRoute)
-                    ? durationFromRoute
-                    : fallbackSeconds,
-                ...(selectedDateIso ? { selectedDateIso } : {}),
-                ...(typeof selectedTimeHour === 'number' ? { selectedTimeHour } : {}),
-                ...(typeof selectedTimeMinute === 'number' ? { selectedTimeMinute } : {}),
-              },
-            },
-          ],
-        })
-      );
-      return;
-    }
-
-    navigation.dispatch(
-      CommonActions.reset({
-        index: 0,
-        routes: [{ name: 'PublishRide', params }],
-      })
-    );
+      routePolylineEncoded: routePolylineEncoded ?? '',
+      ...(publishRestoreKey ? { publishRestoreKey } : {}),
+      ...(publishRecentEditEntry ? { publishRecentEditEntry } : {}),
+      selectedRate: String(finalPrice),
+      initialPricePerSeat: finalPrice,
+      ...(publishRecentEditEntry
+        ? {
+            initialSeats: Math.max(
+              1,
+              Math.min(6, Math.floor(publishRecentEditEntry.seats) || 1)
+            ),
+          }
+        : {}),
+    });
   };
 
   if (!stopsAllowed) {
@@ -307,10 +278,6 @@ export default function PublishPriceScreen(): React.JSX.Element {
                 importantForAutofill="no"
               />
             </View>
-            <Text style={styles.manualHint}>
-              Allowed ₹{minAllowed}–₹{maxAllowed} · Suggested ₹{minRecommended}–₹{maxRecommended} (max ₹50 above / ₹20
-              below suggested).
-            </Text>
           </View>
 
           <View style={styles.distanceCard}>
@@ -482,13 +449,6 @@ const styles = StyleSheet.create({
     color: COLORS.text,
     paddingVertical: 0,
     minHeight: 52,
-  },
-  manualHint: {
-    marginTop: 12,
-    fontSize: 13,
-    color: COLORS.textMuted,
-    fontWeight: '600',
-    lineHeight: 18,
   },
   recoCard: {
     backgroundColor: 'rgba(34,197,94,0.08)',

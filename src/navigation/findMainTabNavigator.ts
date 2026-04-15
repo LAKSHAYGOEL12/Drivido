@@ -30,7 +30,11 @@ export function findMainTabNavigator(navigation: { getParent?: () => unknown } |
   return null;
 }
 
-/** Same walk-up as `findMainTabNavigator`, but also exposes `setOptions` for tab bar visibility. */
+/**
+ * Same walk-up as `findMainTabNavigator`, but also exposes `setOptions` for `tabBarStyle`.
+ * Prefer hiding tabs via `BottomTabs` + `MAIN_TAB_PRIMARY_NESTED_ROUTE`; use `setOptions`
+ * only for timing edge cases so behavior stays aligned with that map.
+ */
 export function findMainTabNavigatorWithOptions(
   navigation: { getParent?: () => unknown } | undefined
 ): {

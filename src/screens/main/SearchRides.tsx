@@ -5,6 +5,7 @@ import {
   View,
   TouchableOpacity,
   BackHandler,
+  Platform,
   ScrollView,
 } from 'react-native';
 import { Alert } from '../../utils/themedAlert';
@@ -22,6 +23,7 @@ import {
   removeRecentSearch,
   type RecentSearchEntry,
 } from '../../services/recent-search-storage';
+import { briefRouteListLabel } from '../../utils/routeListBriefLabel';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -131,6 +133,39 @@ function isSamePickupAndDestination(args: {
     const km = 6371 * (2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h)));
     // <=250m is operationally same stop for search.
     return km <= 0.25;
+  }
+  return false;
+}
+
+function searchRidesFormHasUserInput(args: {
+  from: string;
+  to: string;
+  date: string | null;
+  passengers: string;
+  fromLat?: number;
+  fromLon?: number;
+  toLat?: number;
+  toLon?: number;
+}): boolean {
+  if (args.from.trim() || args.to.trim()) return true;
+  if (args.date != null && String(args.date).trim() !== '') return true;
+  const pax = Math.min(6, Math.max(1, parseInt(args.passengers, 10) || 1));
+  if (pax !== 1) return true;
+  if (
+    typeof args.fromLat === 'number' &&
+    Number.isFinite(args.fromLat) &&
+    typeof args.fromLon === 'number' &&
+    Number.isFinite(args.fromLon)
+  ) {
+    return true;
+  }
+  if (
+    typeof args.toLat === 'number' &&
+    Number.isFinite(args.toLat) &&
+    typeof args.toLon === 'number' &&
+    Number.isFinite(args.toLon)
+  ) {
+    return true;
   }
   return false;
 }
@@ -251,13 +286,38 @@ export default function SearchRides(): React.JSX.Element {
 
   useFocusEffect(
     React.useCallback(() => {
+      if (Platform.OS !== 'android') return undefined;
       const onBack = () => {
+        if (
+          searchRidesFormHasUserInput({
+            from,
+            to,
+            date,
+            passengers,
+            fromLat: fromLat,
+            fromLon: fromLon,
+            toLat: toLat,
+            toLon: toLon,
+          })
+        ) {
+          setFrom('');
+          setTo('');
+          setFromLat(undefined);
+          setFromLon(undefined);
+          setToLat(undefined);
+          setToLon(undefined);
+          setDate(null);
+          setPassengers('1');
+          setShowDatePicker(false);
+          setShowPassengersModal(false);
+          return true;
+        }
         BackHandler.exitApp();
         return true;
       };
       const sub = BackHandler.addEventListener('hardwareBackPress', onBack);
       return () => sub.remove();
-    }, [])
+    }, [from, to, date, passengers, fromLat, fromLon, toLat, toLon])
   );
 
   const handleSwapFromTo = () => {
@@ -496,14 +556,27 @@ export default function SearchRides(): React.JSX.Element {
                   activeOpacity={0.72}
                 >
                   <View style={styles.recentIconCircle}>
-                    <Ionicons name="time-outline" size={15} color={COLORS.textSecondary} />
+                    <Ionicons name="time-outline" size={14} color={COLORS.textSecondary} />
                   </View>
                   <View style={styles.recentTextCol}>
-                    <Text style={styles.recentRouteLine} numberOfLines={2}>
-                      <Text style={styles.recentBold}>{item.from}</Text>
-                      <Text style={styles.recentToWord}> to </Text>
-                      <Text style={styles.recentBold}>{item.to}</Text>
-                    </Text>
+                    <View style={styles.recentRouteStack}>
+                      <View style={styles.recentRouteLineRow}>
+                        <View style={styles.recentLineIcon}>
+                          <Ionicons name="ellipse" size={6} color={COLORS.primary} />
+                        </View>
+                        <Text style={styles.recentRouteTitle} numberOfLines={1} ellipsizeMode="tail">
+                          {briefRouteListLabel(item.from)}
+                        </Text>
+                      </View>
+                      <View style={[styles.recentRouteLineRow, styles.recentRouteLineRowSecond]}>
+                        <View style={styles.recentLineIcon}>
+                          <Ionicons name="location-outline" size={14} color={COLORS.textMuted} />
+                        </View>
+                        <Text style={styles.recentRouteSubtitle} numberOfLines={1} ellipsizeMode="tail">
+                          {briefRouteListLabel(item.to)}
+                        </Text>
+                      </View>
+                    </View>
                     <Text style={styles.recentMeta} numberOfLines={1}>
                       {formatRecentSubline(item.date, item.passengers)}
                     </Text>
@@ -682,7 +755,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 8,
+    marginBottom: 10,
   },
   recentsTitle: {
     fontSize: 11,
@@ -697,62 +770,78 @@ const styles = StyleSheet.create({
   },
   recentItem: {
     flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: COLORS.white,
-    borderRadius: 10,
-    borderWidth: 1,
+    alignItems: 'stretch',
+    backgroundColor: COLORS.backgroundSecondary,
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: COLORS.border,
-    marginBottom: 10,
+    marginBottom: 9,
     overflow: 'hidden',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.08,
-    shadowRadius: 8,
-    elevation: 3,
   },
   recentItemMain: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 8,
-    paddingLeft: 10,
-    paddingRight: 2,
-    minHeight: 50,
+    paddingVertical: 12,
+    paddingLeft: 12,
+    paddingRight: 5,
+    minHeight: 48,
   },
   recentIconCircle: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    backgroundColor: '#F8FAFC',
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: COLORS.white,
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 8,
+    marginRight: 10,
   },
   recentTextCol: {
     flex: 1,
     minWidth: 0,
+    justifyContent: 'center',
   },
-  recentRouteLine: {
-    fontSize: 13,
-    lineHeight: 17,
+  recentRouteStack: {
+    marginBottom: 2,
   },
-  recentBold: {
-    fontWeight: '700',
+  recentRouteLineRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 20,
+  },
+  recentRouteLineRowSecond: {
+    marginTop: 4,
+  },
+  recentLineIcon: {
+    width: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  recentRouteTitle: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: 15,
+    fontWeight: '600',
     color: COLORS.text,
+    letterSpacing: -0.2,
   },
-  recentToWord: {
+  recentRouteSubtitle: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: 14,
     fontWeight: '500',
     color: COLORS.textSecondary,
+    letterSpacing: -0.1,
   },
   recentMeta: {
-    fontSize: 11,
-    color: COLORS.textSecondary,
-    marginTop: 2,
+    fontSize: 12,
+    color: COLORS.textMuted,
+    marginTop: 6,
     fontWeight: '500',
   },
   recentClose: {
-    paddingHorizontal: 10,
-    paddingVertical: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
     justifyContent: 'center',
   },
   errorBanner: {

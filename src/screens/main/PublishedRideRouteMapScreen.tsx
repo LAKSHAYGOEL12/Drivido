@@ -1,19 +1,14 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import {
-  ActivityIndicator,
-  Dimensions,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
-  ScrollView,
-} from 'react-native';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import type { SearchStackParamList, RidesStackParamList } from '../../navigation/types';
 import { COLORS } from '../../constants/colors';
-import { getDirectionsAlternatives, type DirectionAlternative } from '../../services/places';
+import { decodePolyline, normalizeEncodedPolyline, type LatLngPoint } from '../../utils/routePolyline';
+import { pickRoutePolylineEncodedFromRecord } from '../../utils/ridePublisherCoords';
+import { reportMapRouteDisplayEvent } from '../../services/mapRouteDisplayTelemetry';
+import { getDirectionsAlternatives } from '../../services/places';
 
 type PublishedMapRouteProp =
   | RouteProp<SearchStackParamList, 'PublishedRideRouteMap'>
@@ -50,22 +45,17 @@ function fitRegion(lat1: number, lon1: number, lat2: number, lon2: number) {
   };
 }
 
-/** Distinct strokes so every alternative is visible on the map. */
-const ROUTE_STROKE_COLORS = ['#1d7df2', '#64748b', '#d97706', '#7c3aed', '#0d9488'];
-
-function boundsFromRoutes(routes: DirectionAlternative[], fallback: () => ReturnType<typeof fitRegion>) {
-  if (routes.length === 0) return fallback();
-  let minLat = Number.POSITIVE_INFINITY;
-  let maxLat = Number.NEGATIVE_INFINITY;
-  let minLon = Number.POSITIVE_INFINITY;
-  let maxLon = Number.NEGATIVE_INFINITY;
-  for (const r of routes) {
-    for (const p of r.overviewPolyline) {
-      minLat = Math.min(minLat, p.latitude);
-      maxLat = Math.max(maxLat, p.latitude);
-      minLon = Math.min(minLon, p.longitude);
-      maxLon = Math.max(maxLon, p.longitude);
-    }
+function boundsFromCoordinates(points: LatLngPoint[], fallback: () => ReturnType<typeof fitRegion>) {
+  if (points.length < 2) return fallback();
+  let minLat = points[0].latitude;
+  let maxLat = points[0].latitude;
+  let minLon = points[0].longitude;
+  let maxLon = points[0].longitude;
+  for (const p of points) {
+    minLat = Math.min(minLat, p.latitude);
+    maxLat = Math.max(maxLat, p.latitude);
+    minLon = Math.min(minLon, p.longitude);
+    maxLon = Math.max(maxLon, p.longitude);
   }
   if (!Number.isFinite(minLat) || minLat === maxLat) return fallback();
   return {
@@ -76,9 +66,36 @@ function boundsFromRoutes(routes: DirectionAlternative[], fallback: () => Return
   };
 }
 
+const ROUTE_STROKE = COLORS.secondary;
+
+/** In-memory only — avoids repeat Directions billing on the same device for identical endpoints. */
+const directionsLineByCoordsKey = new Map<string, LatLngPoint[]>();
+
+function routeCoordsCacheKey(
+  aLat: number,
+  aLon: number,
+  bLat: number,
+  bLon: number
+): string {
+  return [aLat, aLon, bLat, bLon].map((n) => Number(n).toFixed(5)).join('|');
+}
+
+type TelemetrySent = {
+  parseFailed: boolean;
+  displayOk: boolean;
+  straightFallback: boolean;
+};
+
+const emptyTelemetrySent: TelemetrySent = {
+  parseFailed: false,
+  displayOk: false,
+  straightFallback: false,
+};
+
 export default function PublishedRideRouteMapScreen(): React.JSX.Element {
   const navigation = useNavigation();
   const route = useRoute<PublishedMapRouteProp>();
+  const insets = useSafeAreaInsets();
   const {
     pickupLabel,
     destinationLabel,
@@ -86,7 +103,12 @@ export default function PublishedRideRouteMapScreen(): React.JSX.Element {
     pickupLongitude,
     destinationLatitude,
     destinationLongitude,
+    rideId,
   } = route.params;
+
+  const routePolylineEncodedParam = pickRoutePolylineEncodedFromRecord(
+    route.params as Record<string, unknown>
+  );
 
   const hasCoords =
     typeof pickupLatitude === 'number' &&
@@ -94,26 +116,159 @@ export default function PublishedRideRouteMapScreen(): React.JSX.Element {
     typeof destinationLatitude === 'number' &&
     typeof destinationLongitude === 'number';
 
-  const [directionRoutes, setDirectionRoutes] = useState<DirectionAlternative[]>([]);
-  const [loadingRoutes, setLoadingRoutes] = useState(false);
+  const routeTelemetryKey = [
+    rideId ?? '',
+    routePolylineEncodedParam ?? '',
+    String(pickupLatitude),
+    String(pickupLongitude),
+    String(destinationLatitude),
+    String(destinationLongitude),
+  ].join('|');
+
+  const telemetrySentRef = useRef<TelemetrySent>({ ...emptyTelemetrySent });
+  const lastTelemetryKeyRef = useRef('');
+  useEffect(() => {
+    if (lastTelemetryKeyRef.current !== routeTelemetryKey) {
+      lastTelemetryKeyRef.current = routeTelemetryKey;
+      telemetrySentRef.current = { ...emptyTelemetrySent };
+    }
+  }, [routeTelemetryKey]);
+
+  const storedRouteResult = useMemo(() => {
+    const encoded = normalizeEncodedPolyline(routePolylineEncodedParam);
+    if (!encoded) {
+      return { line: [] as LatLngPoint[], parseFailed: false };
+    }
+    try {
+      const pts = decodePolyline(encoded);
+      if (pts.length > 1) {
+        return { line: pts, parseFailed: false };
+      }
+      return { line: [], parseFailed: true };
+    } catch {
+      return { line: [], parseFailed: true };
+    }
+  }, [routePolylineEncodedParam]);
+
+  const selectedRoutePolyline = storedRouteResult.line;
+  const hasStoredPath = selectedRoutePolyline.length > 1;
+
+  const coordsCacheKey = useMemo(
+    () =>
+      hasCoords
+        ? routeCoordsCacheKey(
+            pickupLatitude,
+            pickupLongitude,
+            destinationLatitude,
+            destinationLongitude
+          )
+        : '',
+    [hasCoords, pickupLatitude, pickupLongitude, destinationLatitude, destinationLongitude]
+  );
+
+  const [clientLine, setClientLine] = useState<LatLngPoint[]>([]);
+  const [clientResolved, setClientResolved] = useState(false);
 
   useEffect(() => {
-    let alive = true;
-    async function load() {
-      if (!hasCoords) return;
-      setLoadingRoutes(true);
-      const origin = { latitude: pickupLatitude, longitude: pickupLongitude };
-      const dest = { latitude: destinationLatitude, longitude: destinationLongitude };
-      const list = await getDirectionsAlternatives(origin, dest, { alternatives: true });
-      if (!alive) return;
-      setDirectionRoutes(list);
-      setLoadingRoutes(false);
+    if (!hasCoords || hasStoredPath) {
+      setClientLine([]);
+      setClientResolved(true);
+      return;
     }
-    void load();
+
+    setClientResolved(false);
+    setClientLine([]);
+
+    const cached = directionsLineByCoordsKey.get(coordsCacheKey);
+    if (cached && cached.length > 1) {
+      setClientLine(cached);
+      setClientResolved(true);
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const alts = await getDirectionsAlternatives(
+          { latitude: pickupLatitude, longitude: pickupLongitude },
+          { latitude: destinationLatitude, longitude: destinationLongitude },
+          { alternatives: false }
+        );
+        const pts = alts[0]?.overviewPolyline ?? [];
+        if (cancelled) return;
+        if (pts.length > 1) {
+          directionsLineByCoordsKey.set(coordsCacheKey, pts);
+          setClientLine(pts);
+        } else {
+          setClientLine([]);
+        }
+      } catch {
+        if (!cancelled) setClientLine([]);
+      } finally {
+        if (!cancelled) setClientResolved(true);
+      }
+    })();
+
     return () => {
-      alive = false;
+      cancelled = true;
     };
-  }, [hasCoords, pickupLatitude, pickupLongitude, destinationLatitude, destinationLongitude]);
+  }, [
+    hasCoords,
+    hasStoredPath,
+    coordsCacheKey,
+    pickupLatitude,
+    pickupLongitude,
+    destinationLatitude,
+    destinationLongitude,
+  ]);
+
+  const displayPolyline = useMemo((): LatLngPoint[] => {
+    if (hasStoredPath && selectedRoutePolyline.length > 1) return selectedRoutePolyline;
+    if (!hasStoredPath && clientLine.length > 1) return clientLine;
+    return [];
+  }, [hasStoredPath, selectedRoutePolyline, clientLine]);
+
+  const showRoutePolyline = displayPolyline.length > 1;
+  const mapRef = useRef<any>(null);
+
+  useEffect(() => {
+    if (!hasCoords || !storedRouteResult.parseFailed) return;
+    if (telemetrySentRef.current.parseFailed) return;
+    telemetrySentRef.current.parseFailed = true;
+    reportMapRouteDisplayEvent({ event: 'polyline_parse_failed', rideId });
+  }, [hasCoords, storedRouteResult.parseFailed, rideId]);
+
+  useEffect(() => {
+    if (!hasCoords || !showRoutePolyline) return;
+    if (telemetrySentRef.current.displayOk) return;
+    telemetrySentRef.current.displayOk = true;
+    const polylineSource: 'stored' | 'directions_fallback' = hasStoredPath ? 'stored' : 'directions_fallback';
+    reportMapRouteDisplayEvent({ event: 'polyline_display_ok', rideId, polylineSource });
+  }, [hasCoords, showRoutePolyline, rideId, hasStoredPath]);
+
+  useEffect(() => {
+    if (!hasCoords || hasStoredPath) return;
+    if (!clientResolved) return;
+    if (clientLine.length > 1) return;
+    if (telemetrySentRef.current.straightFallback) return;
+    telemetrySentRef.current.straightFallback = true;
+    reportMapRouteDisplayEvent({ event: 'polyline_render_fallback', rideId, polylineSource: 'none' });
+  }, [hasCoords, hasStoredPath, clientResolved, clientLine, rideId]);
+
+  useEffect(() => {
+    if (!showRoutePolyline || !mapRef.current?.fitToCoordinates) return;
+    const t = setTimeout(() => {
+      try {
+        mapRef.current.fitToCoordinates(displayPolyline, {
+          edgePadding: { top: 72, right: 28, bottom: 200, left: 28 },
+          animated: true,
+        });
+      } catch {
+        /* fitToCoordinates can throw on some map states */
+      }
+    }, 350);
+    return () => clearTimeout(t);
+  }, [showRoutePolyline, displayPolyline]);
 
   const mapRegion = useMemo(() => {
     if (!hasCoords) {
@@ -124,146 +279,109 @@ export default function PublishedRideRouteMapScreen(): React.JSX.Element {
         longitudeDelta: 8,
       };
     }
-    return boundsFromRoutes(directionRoutes, () =>
-      fitRegion(pickupLatitude, pickupLongitude, destinationLatitude, destinationLongitude)
-    );
-  }, [hasCoords, directionRoutes, pickupLatitude, pickupLongitude, destinationLatitude, destinationLongitude]);
-
-  const formatDistance = (m: number): string => `${Math.round(m / 100) / 10} km`;
-  const formatDuration = (s: number): string => {
-    const h = Math.floor(s / 3600);
-    const m = Math.round((s % 3600) / 60);
-    if (h <= 0) return `${m} min`;
-    return `${h} hr ${m} min`;
-  };
-
-  const mapHeight = Math.max(340, Dimensions.get('window').height * 0.62);
+    if (showRoutePolyline) {
+      return boundsFromCoordinates(displayPolyline, () =>
+        fitRegion(pickupLatitude, pickupLongitude, destinationLatitude, destinationLongitude)
+      );
+    }
+    return fitRegion(pickupLatitude, pickupLongitude, destinationLatitude, destinationLongitude);
+  }, [
+    hasCoords,
+    showRoutePolyline,
+    displayPolyline,
+    pickupLatitude,
+    pickupLongitude,
+    destinationLatitude,
+    destinationLongitude,
+  ]);
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      <View style={styles.topBar}>
-        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn} hitSlop={12}>
-          <Ionicons name="chevron-back" size={24} color={COLORS.text} />
+      <View style={styles.header}>
+        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn} hitSlop={14}>
+          <Ionicons name="chevron-back" size={22} color={COLORS.text} />
         </TouchableOpacity>
-        <Text style={styles.topTitle} numberOfLines={1}>
-          Driving routes
+        <Text style={styles.title} numberOfLines={1}>
+          Route
         </Text>
-        <View style={styles.topBarSpacer} />
+        <View style={styles.headerRight} />
       </View>
 
-      <View style={[styles.mapWrap, { height: mapHeight }]}>
+      <View style={styles.mapArea}>
         {MapView && hasCoords ? (
           <MapView
+            ref={mapRef}
             style={styles.map}
             initialRegion={mapRegion}
             provider={PROVIDER_DEFAULT}
             showsUserLocation={false}
             showsMyLocationButton={false}
           >
-            {Polyline &&
-              directionRoutes.map((r, idx) =>
-                r.overviewPolyline.length > 0 ? (
-                  <Polyline
-                    key={`rt_${idx}`}
-                    coordinates={r.overviewPolyline}
-                    strokeColor={ROUTE_STROKE_COLORS[idx % ROUTE_STROKE_COLORS.length]}
-                    strokeWidth={idx === 0 ? 5 : 4}
-                  />
-                ) : null
-              )}
-            {Polyline && directionRoutes.length === 0 && !loadingRoutes && hasCoords ? (
-              <Polyline
-                coordinates={[
-                  { latitude: pickupLatitude, longitude: pickupLongitude },
-                  { latitude: destinationLatitude, longitude: destinationLongitude },
-                ]}
-                strokeColor={COLORS.primary}
-                strokeWidth={4}
-              />
+            {Polyline && showRoutePolyline ? (
+              <Polyline coordinates={displayPolyline} strokeColor={ROUTE_STROKE} strokeWidth={4} />
             ) : null}
             {Marker ? (
               <>
                 <Marker
                   coordinate={{ latitude: pickupLatitude, longitude: pickupLongitude }}
-                  title="Pickup"
+                  title="From"
                   pinColor="#16a34a"
                 />
                 <Marker
                   coordinate={{ latitude: destinationLatitude, longitude: destinationLongitude }}
-                  title="Drop-off"
+                  title="To"
                   pinColor="#ef4444"
                 />
               </>
             ) : null}
           </MapView>
         ) : (
-          <View style={styles.mapUnavailable}>
-            <Text style={styles.mapUnavailableText}>Map unavailable</Text>
+          <View style={styles.mapEmpty}>
+            <Text style={styles.mapEmptyText}>Map unavailable</Text>
           </View>
         )}
+        {!hasStoredPath && hasCoords && !clientResolved ? (
+          <View style={styles.mapLoadingOverlay} pointerEvents="none">
+            <ActivityIndicator size="small" color={COLORS.primary} />
+          </View>
+        ) : null}
       </View>
 
-      <ScrollView
-        style={styles.sheetScroll}
-        contentContainerStyle={styles.sheetContent}
-        keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator={false}
+      <View
+        style={[
+          styles.footer,
+          { paddingBottom: Math.max(insets.bottom, 10) + 14 },
+        ]}
       >
-        <Text style={styles.sheetHint}>
-          For reference only. Driver route can differ.
-        </Text>
+        <View style={styles.footerCard}>
+          <View style={styles.routeRow}>
+            <View style={styles.pickupBubble}>
+              <View style={styles.pickupDot} />
+            </View>
+            <View style={styles.routeCopy}>
+              <Text style={styles.routeKind}>Pickup</Text>
+              <Text style={styles.stopLabel} numberOfLines={2}>
+                {pickupLabel.trim() || '—'}
+              </Text>
+            </View>
+          </View>
 
-        <View style={styles.stopsCard}>
-          <View style={styles.stopRow}>
-            <View style={styles.stopDot} />
-            <Text style={styles.stopText} numberOfLines={3}>
-              {pickupLabel}
-            </Text>
+          <View style={styles.routeRule} />
+
+          <View style={styles.routeRow}>
+            <View style={styles.dropBubble}>
+              <Ionicons name="location" size={17} color={COLORS.primary} />
+            </View>
+            <View style={styles.routeCopy}>
+              <Text style={styles.routeKind}>Drop-off</Text>
+              <Text style={styles.stopLabel} numberOfLines={2}>
+                {destinationLabel.trim() || '—'}
+              </Text>
+            </View>
           </View>
-          <View style={styles.stopLine} />
-          <View style={styles.stopRow}>
-            <Ionicons name="location" size={18} color={COLORS.primary} />
-            <Text style={styles.stopText} numberOfLines={3}>
-              {destinationLabel}
-            </Text>
-          </View>
+
         </View>
-
-        {loadingRoutes ? (
-          <View style={styles.loadingRow}>
-            <ActivityIndicator size="small" color={COLORS.primary} />
-            <Text style={styles.loadingText}>Loading routes…</Text>
-          </View>
-        ) : directionRoutes.length > 0 ? (
-          <View style={styles.routesList}>
-            <Text style={styles.routeSummaryLabel}>Route options</Text>
-            {directionRoutes.map((r, idx) => (
-              <View
-                key={`row_${idx}`}
-                style={[styles.routeOptionRow, idx > 0 && styles.routeOptionRowBorder]}
-              >
-                <View
-                  style={[
-                    styles.routeSwatch,
-                    { backgroundColor: ROUTE_STROKE_COLORS[idx % ROUTE_STROKE_COLORS.length] },
-                  ]}
-                />
-                <View style={styles.routeOptionText}>
-                  <Text style={styles.routePrimary}>
-                    {formatDuration(r.durationSeconds)}
-                    {r.summary ? ` · ${r.summary}` : ''}
-                  </Text>
-                  <Text style={styles.routeSecondary}>{formatDistance(r.distanceMeters)}</Text>
-                </View>
-              </View>
-            ))}
-          </View>
-        ) : hasCoords ? (
-          <Text style={styles.fallbackNote}>
-            No route details. Driver route can differ.
-          </Text>
-        ) : null}
-      </ScrollView>
+      </View>
     </SafeAreaView>
   );
 }
@@ -273,150 +391,121 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: COLORS.background,
   },
-  topBar: {
+  header: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 8,
-    paddingVertical: 10,
+    paddingHorizontal: 6,
+    paddingVertical: 6,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: COLORS.border,
+    borderBottomColor: COLORS.borderLight,
   },
   backBtn: {
-    padding: 8,
+    width: 40,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  topTitle: {
+  title: {
     flex: 1,
-    fontSize: 17,
+    fontSize: 18,
     fontWeight: '700',
     color: COLORS.text,
     textAlign: 'center',
   },
-  topBarSpacer: {
+  headerRight: {
     width: 40,
   },
-  mapWrap: {
-    width: '100%',
-    backgroundColor: '#e8eef2',
+  mapArea: {
+    flex: 1,
+    backgroundColor: '#e2e8f0',
   },
-  map: { flex: 1 },
-  mapUnavailable: {
+  map: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  mapLoadingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(248,250,252,0.35)',
+  },
+  mapEmpty: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  mapUnavailableText: {
-    color: COLORS.textSecondary,
+  mapEmptyText: {
     fontSize: 14,
+    color: COLORS.textMuted,
   },
-  sheetScroll: {
-    flex: 1,
-  },
-  sheetContent: {
-    paddingHorizontal: 18,
+  footer: {
+    paddingHorizontal: 14,
     paddingTop: 12,
-    paddingBottom: 28,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: COLORS.borderLight,
+    backgroundColor: COLORS.background,
   },
-  sheetHint: {
-    fontSize: 13,
-    lineHeight: 18,
-    color: COLORS.textSecondary,
-    marginBottom: 12,
-  },
-  stopsCard: {
+  footerCard: {
     backgroundColor: COLORS.backgroundSecondary,
     borderRadius: 14,
     padding: 14,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: COLORS.borderLight,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: COLORS.border,
+    shadowColor: '#0f172a',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 6,
+    elevation: 2,
   },
-  stopRow: {
+  routeRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    gap: 10,
+    gap: 11,
   },
-  stopDot: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    borderWidth: 2,
-    borderColor: COLORS.primary,
-    marginTop: 4,
-    backgroundColor: COLORS.background,
-  },
-  stopLine: {
-    width: 2,
-    height: 14,
-    marginLeft: 5,
-    marginVertical: 4,
-    backgroundColor: COLORS.border,
-  },
-  stopText: {
-    flex: 1,
-    fontSize: 15,
-    fontWeight: '600',
-    color: COLORS.text,
-    lineHeight: 21,
-  },
-  loadingRow: {
-    flexDirection: 'row',
+  pickupBubble: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#dcfce7',
     alignItems: 'center',
-    gap: 10,
+    justifyContent: 'center',
   },
-  loadingText: {
-    fontSize: 15,
-    color: COLORS.textSecondary,
+  pickupDot: {
+    width: 9,
+    height: 9,
+    borderRadius: 4.5,
+    backgroundColor: COLORS.success,
   },
-  routesList: {
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: COLORS.borderLight,
-    backgroundColor: COLORS.background,
-    paddingVertical: 4,
-    marginBottom: 8,
+  dropBubble: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(41, 190, 139, 0.12)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  routeSummaryLabel: {
+  routeCopy: {
+    flex: 1,
+    minWidth: 0,
+    paddingTop: 1,
+  },
+  routeKind: {
     fontSize: 11,
     fontWeight: '700',
     color: COLORS.textMuted,
     letterSpacing: 0.6,
-    paddingHorizontal: 14,
-    paddingTop: 10,
-    paddingBottom: 6,
+    textTransform: 'uppercase',
+    marginBottom: 3,
   },
-  routeOptionRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
+  routeRule: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: COLORS.border,
+    marginVertical: 10,
+    marginLeft: 47,
   },
-  routeOptionRowBorder: {
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: COLORS.borderLight,
-  },
-  routeSwatch: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-  },
-  routeOptionText: {
-    flex: 1,
-  },
-  routePrimary: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: COLORS.text,
-  },
-  routeSecondary: {
-    marginTop: 2,
-    fontSize: 13,
-    color: COLORS.textSecondary,
+  stopLabel: {
+    fontSize: 14,
     fontWeight: '600',
-  },
-  fallbackNote: {
-    fontSize: 13,
-    color: COLORS.textMuted,
-    lineHeight: 19,
+    color: COLORS.text,
+    lineHeight: 20,
   },
 });

@@ -4,6 +4,7 @@ import api from './api';
 import { mapRawToBookingRow } from '../utils/bookingNormalize';
 import { pickPreferredBookingStatus } from '../utils/bookingStatus';
 import { pickPublisherAvatarUrl } from '../utils/avatarUrl';
+import { pickRoutePolylineEncodedFromRecord } from '../utils/ridePublisherCoords';
 
 type Cached = { userId: string; at: number; list: RideListItem[] };
 let cache: Cached | null = null;
@@ -21,15 +22,35 @@ export function extractRideListFromResponse(res: unknown): Record<string, unknow
   if (res == null) return [];
   if (Array.isArray(res)) return res as Record<string, unknown>[];
   const d = res as Record<string, unknown>;
-  if (Array.isArray(d.rides)) return d.rides as Record<string, unknown>[];
-  if (Array.isArray(d.items)) return d.items as Record<string, unknown>[];
+  const topArrays: unknown[] = [
+    d.rides,
+    d.items,
+    d.results,
+    d.publishedRides,
+    d.published_rides,
+    d.myRides,
+    d.my_rides,
+  ];
+  for (const a of topArrays) {
+    if (Array.isArray(a)) return a as Record<string, unknown>[];
+  }
   const data = d.data;
   if (Array.isArray(data)) return data as Record<string, unknown>[];
   if (data && typeof data === 'object') {
     const inner = data as Record<string, unknown>;
-    if (Array.isArray(inner.rides)) return inner.rides as Record<string, unknown>[];
-    if (Array.isArray(inner.items)) return inner.items as Record<string, unknown>[];
-    if (Array.isArray(inner.data)) return inner.data as Record<string, unknown>[];
+    const innerArrays: unknown[] = [
+      inner.rides,
+      inner.items,
+      inner.results,
+      inner.publishedRides,
+      inner.published_rides,
+      inner.myRides,
+      inner.my_rides,
+      inner.data,
+    ];
+    for (const a of innerArrays) {
+      if (Array.isArray(a)) return a as Record<string, unknown>[];
+    }
   }
   return [];
 }
@@ -178,6 +199,10 @@ export function normalizeRideListItemFromApi(raw: Record<string, unknown>): Ride
   const estDur = num(r.estimatedDurationSeconds ?? r.estimated_duration_seconds);
   if (estDur !== undefined && estDur > 0) {
     out.estimatedDurationSeconds = Math.floor(estDur);
+  }
+  const routePoly = pickRoutePolylineEncodedFromRecord(r as Record<string, unknown>);
+  if (routePoly) {
+    out.routePolylineEncoded = routePoly;
   }
   const rawBookings = r.bookings;
   if (Array.isArray(rawBookings)) {

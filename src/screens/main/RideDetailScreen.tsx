@@ -103,7 +103,11 @@ import {
   rideHasActivePassengerBookingForUser,
 } from '../../utils/passengerRouteBookingConflict';
 import { pickAvatarUrlFromRecord, pickPublisherAvatarUrl } from '../../utils/avatarUrl';
-import { getPublisherRouteCoords } from '../../utils/ridePublisherCoords';
+import {
+  getPublisherRouteCoords,
+  pickRoutePolylineEncoded,
+  pickRoutePolylineEncodedFromRecord,
+} from '../../utils/ridePublisherCoords';
 import { showToast } from '../../utils/toast';
 import { calculateAge } from '../../utils/calculateAge';
 import RidePreferenceChips from '../../components/profile/RidePreferenceChips';
@@ -1576,7 +1580,12 @@ export default function RideDetailScreen(): React.JSX.Element {
   const { ride: initialRide, passengerSearch } = route.params;
   const activeDetailRideIdRef = useRef(initialRide.id);
   activeDetailRideIdRef.current = initialRide.id;
-  const [ride, setRide] = useState<RideListItem>(() => mergeVehicleFieldsIntoRide(initialRide));
+  const [ride, setRide] = useState<RideListItem>(() => {
+    const merged = mergeVehicleFieldsIntoRide(initialRide);
+    const poly = pickRoutePolylineEncoded(merged);
+    if (!poly) return merged;
+    return { ...merged, routePolylineEncoded: poly };
+  });
   const [cancelling, setCancelling] = useState(false);
   const [cancellingBooking, setCancellingBooking] = useState(false);
   const [booking, setBooking] = useState(false);
@@ -2682,6 +2691,22 @@ export default function RideDetailScreen(): React.JSX.Element {
           else if (viRaw === 'true') next.viewerIsOwner = true;
           else if (viRaw === 'false') next.viewerIsOwner = false;
           const candRec = candidate as Record<string, unknown>;
+          const dataLayer =
+            root.data && typeof root.data === 'object' ? (root.data as Record<string, unknown>) : null;
+          const polyFromApi =
+            pickRoutePolylineEncodedFromRecord(candRec) ??
+            (dataLayer ? pickRoutePolylineEncodedFromRecord(dataLayer) : undefined) ??
+            pickRoutePolylineEncodedFromRecord(root);
+          if (polyFromApi) {
+            next.routePolylineEncoded = polyFromApi;
+          } else {
+            delete (next as Record<string, unknown>).routePolylineEncoded;
+            delete (next as Record<string, unknown>).route_polyline_encoded;
+            delete (next as Record<string, unknown>).selectedRoutePolylineEncoded;
+            delete (next as Record<string, unknown>).selected_route_polyline_encoded;
+            delete (next as Record<string, unknown>).routeOverviewPolyline;
+            delete (next as Record<string, unknown>).route_overview_polyline;
+          }
           const numFrom = (v: unknown): number | undefined => {
             if (typeof v === 'number' && Number.isFinite(v)) return v;
             if (typeof v === 'string' && v.trim() !== '') {
@@ -2736,8 +2761,6 @@ export default function RideDetailScreen(): React.JSX.Element {
           if (historicalPassengerCount != null && historicalPassengerCount >= 0) {
             next.historicalPassengerCount = Math.max(0, Math.floor(historicalPassengerCount));
           }
-          const dataLayer =
-            root.data && typeof root.data === 'object' ? (root.data as Record<string, unknown>) : null;
           const noticeRaw =
             candRec.viewerBookingNotice ??
             candRec.viewer_booking_notice ??
@@ -2789,6 +2812,8 @@ export default function RideDetailScreen(): React.JSX.Element {
         pickupLongitude: c.pickupLongitude,
         destinationLatitude: c.destinationLatitude,
         destinationLongitude: c.destinationLongitude,
+        routePolylineEncoded: pickRoutePolylineEncoded(ride),
+        rideId: typeof ride.id === 'string' && ride.id.trim() ? ride.id.trim() : undefined,
       }
     );
   }, [navigation, ride, publishedPickupStr, publishedDestStr]);

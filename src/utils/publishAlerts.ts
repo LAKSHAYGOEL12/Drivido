@@ -54,7 +54,7 @@ export function alertFareOutsideAllowedRange(minAllowed: number, maxAllowed: num
   showToast({
     variant: 'info',
     title: 'Adjust your fare',
-    message: `Per seat must be between ₹${minAllowed} and ₹${maxAllowed} (up to ₹20 below or ₹50 above the suggested range for this distance).`,
+    message: `Per seat must be between ₹${minAllowed} and ₹${maxAllowed}.`,
     durationMs: 4500,
   });
 }

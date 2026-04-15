@@ -127,6 +127,13 @@ export interface CreateRidePayload {
   instantBooking?: boolean;
   /** Google Directions (or fallback) travel time in seconds — used for arrival time on cards. */
   estimatedDurationSeconds?: number;
+  /**
+   * Google-encoded overview polyline for pickup → destination. The app sends this on publish whenever
+   * it has a line (from route preview or a Directions fetch) so the backend can persist it and return it
+   * on ride list/detail. Omit only when no path could be resolved (e.g. Directions failure). Server-side
+   * auto-routing would be a separate backend feature.
+   */
+  routePolylineEncoded?: string;
   /** Copied from user profile when publishing; backend may store on ride. */
   vehicleModel?: string;
   licensePlate?: string;
@@ -224,6 +231,10 @@ export interface RideListItem {
    * If missing, UI estimates ~2 min/km from pickup/destination coordinates when available.
    */
   estimatedDurationSeconds?: number;
+  /** Encoded Google polyline for the publisher’s route (GET list/detail). */
+  routePolylineEncoded?: string;
+  /** When API returns snake_case only; normalizers may fold onto `routePolylineEncoded`. */
+  route_polyline_encoded?: string;
   createdAt?: string;
   createdTime?: string;
   date?: string;

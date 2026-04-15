@@ -84,6 +84,8 @@ export type SearchStackParamList = {
     pickupLongitude: number;
     destinationLatitude: number;
     destinationLongitude: number;
+    routePolylineEncoded?: string;
+    rideId?: string;
   };
   /** Open another user's profile from ride details without switching bottom tab. */
   OwnerProfileModal: {
@@ -140,7 +142,10 @@ export type PublishAfterRouteParams = {
   destinationLongitude?: number;
   selectedDistanceKm?: number;
   selectedDurationSeconds?: number;
+  routePolylineEncoded?: string;
   publishRestoreKey?: string;
+  /** When set, fare/seats wizard continues to PublishRecentEdit instead of PublishRide. */
+  publishRecentEditEntry?: RecentPublishedEntry;
 };
 
 /**
@@ -157,12 +162,15 @@ export type PublishStackParamList = {
     selectedRate?: string;
     /** Google Directions duration for selected path (seconds). */
     selectedDurationSeconds?: number;
+    routePolylineEncoded?: string;
     /** Route distance (km) from Directions / route preview — drives estimated fare range. */
     selectedDistanceKm?: number;
     /** Set when returning from map picker so merged params don’t keep a stale `selectedDistanceKm`. */
     clearRouteFare?: boolean;
     /** Echo from price screen — used when reopening fare editor. */
     initialPricePerSeat?: number;
+    /** Seats offered (1–6), set after PublishSelectSeats in the wizard. */
+    offeredSeats?: number;
     _publishRestoreKey?: string;
     /**
      * Bottom tab “Publish” tap sends a new timestamp (same idea as Find’s `_tabResetToken`)
@@ -183,11 +191,13 @@ export type PublishStackParamList = {
     clearRouteFare?: boolean;
     selectedRate?: string;
     selectedDurationSeconds?: number;
+    routePolylineEncoded?: string;
     selectedDistanceKm?: number;
     initialPricePerSeat?: number;
     selectedDateIso?: string;
     selectedTimeHour?: number;
     selectedTimeMinute?: number;
+    offeredSeats?: number;
   } | undefined;
   LocationPicker: {
     field?: 'from' | 'to';
@@ -200,6 +210,8 @@ export type PublishStackParamList = {
     returnScreen?: 'SearchRides' | 'PublishRide' | 'PublishRecentEdit';
     /** Publish tab: restores form after stack reset */
     publishRestoreKey?: string;
+    /** PublishRecentEdit → LocationPicker → route preview → price must return to recent edit. */
+    publishRecentEditEntry?: RecentPublishedEntry;
   } | undefined;
   PublishRoutePreview: PublishAfterRouteParams;
   PublishSelectDate: PublishAfterRouteParams & { initialSelectedDateIso?: string };
@@ -223,11 +235,19 @@ export type PublishStackParamList = {
     selectedTimeMinute?: number;
     /** From route preview (Directions); omitted when user skipped preview — computed from distance. */
     selectedDurationSeconds?: number;
+    routePolylineEncoded?: string;
     /** Last confirmed price from Publish — keeps field when reopening fare. */
     initialPricePerSeat?: number;
     publishRestoreKey?: string;
-    /** When set, Continue resets to PublishRecentEdit instead of PublishRide. */
+    /** When set, seats step resets to PublishRecentEdit instead of PublishRide. */
     publishRecentEditEntry?: RecentPublishedEntry;
+  };
+  /** After fare is confirmed — pick seats, then reset to PublishRide or PublishRecentEdit. */
+  PublishSelectSeats: PublishStackParamList['PublishPrice'] & {
+    selectedRate: string;
+    initialPricePerSeat: number;
+    /** Pre-fill from republish entry or prior choice; defaults to 1. */
+    initialSeats?: number;
   };
 };
 
@@ -250,6 +270,8 @@ export type RidesStackParamList = {
     pickupLongitude: number;
     destinationLatitude: number;
     destinationLongitude: number;
+    routePolylineEncoded?: string;
+    rideId?: string;
   };
   /** Open another user's profile from ride details without switching bottom tab. */
   OwnerProfileModal: {

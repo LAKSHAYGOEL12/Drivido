@@ -186,6 +186,19 @@ export function isRideCancelledByOwner(ride: RideListItem): boolean {
 }
 
 /**
+ * True for published rows that are still “live”: not terminal/cancelled and not past the arrival window.
+ * Matches driver “live” rides in Your Rides (used for edit rules, dev logging, etc.).
+ */
+export function isPublishedRideLiveNow(r: RideListItem): boolean {
+  if (!String(r.id ?? '').trim()) return false;
+  if (isRideCancelledByOwner(r)) return false;
+  const st = String(r.status ?? '').trim().toLowerCase();
+  if (st === 'completed' || st === 'complete' || st === 'cancelled' || st === 'canceled') return false;
+  if (isRidePastArrivalWindow(r)) return false;
+  return true;
+}
+
+/**
  * Show “Completed” on past cards: past arrival window, and not cancelled (ride or user booking).
  */
 export function isRideCompletedForDisplay(ride: RideListItem): boolean {

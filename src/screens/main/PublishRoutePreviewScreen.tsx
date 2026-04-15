@@ -7,6 +7,7 @@ import type { RouteProp } from '@react-navigation/native';
 import type { PublishStackParamList } from '../../navigation/types';
 import { COLORS } from '../../constants/colors';
 import { getDirectionsAlternatives, type DirectionAlternative } from '../../services/places';
+import { encodePolyline, normalizeEncodedPolyline } from '../../utils/routePolyline';
 
 type RoutePreviewRouteProp = RouteProp<PublishStackParamList, 'PublishRoutePreview'>;
 
@@ -67,6 +68,7 @@ export default function PublishRoutePreviewScreen(): React.JSX.Element {
     destinationLatitude,
     destinationLongitude,
     publishRestoreKey,
+    publishRecentEditEntry,
   } = route.params;
 
   const hasCoords =
@@ -243,6 +245,14 @@ export default function PublishRoutePreviewScreen(): React.JSX.Element {
               routes.length > 0 && routes[selectedRouteIndex]?.durationSeconds
                 ? Math.max(60, Math.round(routes[selectedRouteIndex].durationSeconds))
                 : Math.max(60, Math.round(selectedDistanceKm * 2 * 60));
+            const sel = routes[selectedRouteIndex];
+            const routePolylineEncoded =
+              routes.length > 0 && sel
+                ? normalizeEncodedPolyline(sel.overviewPolylineEncoded) ??
+                  (sel.overviewPolyline?.length
+                    ? normalizeEncodedPolyline(encodePolyline(sel.overviewPolyline))
+                    : undefined)
+                : undefined;
             navigation.navigate('PublishSelectDate', {
               selectedFrom,
               selectedTo,
@@ -252,7 +262,9 @@ export default function PublishRoutePreviewScreen(): React.JSX.Element {
               destinationLongitude,
               selectedDistanceKm,
               selectedDurationSeconds,
+              routePolylineEncoded: routePolylineEncoded ?? '',
               publishRestoreKey,
+              ...(publishRecentEditEntry ? { publishRecentEditEntry } : {}),
             });
           }}
         >

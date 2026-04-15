@@ -104,6 +104,10 @@ export const API = {
       list: '/ratings',
       create: '/ratings',
     },
+    /** POST — client map route display observability (auth). Body: `{ event, rideId? }`. */
+    telemetry: {
+      mapRouteDisplay: '/telemetry/map-route-display',
+    },
     recentSearches: {
       /** GET - list current user's recent searches */
       list: '/recent-searches',

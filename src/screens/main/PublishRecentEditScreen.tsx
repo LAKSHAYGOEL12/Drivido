@@ -18,9 +18,12 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { CommonActions, useFocusEffect, useRoute } from '@react-navigation/native';
 import type { PublishStackParamList } from '../../navigation/types';
 import { findMainTabNavigator, findMainTabNavigatorWithOptions } from '../../navigation/findMainTabNavigator';
+import { resetPublishTabAndFocusYourRidesInMainTabs } from '../../navigation/resetPublishStackToRideRoot';
 import { COLORS } from '../../constants/colors';
 import { useAuth } from '../../contexts/AuthContext';
 import api from '../../services/api';
+import { fetchRideDetailRaw } from '../../services/rideDetailCache';
+import { emitRideListMergeFromDetail, rideListItemFromDetailApiPayload } from '../../services/rideListFromDetailSync';
 import { API } from '../../constants/API';
 import type { CreateRidePayload } from '../../types/api';
 import DatePickerModal from '../../components/common/DatePickerModal';
@@ -53,6 +56,12 @@ import {
   recommendedFareRange,
   straightLineKmBetweenStops,
 } from '../../utils/publishFare';
+import { buildRidePolylinePersistPayload } from '../../utils/publishRoutePolylineApi';
+import { normalizeEncodedPolyline } from '../../utils/routePolyline';
+import {
+  pickRoutePolylineEncodedFromRecord,
+  routeParamsIncludePolylineField,
+} from '../../utils/ridePublisherCoords';
 import { formatPublishStyleDateLabel } from '../../utils/rideDisplay';
 
 const MIN_LEAD_MINUTES = 30;
@@ -177,6 +186,7 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
   const timeModalToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [routeDurationSeconds, setRouteDurationSeconds] = useState(0);
   const [selectedRouteDistanceKm, setSelectedRouteDistanceKm] = useState<number | null>(null);
+  const [routePolylineEncoded, setRoutePolylineEncoded] = useState<string | null>(null);
   const lastRouteFareCoordsKeyRef = useRef<string | null>(null);
 
   const goBackFromRepublish = useCallback(() => {
@@ -266,9 +276,13 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
       if (p.destinationLatitude !== undefined) setDestinationLatitude(p.destinationLatitude);
       if (p.destinationLongitude !== undefined) setDestinationLongitude(p.destinationLongitude);
       if (p.selectedRate !== undefined) setRate(String(p.selectedRate ?? ''));
+      if (typeof p.offeredSeats === 'number' && !Number.isNaN(p.offeredSeats)) {
+        setSeats(Math.max(1, Math.min(6, Math.floor(p.offeredSeats))));
+      }
       if (p.clearRouteFare) {
         setSelectedRouteDistanceKm(null);
         setRouteDurationSeconds(0);
+        setRoutePolylineEncoded(null);
         lastRouteFareCoordsKeyRef.current = null;
       } else {
         if (
@@ -294,6 +308,10 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
           setSelectedRouteDistanceKm(Math.max(1, p.selectedDistanceKm));
           lastRouteFareCoordsKeyRef.current = pk;
         }
+        if (routeParamsIncludePolylineField(p as Record<string, unknown>)) {
+          const poly = pickRoutePolylineEncodedFromRecord(p as Record<string, unknown>);
+          setRoutePolylineEncoded(poly ?? null);
+        }
       }
     }, [route.params])
   );
@@ -309,6 +327,7 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
     if (refPk !== null && refPk !== pk) {
       setSelectedRouteDistanceKm(null);
       setRouteDurationSeconds(0);
+      setRoutePolylineEncoded(null);
       lastRouteFareCoordsKeyRef.current = null;
     }
   }, [pickupLatitude, pickupLongitude, destinationLatitude, destinationLongitude]);
@@ -453,6 +472,32 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
       currentDestinationLatitude: destinationLatitude,
       currentDestinationLongitude: destinationLongitude,
       returnScreen: 'PublishRecentEdit',
+      ...(baseEntry ? { publishRecentEditEntry: baseEntry } : {}),
+    });
+  };
+
+  const openRoutePreviewFromForm = () => {
+    if (
+      !isPublishStopsComplete({
+        selectedFrom: pickup,
+        selectedTo: destination,
+        pickupLatitude,
+        pickupLongitude,
+        destinationLatitude,
+        destinationLongitude,
+      })
+    ) {
+      alertRouteRequiredBeforePrice();
+      return;
+    }
+    navigation.navigate('PublishRoutePreview', {
+      selectedFrom: pickup.trim(),
+      selectedTo: destination.trim(),
+      pickupLatitude,
+      pickupLongitude,
+      destinationLatitude,
+      destinationLongitude,
+      ...(baseEntry ? { publishRecentEditEntry: baseEntry } : {}),
     });
   };
 
@@ -517,6 +562,20 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
         ).toISOString();
         const username = (user?.name?.trim() || user?.phone || '').trim() || 'User';
         const descriptionTrimmed = rideDescription.trim();
+        const pr = (route.params || {}) as Record<string, unknown>;
+        const encodedFromNav = pickRoutePolylineEncodedFromRecord(pr);
+        const encodedForPost =
+          normalizeEncodedPolyline(typeof routePolylineEncoded === 'string' ? routePolylineEncoded : undefined) ??
+          encodedFromNav;
+        const polyPayload = await buildRidePolylinePersistPayload({
+          existingEncoded: encodedForPost ?? null,
+          pickupLocationName: pickup.trim(),
+          destinationLocationName: destination.trim(),
+          pickupLatitude,
+          pickupLongitude,
+          destinationLatitude,
+          destinationLongitude,
+        });
         const body: CreateRidePayload = {
           pickupLocationName: pickup.trim(),
           pickupLatitude,
@@ -535,6 +594,7 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
           ...(vc ? { vehicleColor: vc } : {}),
           ...(stableVehicleId ? { vehicleId: stableVehicleId } : {}),
           ...(routeDurationSeconds > 0 ? { estimatedDurationSeconds: routeDurationSeconds } : {}),
+          ...polyPayload,
           ...(descriptionTrimmed
             ? {
                 description: descriptionTrimmed,
@@ -553,6 +613,15 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
               : undefined;
           return String(payload.id ?? payload._id ?? payload.rideId ?? nestedRide?.id ?? nestedRide?._id ?? '').trim();
         })();
+        const viewerId = (user?.id ?? '').trim();
+        if (createdRideId && viewerId) {
+          void fetchRideDetailRaw(createdRideId, { force: true, viewerUserId: viewerId })
+            .then((raw) => {
+              const item = rideListItemFromDetailApiPayload(raw);
+              if (item?.id) emitRideListMergeFromDetail(item, { insertIfMissing: true });
+            })
+            .catch(() => {});
+        }
         const y = selectedDate.getFullYear();
         const mo = String(selectedDate.getMonth() + 1).padStart(2, '0');
         const da = String(selectedDate.getDate()).padStart(2, '0');
@@ -577,26 +646,30 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
           recentUserKey
         ).then(() => loadRecentPublished(recentUserKey));
         const refreshToken = Date.now();
-        const navState = (navigation as { getState?: () => { routeNames?: string[] } }).getState?.();
-        const routeNames = Array.isArray(navState?.routeNames) ? navState.routeNames : [];
-        const insideRidesStack = routeNames.includes('YourRidesList');
-        if (insideRidesStack) {
-          navigation.dispatch(
-            CommonActions.reset({
-              index: 0,
-              routes: [{ name: 'YourRidesList', params: { _afterBookRefresh: refreshToken } }],
-            })
-          );
+        const mainTabs = findMainTabNavigator(navigation as { getParent?: () => unknown });
+        if (mainTabs?.dispatch) {
+          resetPublishTabAndFocusYourRidesInMainTabs(mainTabs, refreshToken);
         } else {
-          const mainTabs = findMainTabNavigator(navigation as { getParent?: () => unknown });
-          (mainTabs as { navigate?: (config: Record<string, unknown>) => void } | null)?.navigate?.({
-            name: 'YourRides',
-            params: {
-              screen: 'YourRidesList',
-              params: { _afterBookRefresh: refreshToken },
-            },
-            merge: false,
-          });
+          const navState = (navigation as { getState?: () => { routeNames?: string[] } }).getState?.();
+          const routeNames = Array.isArray(navState?.routeNames) ? navState.routeNames : [];
+          const insideRidesStack = routeNames.includes('YourRidesList');
+          if (insideRidesStack) {
+            navigation.dispatch(
+              CommonActions.reset({
+                index: 0,
+                routes: [{ name: 'YourRidesList', params: { _afterBookRefresh: refreshToken } }],
+              })
+            );
+          } else {
+            (navigation as { navigate?: (config: Record<string, unknown>) => void }).navigate?.({
+              name: 'YourRides',
+              params: {
+                screen: 'YourRidesList',
+                params: { _afterBookRefresh: refreshToken },
+              },
+              merge: false,
+            } as never);
+          }
         }
         Alert.alert('Published', 'Your ride is now live.');
       } catch (e: unknown) {
@@ -612,6 +685,7 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
     [
       publishLoading,
       baseEntry,
+      user?.id,
       user?.name,
       user?.phone,
       user?.vehicleModel,
@@ -637,6 +711,7 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
       selectedVehicleId,
       route.params,
       selectedRouteDistanceKm,
+      routePolylineEncoded,
     ]
   );
 
@@ -861,9 +936,7 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
           <Text style={styles.headerTitle}>Edit & publish</Text>
           <Text style={styles.headerSubtitle}>Review and publish your trip</Text>
         </View>
-        <View style={styles.headerRightChip}>
-          <Text style={styles.headerRightChipText}>New ride</Text>
-        </View>
+        <View style={styles.headerRightSpacer} />
       </View>
 
       <ScrollView
@@ -908,6 +981,18 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
             </View>
             <Ionicons name="chevron-forward" size={20} color={COLORS.textMuted} />
           </TouchableOpacity>
+
+          {canSetFare ? (
+            <TouchableOpacity
+              style={styles.routePreviewLink}
+              onPress={openRoutePreviewFromForm}
+              activeOpacity={0.75}
+            >
+              <Ionicons name="map-outline" size={18} color={COLORS.primary} />
+              <Text style={styles.routePreviewLinkText}>Choose route on map</Text>
+              <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
+            </TouchableOpacity>
+          ) : null}
 
           <View style={styles.rowDivider} />
           <TouchableOpacity style={styles.fieldRow} onPress={() => setShowDateModal(true)} activeOpacity={0.75}>
@@ -1249,21 +1334,8 @@ const styles = StyleSheet.create({
   headerCenter: { flex: 1 },
   headerTitle: { fontSize: 19, fontWeight: '800', color: COLORS.text },
   headerSubtitle: { marginTop: 2, fontSize: 12, color: COLORS.textSecondary },
-  headerRightChip: {
-    alignSelf: 'center',
-    marginTop: 2,
-    backgroundColor: COLORS.backgroundSecondary,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-  },
-  headerRightChipText: {
-    fontSize: 11,
-    color: COLORS.textSecondary,
-    fontWeight: '700',
-  },
+  /** Balances `headerBack` so the title block stays centered. */
+  headerRightSpacer: { width: 44 },
   scroll: { flex: 1 },
   content: { padding: 16, paddingBottom: 28 },
   card: {
@@ -1344,6 +1416,20 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '700',
     color: COLORS.textMuted,
+  },
+  routePreviewLink: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 2,
+  },
+  routePreviewLinkText: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLORS.primary,
   },
   swapBtn: {
     width: 36,

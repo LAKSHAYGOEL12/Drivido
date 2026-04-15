@@ -35,6 +35,7 @@ import {
   type PlaceRecentEntry,
   type PlaceRecentFieldType,
 } from '../../services/place-recent-storage';
+import type { RecentPublishedEntry } from '../../services/recent-published-storage';
 
 type Props = NativeStackScreenProps<SearchStackParamList, 'LocationPicker'>;
 
@@ -126,6 +127,10 @@ try {
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
+function replaceCurrentWithPublishRoutePreview(navigation: unknown, params: Record<string, unknown>): void {
+  (navigation as { replace: (name: string, p: Record<string, unknown>) => void }).replace('PublishRoutePreview', params);
+}
+
 export default function LocationPickerScreen({ navigation, route }: Props): React.JSX.Element {
   const insets = useSafeAreaInsets();
   const field = route.params?.field ?? 'from';
@@ -144,6 +149,8 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
   const returnScreen = (route.params as { returnScreen?: 'SearchRides' | 'PublishRide' | 'PublishRecentEdit' })
     ?.returnScreen ?? 'SearchRides';
   const publishRestoreKey = (route.params as { publishRestoreKey?: string })?.publishRestoreKey;
+  const publishRecentEditEntry = (route.params as { publishRecentEditEntry?: RecentPublishedEntry } | undefined)
+    ?.publishRecentEditEntry;
   const mapRef = useRef<any>(null);
   const {
     location,
@@ -446,6 +453,43 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
           params.destinationLongitude = currentDestLon;
         }
         (params as Record<string, unknown>).clearRouteFare = true;
+        const pLatPe = params.pickupLatitude as number | undefined;
+        const pLonPe = params.pickupLongitude as number | undefined;
+        const dLatPe = params.destinationLatitude as number | undefined;
+        const dLonPe = params.destinationLongitude as number | undefined;
+        const hasNumberPe = (n: unknown): n is number => typeof n === 'number' && !Number.isNaN(n);
+        const hasPickupPe = hasNumberPe(pLatPe) && hasNumberPe(pLonPe) && (pLatPe !== 0 || pLonPe !== 0);
+        const hasDestinationPe = hasNumberPe(dLatPe) && hasNumberPe(dLonPe) && (dLatPe !== 0 || dLonPe !== 0);
+        const hadBothStopsBeforePe =
+          hasNumberPe(currentPickupLat) &&
+          hasNumberPe(currentPickupLon) &&
+          (currentPickupLat !== 0 || currentPickupLon !== 0) &&
+          hasNumberPe(currentDestLat) &&
+          hasNumberPe(currentDestLon) &&
+          (currentDestLat !== 0 || currentDestLon !== 0);
+        const coordsProvided =
+          coords != null &&
+          typeof coords.latitude === 'number' &&
+          typeof coords.longitude === 'number' &&
+          !Number.isNaN(coords.latitude) &&
+          !Number.isNaN(coords.longitude);
+        const shouldOpenRoutePreview =
+          hasPickupPe &&
+          hasDestinationPe &&
+          (!hadBothStopsBeforePe || coordsProvided);
+        if (shouldOpenRoutePreview) {
+          replaceCurrentWithPublishRoutePreview(navigation, {
+            selectedFrom: params.selectedFrom,
+            selectedTo: params.selectedTo,
+            pickupLatitude: pLatPe,
+            pickupLongitude: pLonPe,
+            destinationLatitude: dLatPe,
+            destinationLongitude: dLonPe,
+            publishRestoreKey,
+            ...(publishRecentEditEntry ? { publishRecentEditEntry } : {}),
+          });
+          return;
+        }
         const statePe = navigation.getState();
         const previousPe = statePe.routes[statePe.index - 1];
         if (previousPe?.key) {
@@ -505,18 +549,15 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
          * If both were already set before this picker opened, merge and go back so date/time/fare are not reset.
          */
         if (hasPickup && hasDestination && !hadBothStopsBefore) {
-          navigation.replace(
-            'PublishRoutePreview' as never,
-            {
-              selectedFrom: params.selectedFrom,
-              selectedTo: params.selectedTo,
-              pickupLatitude: pLat,
-              pickupLongitude: pLon,
-              destinationLatitude: dLat,
-              destinationLongitude: dLon,
-              publishRestoreKey,
-            } as never
-          );
+          replaceCurrentWithPublishRoutePreview(navigation, {
+            selectedFrom: params.selectedFrom,
+            selectedTo: params.selectedTo,
+            pickupLatitude: pLat,
+            pickupLongitude: pLon,
+            destinationLatitude: dLat,
+            destinationLongitude: dLon,
+            publishRestoreKey,
+          });
           return;
         }
 
@@ -558,6 +599,7 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
       currentPassengers,
       returnScreen,
       publishRestoreKey,
+      publishRecentEditEntry,
     ]
   );
 

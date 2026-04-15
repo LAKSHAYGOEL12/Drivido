@@ -17,11 +17,14 @@ import {
 import { Alert } from '../../utils/themedAlert';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { useNavigation, useRoute, useFocusEffect } from '@react-navigation/native';
+import { CommonActions, useNavigation, useRoute, useFocusEffect } from '@react-navigation/native';
+import { findMainTabNavigator } from '../../navigation/findMainTabNavigator';
 import { COLORS } from '../../constants/colors';
 import { useAuth } from '../../contexts/AuthContext';
 import { useLocation } from '../../contexts/LocationContext';
 import api from '../../services/api';
+import { fetchRideDetailRaw } from '../../services/rideDetailCache';
+import { emitRideListMergeFromDetail, rideListItemFromDetailApiPayload } from '../../services/rideListFromDetailSync';
 import { API } from '../../constants/API';
 import type { CreateRidePayload } from '../../types/api';
 import {
@@ -47,6 +50,12 @@ import {
   recommendedFareRange,
   straightLineKmBetweenStops,
 } from '../../utils/publishFare';
+import { buildRidePolylinePersistPayload } from '../../utils/publishRoutePolylineApi';
+import { normalizeEncodedPolyline } from '../../utils/routePolyline';
+import {
+  pickRoutePolylineEncodedFromRecord,
+  routeParamsIncludePolylineField,
+} from '../../utils/ridePublisherCoords';
 import SelectVehicleBottomSheet, {
   type VehicleFormValues,
 } from '../../components/publish/SelectVehicleBottomSheet';
@@ -62,6 +71,7 @@ import {
 } from '../../services/recent-published-storage';
 import { formatPublishStyleDateLabel } from '../../utils/rideDisplay';
 import { validation, validationErrors } from '../../constants/validation';
+import { briefRouteListLabel } from '../../utils/routeListBriefLabel';
 
 const MAX_PASSENGERS = 6;
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -201,7 +211,7 @@ function getAvailableTimeSlots(selectedDate: Date): { hour: number; minute: numb
   return slots;
 }
 
-const SCROLL_BOTTOM_PADDING = 40;
+const SCROLL_BOTTOM_PADDING = 44;
 
 export default function PublishRide(): React.JSX.Element {
   const navigation = useNavigation<any>();
@@ -245,6 +255,8 @@ export default function PublishRide(): React.JSX.Element {
   const timeModalToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** Selected route travel time (seconds) from PublishPrice / route preview — sent with POST /rides. */
   const [routeDurationSeconds, setRouteDurationSeconds] = useState(0);
+  /** Encoded polyline selected by driver in route preview. */
+  const [routePolylineEncoded, setRoutePolylineEncoded] = useState<string | null>(null);
   /** Directions / price flow distance (km). Cleared when pickup–destination coords change. */
   const [selectedRouteDistanceKm, setSelectedRouteDistanceKm] = useState<number | null>(null);
   /** Coords key when `selectedRouteDistanceKm` was applied — drop stale fare if coords change. */
@@ -484,6 +496,7 @@ export default function PublishRide(): React.JSX.Element {
   const priceReturnForLayout = (route.params || {}) as {
     selectedDurationSeconds?: number;
     selectedDistanceKm?: number;
+    routePolylineEncoded?: string;
   };
   const prDurSec =
     typeof priceReturnForLayout.selectedDurationSeconds === 'number' &&
@@ -509,10 +522,12 @@ export default function PublishRide(): React.JSX.Element {
       selectedRate?: string;
       selectedDurationSeconds?: number;
       selectedDistanceKm?: number;
+      routePolylineEncoded?: string;
       /** From PublishPrice after PublishSelectDate / PublishSelectTime — must override draft date/time. */
       selectedDateIso?: string;
       selectedTimeHour?: number;
       selectedTimeMinute?: number;
+      offeredSeats?: number;
     };
 
     const paramsCoordsOk =
@@ -555,8 +570,17 @@ export default function PublishRide(): React.JSX.Element {
         setClockMinute(Math.round(m / 5) * 5 % 60);
       }
       if (typeof p.selectedRate === 'string') setRate(p.selectedRate);
+      if (typeof p.offeredSeats === 'number' && !Number.isNaN(p.offeredSeats)) {
+        setSeats(Math.max(1, Math.min(6, Math.floor(p.offeredSeats))));
+      } else {
+        setSeats(1);
+      }
       if (typeof p.selectedDurationSeconds === 'number' && !Number.isNaN(p.selectedDurationSeconds)) {
         setRouteDurationSeconds(Math.max(0, Math.floor(p.selectedDurationSeconds)));
+      }
+      if (routeParamsIncludePolylineField(p as Record<string, unknown>)) {
+        const poly = pickRoutePolylineEncodedFromRecord(p as Record<string, unknown>);
+        setRoutePolylineEncoded(poly ?? null);
       }
       if (typeof p.selectedDistanceKm === 'number' && !Number.isNaN(p.selectedDistanceKm)) {
         const pk = publishStopsCoordKey(
@@ -636,7 +660,11 @@ export default function PublishRide(): React.JSX.Element {
       setClockHour24(draftHour24);
       setClockMinute(d.clockMinute);
     }
-    setSeats(d.seats || 1);
+    if (typeof p.offeredSeats === 'number' && !Number.isNaN(p.offeredSeats)) {
+      setSeats(Math.max(1, Math.min(6, Math.floor(p.offeredSeats))));
+    } else {
+      setSeats(d.seats || 1);
+    }
     setRate(typeof p.selectedRate === 'string' ? p.selectedRate : d.rate);
     setInstantBooking(d.instantBooking);
     setRideDescription(typeof d.rideDescription === 'string' ? d.rideDescription : '');
@@ -644,6 +672,10 @@ export default function PublishRide(): React.JSX.Element {
 
     if (typeof p.selectedDurationSeconds === 'number' && !Number.isNaN(p.selectedDurationSeconds)) {
       setRouteDurationSeconds(Math.max(0, Math.floor(p.selectedDurationSeconds)));
+    }
+    if (routeParamsIncludePolylineField(p as Record<string, unknown>)) {
+      const poly = pickRoutePolylineEncodedFromRecord(p as Record<string, unknown>);
+      setRoutePolylineEncoded(poly ?? null);
     }
     if (
       typeof p.selectedDistanceKm === 'number' &&
@@ -664,12 +696,40 @@ export default function PublishRide(): React.JSX.Element {
   useFocusEffect(
     React.useCallback(() => {
       if (Platform.OS !== 'android') return undefined;
+      const goSearch = () => {
+        const token = Date.now();
+        const nestedNav = {
+          name: 'SearchStack' as const,
+          params: {
+            screen: 'SearchRides' as const,
+            params: { _tabResetToken: token },
+          },
+          merge: false as const,
+        };
+        const parentNav = navigation.getParent() as { navigate?: (c: typeof nestedNav) => void } | undefined;
+        if (parentNav?.navigate) {
+          parentNav.navigate(nestedNav);
+          return;
+        }
+        const mainTabs = findMainTabNavigator(navigation);
+        if (mainTabs?.dispatch) {
+          mainTabs.dispatch(
+            CommonActions.navigate({
+              name: 'SearchStack',
+              params: {
+                screen: 'SearchRides',
+                params: { _tabResetToken: token },
+              },
+            } as never)
+          );
+        }
+      };
       const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-        BackHandler.exitApp();
+        goSearch();
         return true;
       });
       return () => sub.remove();
-    }, [])
+    }, [navigation])
   );
 
   useFocusEffect(
@@ -687,8 +747,10 @@ export default function PublishRide(): React.JSX.Element {
         selectedRate?: string;
         selectedDurationSeconds?: number;
         selectedDistanceKm?: number;
+        routePolylineEncoded?: string;
         clearRouteFare?: boolean;
         _publishRestoreKey?: string;
+        offeredSeats?: number;
       } | undefined;
       if (!p) return;
       if (p.selectedFrom !== undefined) setPickup(p.selectedFrom ?? '');
@@ -718,9 +780,13 @@ export default function PublishRide(): React.JSX.Element {
         setClockMinute(Math.round(m / 5) * 5 % 60);
       }
       if (p.selectedRate !== undefined) setRate(String(p.selectedRate));
+      if (typeof p.offeredSeats === 'number' && !Number.isNaN(p.offeredSeats)) {
+        setSeats(Math.max(1, Math.min(6, Math.floor(p.offeredSeats))));
+      }
       if (p.clearRouteFare) {
         setSelectedRouteDistanceKm(null);
         setRouteDurationSeconds(0);
+        setRoutePolylineEncoded(null);
         lastRouteFareCoordsKeyRef.current = null;
       } else {
         if (p.selectedDurationSeconds !== undefined && typeof p.selectedDurationSeconds === 'number') {
@@ -743,6 +809,10 @@ export default function PublishRide(): React.JSX.Element {
           setSelectedRouteDistanceKm(Math.max(1, p.selectedDistanceKm));
           lastRouteFareCoordsKeyRef.current = pk;
         }
+        if (routeParamsIncludePolylineField(p as Record<string, unknown>)) {
+          const poly = pickRoutePolylineEncodedFromRecord(p as Record<string, unknown>);
+          setRoutePolylineEncoded(poly ?? null);
+        }
       }
       // Only react to navigation param updates — local swap uses `useEffect` below to clear stale route fare.
     }, [route.params])
@@ -760,6 +830,7 @@ export default function PublishRide(): React.JSX.Element {
     if (refPk !== null && refPk !== pk) {
       setSelectedRouteDistanceKm(null);
       setRouteDurationSeconds(0);
+      setRoutePolylineEncoded(null);
       lastRouteFareCoordsKeyRef.current = null;
     }
   }, [pickupLatitude, pickupLongitude, destinationLatitude, destinationLongitude]);
@@ -821,6 +892,7 @@ export default function PublishRide(): React.JSX.Element {
     setClockMinute(Math.round(defaultTime.minute / 5) * 5 % 60);
     setRouteDurationSeconds(0);
     setSelectedRouteDistanceKm(null);
+    setRoutePolylineEncoded(null);
     lastRouteFareCoordsKeyRef.current = null;
   }, []);
 
@@ -926,6 +998,20 @@ export default function PublishRide(): React.JSX.Element {
         ).toISOString();
         const username = (user?.name?.trim() || user?.phone || '').trim() || 'User';
         const descriptionTrimmed = rideDescription.trim();
+        const pr = (route.params || {}) as Record<string, unknown>;
+        const encodedFromNav = pickRoutePolylineEncodedFromRecord(pr);
+        const encodedForPost =
+          normalizeEncodedPolyline(typeof routePolylineEncoded === 'string' ? routePolylineEncoded : undefined) ??
+          encodedFromNav;
+        const polyPayload = await buildRidePolylinePersistPayload({
+          existingEncoded: encodedForPost ?? null,
+          pickupLocationName: pickup.trim(),
+          destinationLocationName: destination.trim(),
+          pickupLatitude,
+          pickupLongitude,
+          destinationLatitude,
+          destinationLongitude,
+        });
         const body: CreateRidePayload = {
           pickupLocationName: pickup.trim(),
           pickupLatitude: pickupLatitude,
@@ -944,6 +1030,7 @@ export default function PublishRide(): React.JSX.Element {
           ...(vc ? { vehicleColor: vc } : {}),
           ...(stableVehicleId ? { vehicleId: stableVehicleId } : {}),
           ...(routeDurationSeconds > 0 ? { estimatedDurationSeconds: routeDurationSeconds } : {}),
+          ...polyPayload,
           ...(descriptionTrimmed
             ? {
                 description: descriptionTrimmed,
@@ -966,6 +1053,15 @@ export default function PublishRide(): React.JSX.Element {
               : undefined;
           return String(payload.id ?? payload._id ?? payload.rideId ?? nestedRide?.id ?? nestedRide?._id ?? '').trim();
         })();
+        const viewerId = (user?.id ?? '').trim();
+        if (createdRideId && viewerId) {
+          void fetchRideDetailRaw(createdRideId, { force: true, viewerUserId: viewerId })
+            .then((raw) => {
+              const item = rideListItemFromDetailApiPayload(raw);
+              if (item?.id) emitRideListMergeFromDetail(item, { insertIfMissing: true });
+            })
+            .catch(() => {});
+        }
         const y = selectedDate.getFullYear();
         const mo = String(selectedDate.getMonth() + 1).padStart(2, '0');
         const da = String(selectedDate.getDate()).padStart(2, '0');
@@ -1016,6 +1112,7 @@ export default function PublishRide(): React.JSX.Element {
       seats,
       rate,
       instantBooking,
+      user?.id,
       user?.name,
       user?.phone,
       user?.vehicleModel,
@@ -1024,6 +1121,7 @@ export default function PublishRide(): React.JSX.Element {
       user?.vehicleColor,
       navigation,
       routeDurationSeconds,
+      routePolylineEncoded,
       recentUserKey,
       mergedVehicles,
       selectedVehicleId,
@@ -1366,15 +1464,28 @@ export default function PublishRide(): React.JSX.Element {
                   activeOpacity={0.72}
                 >
                   <View style={styles.pubRecentIconCircle}>
-                    <Ionicons name="rocket-outline" size={15} color={COLORS.textSecondary} />
+                    <Ionicons name="rocket-outline" size={14} color={COLORS.textSecondary} />
                   </View>
                   <View style={styles.pubRecentTextCol}>
-                    <Text style={styles.pubRecentRouteLine} numberOfLines={2}>
-                      <Text style={styles.pubRecentBold}>{item.pickup}</Text>
-                      <Text style={styles.pubRecentToWord}> to </Text>
-                      <Text style={styles.pubRecentBold}>{item.destination}</Text>
-                    </Text>
-                    <Text style={styles.pubRecentMeta} numberOfLines={2}>
+                    <View style={styles.pubRecentRouteStack}>
+                      <View style={styles.pubRecentRouteLineRow}>
+                        <View style={styles.pubRecentLineIcon}>
+                          <Ionicons name="ellipse" size={6} color={COLORS.primary} />
+                        </View>
+                        <Text style={styles.pubRecentRouteTitle} numberOfLines={1} ellipsizeMode="tail">
+                          {briefRouteListLabel(item.pickup)}
+                        </Text>
+                      </View>
+                      <View style={[styles.pubRecentRouteLineRow, styles.pubRecentRouteLineRowSecond]}>
+                        <View style={styles.pubRecentLineIcon}>
+                          <Ionicons name="location-outline" size={14} color={COLORS.textMuted} />
+                        </View>
+                        <Text style={styles.pubRecentRouteSubtitle} numberOfLines={1} ellipsizeMode="tail">
+                          {briefRouteListLabel(item.destination)}
+                        </Text>
+                      </View>
+                    </View>
+                    <Text style={styles.pubRecentMeta} numberOfLines={2} ellipsizeMode="tail">
                       {formatPublishedMetaLine(item)}
                     </Text>
                   </View>
@@ -1645,7 +1756,7 @@ const styles = StyleSheet.create({
     fontSize: 15,
     lineHeight: 22,
     color: COLORS.textSecondary,
-    marginBottom: 18,
+    marginBottom: 19,
     maxWidth: 340,
   },
   cardSectionLabel: {
@@ -1653,19 +1764,19 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: COLORS.textMuted,
     letterSpacing: 0.8,
-    marginTop: 9,
-    marginBottom: 3,
+    marginTop: 11,
+    marginBottom: 4,
     marginLeft: 2,
   },
   cardSectionLabelFirst: {
     marginTop: 0,
   },
   section: {
-    marginTop: 20,
+    marginTop: 21,
   },
-  /** Tighter gap under Instant booking — sits closer to Ride details. */
+  /** Space between Instant booking and Ride details. */
   sectionRideDetailsAfterBooking: {
-    marginTop: 10,
+    marginTop: 12,
   },
   rideDescriptionHint: {
     fontSize: 13,
@@ -1679,9 +1790,9 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     borderWidth: 1,
     borderColor: COLORS.borderLight,
-    paddingHorizontal: 12,
-    paddingTop: 10,
-    paddingBottom: 8,
+    paddingHorizontal: 14,
+    paddingTop: 12,
+    paddingBottom: 10,
     ...Platform.select({
       ios: {
         shadowColor: '#000',
@@ -1694,7 +1805,7 @@ const styles = StyleSheet.create({
     }),
   },
   rideDescriptionInput: {
-    minHeight: 96,
+    minHeight: 100,
     fontSize: 16,
     lineHeight: 22,
     color: COLORS.text,
@@ -1709,11 +1820,11 @@ const styles = StyleSheet.create({
   singleCard: {
     marginTop: 0,
     backgroundColor: COLORS.background,
-    borderRadius: 15,
+    borderRadius: 16,
     borderWidth: 1,
     borderColor: COLORS.borderLight,
-    paddingHorizontal: 11,
-    paddingVertical: 7,
+    paddingHorizontal: 13,
+    paddingVertical: 11,
     ...Platform.select({
       ios: {
         shadowColor: '#000',
@@ -1748,8 +1859,8 @@ const styles = StyleSheet.create({
   fieldRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 3,
-    paddingVertical: 7,
+    paddingHorizontal: 4,
+    paddingVertical: 9,
   },
   fieldRowDisabled: {
     opacity: 0.55,
@@ -1769,7 +1880,7 @@ const styles = StyleSheet.create({
   dottedLine: {
     width: 2,
     flex: 1,
-    minHeight: 10,
+    minHeight: 12,
     marginVertical: 2,
     borderLeftWidth: 2,
     borderLeftColor: COLORS.border,
@@ -1781,13 +1892,13 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.error,
     borderRadius: 5.5,
   },
-  fieldInputWrap: { flex: 1, marginLeft: 11 },
+  fieldInputWrap: { flex: 1, marginLeft: 12 },
   fieldLabel: {
     fontSize: 10,
     fontWeight: '600',
     color: COLORS.textMuted,
     letterSpacing: 0.5,
-    marginBottom: 2,
+    marginBottom: 3,
   },
   pickupLabel: {
     color: '#16a34a',
@@ -1830,6 +1941,7 @@ const styles = StyleSheet.create({
     height: StyleSheet.hairlineWidth,
     backgroundColor: '#e5e7eb',
     marginLeft: 44,
+    marginVertical: 0,
   },
   swapBtn: {
     width: 36,
@@ -1975,16 +2087,16 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   instantBookingSectionLabel: {
-    marginBottom: 1,
+    marginBottom: 2,
   },
   instantBookingRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
     backgroundColor: '#f4f4f5',
-    borderRadius: 10,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
+    borderRadius: 12,
+    paddingVertical: 11,
+    paddingHorizontal: 14,
     marginBottom: 8,
     borderWidth: 1,
     borderColor: '#e4e4e7',
@@ -2022,10 +2134,10 @@ const styles = StyleSheet.create({
   },
   instantBookingDesc: {
     fontSize: 12,
-    lineHeight: 16,
+    lineHeight: 17,
     fontWeight: '500',
     color: COLORS.textMuted,
-    marginTop: 2,
+    marginTop: 3,
   },
   instantBookingDescOn: {
     fontWeight: '600',
@@ -2093,61 +2205,78 @@ const styles = StyleSheet.create({
   },
   pubRecentItem: {
     flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: COLORS.background,
-    borderRadius: 10,
-    borderWidth: 1,
+    alignItems: 'stretch',
+    backgroundColor: COLORS.backgroundSecondary,
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: COLORS.border,
-    marginBottom: 10,
+    marginBottom: 9,
     overflow: 'hidden',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.08,
-    shadowRadius: 8,
-    elevation: 3,
   },
   pubRecentItemMain: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 8,
-    paddingLeft: 10,
-    paddingRight: 2,
-    minHeight: 50,
+    paddingVertical: 12,
+    paddingLeft: 12,
+    paddingRight: 5,
+    minHeight: 48,
   },
   pubRecentIconCircle: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    backgroundColor: COLORS.backgroundSecondary,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: COLORS.background,
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 8,
+    marginRight: 10,
   },
   pubRecentTextCol: {
     flex: 1,
     minWidth: 0,
+    justifyContent: 'center',
   },
-  pubRecentRouteLine: {
-    fontSize: 13,
-    lineHeight: 17,
+  pubRecentRouteStack: {
+    marginBottom: 2,
   },
-  pubRecentBold: {
-    fontWeight: '700',
+  pubRecentRouteLineRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 20,
+  },
+  pubRecentRouteLineRowSecond: {
+    marginTop: 4,
+  },
+  pubRecentLineIcon: {
+    width: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pubRecentRouteTitle: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: 15,
+    fontWeight: '600',
     color: COLORS.text,
+    letterSpacing: -0.2,
   },
-  pubRecentToWord: {
+  pubRecentRouteSubtitle: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: 14,
     fontWeight: '500',
     color: COLORS.textSecondary,
+    letterSpacing: -0.1,
   },
   pubRecentMeta: {
-    fontSize: 11,
-    color: COLORS.textSecondary,
-    marginTop: 2,
+    fontSize: 12,
+    color: COLORS.textMuted,
+    marginTop: 5,
+    lineHeight: 16,
   },
   pubRecentClose: {
-    paddingVertical: 12,
-    paddingHorizontal: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
   },
   footer: {
     fontSize: 12,
