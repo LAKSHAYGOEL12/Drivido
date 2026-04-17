@@ -20,7 +20,6 @@ import { CommonActions, useFocusEffect, useNavigation, useRoute, type RouteProp 
 import DatePickerModal from '../../components/common/DatePickerModal';
 import PassengersPickerModal from '../../components/common/PassengersPickerModal';
 import CancelRideConfirmModal from '../../components/common/CancelRideConfirmModal';
-import { MAIN_TAB_PRIMARY_NESTED_ROUTE } from '../../navigation/mainTabPrimaryNestedRoute';
 import { resetTabsToYourRidesAfterBook } from '../../navigation/navigateAfterBook';
 import { findMainTabNavigatorWithOptions, getRideDetailSourceMainTab } from '../../navigation/findMainTabNavigator';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -3008,25 +3007,15 @@ export default function RideDetailScreen(): React.JSX.Element {
         );
       }
       return () => {
-        // Keep tabs hidden when navigating to full-screen child flows from Ride Detail.
-        setTimeout(() => {
-          try {
-            const tabState = mainTabs?.getState?.();
-            const activeTabRoute = tabState?.routes?.[tabState?.index ?? 0] as
-              | { state?: { routes?: { name?: string }[]; index?: number } }
-              | undefined;
-            const nestedState = activeTabRoute?.state;
-            const nestedName = nestedState?.routes?.[nestedState?.index ?? 0]?.name;
-            const tabKey = activeTabRoute?.name as keyof typeof MAIN_TAB_PRIMARY_NESTED_ROUTE | undefined;
-            const primary = tabKey ? MAIN_TAB_PRIMARY_NESTED_ROUTE[tabKey] : undefined;
-            /** Match `BottomTabs`: only clear forced hide when the active tab is back on its primary screen. */
-            if (!nestedName || !primary || nestedName === primary) {
-              mainTabs?.setOptions?.({ tabBarStyle: undefined });
-            }
-          } catch {
-            mainTabs?.setOptions?.({ tabBarStyle: undefined });
-          }
-        }, 120);
+        /**
+         * Always clear Ride Detail’s tab-bar override when leaving this screen.
+         * A delayed “only if nested route === primary” check left `display: 'none'` stuck on the tab
+         * navigator after e.g. Ride Detail → Search Results → Search Rides (cleanup ran on the first
+         * pop only). Visibility on list screens is handled by `MainBottomTabBar` + each screen’s own
+         * `useFocusEffect` (Owner profile, ratings, etc.) re-applies hide when needed.
+         */
+        const tabs = findMainTabNavigatorWithOptions(navigation as { getParent?: () => unknown });
+        tabs?.setOptions?.({ tabBarStyle: undefined });
       };
     }, [refreshRideDetailEventDriven, navigation, sessionReady, currentUserId, isOwnerStrict])
   );

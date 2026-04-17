@@ -26,6 +26,7 @@ import {
 import Button from '../../components/common/Button';
 import Input from '../../components/common/Input';
 import { COLORS } from '../../constants/colors';
+import AppLogo from '../../components/common/AppLogo';
 import { requestForegroundLocationAfterAuth } from '../../services/location-permission-auth';
 import { useAuth } from '../../contexts/AuthContext';
 import { resetNavigationToCompleteProfile } from '../../navigation/navigateToCompleteProfile';
@@ -242,9 +243,7 @@ export default function Login(): React.JSX.Element {
           showsVerticalScrollIndicator={false}
         >
           <View style={styles.header}>
-            <View style={styles.logoBox}>
-              <Text style={styles.logoText}>D</Text>
-            </View>
+            <AppLogo />
             <Text style={styles.title}>Log in</Text>
             <Text style={styles.subtitle}>Sign in with your email and password</Text>
           </View>
@@ -371,20 +370,6 @@ const styles = StyleSheet.create({
   header: {
     alignItems: 'center',
     marginBottom: 32,
-  },
-  logoBox: {
-    width: 56,
-    height: 56,
-    borderRadius: 16,
-    backgroundColor: COLORS.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 16,
-  },
-  logoText: {
-    fontSize: 28,
-    fontWeight: '800',
-    color: COLORS.text,
   },
   title: {
     fontSize: 26,

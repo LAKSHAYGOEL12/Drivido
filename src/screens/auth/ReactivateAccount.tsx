@@ -19,6 +19,7 @@ import type { RootStackScreenProps } from '../../navigation/types';
 import { useAuth } from '../../contexts/AuthContext';
 import Button from '../../components/common/Button';
 import { COLORS } from '../../constants/colors';
+import AppLogo from '../../components/common/AppLogo';
 import { rootNavigationRef } from '../../navigation/rootNavigationRef';
 import { resetNavigationToCompleteProfile } from '../../navigation/navigateToCompleteProfile';
 import { getFirebaseAuth } from '../../config/firebase';
@@ -90,9 +91,7 @@ export default function ReactivateAccount(): React.JSX.Element {
           showsVerticalScrollIndicator={false}
         >
           <View style={styles.header}>
-            <View style={styles.logoBox}>
-              <Ionicons name="person-outline" size={30} color={COLORS.text} />
-            </View>
+            <AppLogo />
             <Text style={styles.title}>Account deactivated</Text>
             <Text style={styles.subtitle}>
               You’re signed in as <Text style={styles.emphasis}>{displayEmail}</Text>. Reactivate to use Drivido
@@ -177,15 +176,6 @@ const styles = StyleSheet.create({
   header: {
     alignItems: 'center',
     marginBottom: 20,
-  },
-  logoBox: {
-    width: 56,
-    height: 56,
-    borderRadius: 16,
-    backgroundColor: COLORS.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 16,
   },
   title: {
     fontSize: 26,

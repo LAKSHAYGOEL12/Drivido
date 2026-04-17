@@ -18,6 +18,8 @@ import { validation, validationErrors } from '../../constants/validation';
 import Button from '../../components/common/Button';
 import Input from '../../components/common/Input';
 import { COLORS } from '../../constants/colors';
+import AppLogo from '../../components/common/AppLogo';
+
 type Props = RootStackScreenProps<'Register'>;
 
 export default function Register(): React.JSX.Element {
@@ -103,11 +105,12 @@ export default function Register(): React.JSX.Element {
           showsVerticalScrollIndicator={false}
         >
           <View style={styles.header}>
-            <View style={styles.logoBox}>
-              <Text style={styles.logoText}>D</Text>
-            </View>
+            <AppLogo />
             <Text style={styles.title}>Create account</Text>
-            <Text style={styles.subtitle}>Enter your name, email, and password. You’ll add a few more details after verifying your email.</Text>
+            <Text style={styles.subtitle}>
+              Enter your name, email, and password. After verifying your email, you’ll complete your profile and accept
+              the terms and privacy policy there.
+            </Text>
           </View>
 
           <View style={styles.form}>
@@ -192,20 +195,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 32,
   },
-  logoBox: {
-    width: 56,
-    height: 56,
-    borderRadius: 16,
-    backgroundColor: COLORS.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 16,
-  },
-  logoText: {
-    fontSize: 28,
-    fontWeight: '800',
-    color: COLORS.text,
-  },
   title: {
     fontSize: 26,
     fontWeight: '700',
@@ -222,7 +211,7 @@ const styles = StyleSheet.create({
     marginBottom: 18,
   },
   button: {
-    marginTop: 8,
+    marginTop: 16,
   },
   footer: {
     flexDirection: 'row',

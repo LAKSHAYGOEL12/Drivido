@@ -18,6 +18,12 @@ export const API = {
       verifyOtp: '/auth/verify-otp',
       refresh: '/auth/refresh',
     },
+    legal: {
+      /** GET current legal docs (required + optional), versioned by backend. */
+      current: '/legal/current',
+      /** POST user legal acceptances (versioned, audited server-side). */
+      accept: '/legal/accept',
+    },
     rides: {
       list: '/rides',
       /** Rides you published (driver). Prefer over GET /rides for my rides. */

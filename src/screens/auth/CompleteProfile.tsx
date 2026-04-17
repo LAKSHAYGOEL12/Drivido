@@ -23,6 +23,11 @@ import type { RootStackScreenProps } from '../../navigation/types';
 import { useAuth } from '../../contexts/AuthContext';
 import { requestForegroundLocationAfterAuth } from '../../services/location-permission-auth';
 import { updateUserProfileFields } from '../../services/userProfile';
+import {
+  acceptTermsPrivacyVersion,
+  extractLegalAcceptanceRequiredVersion,
+  fetchRequiredTermsPrivacyVersion,
+} from '../../services/legalAcceptance';
 import { rootNavigationRef } from '../../navigation/rootNavigationRef';
 import {
   validation,
@@ -32,6 +37,7 @@ import {
   type GenderValue,
 } from '../../constants/validation';
 import { COLORS } from '../../constants/colors';
+import { LEGAL_AGREEMENT_VERSION } from '../../constants/legal/legalAgreement';
 
 type Props = RootStackScreenProps<'CompleteProfile'>;
 
@@ -94,6 +100,7 @@ export default function CompleteProfile(): React.JSX.Element {
   const [saving, setSaving] = useState(false);
   const [finishing, setFinishing] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
+  const [legalVersionRequired, setLegalVersionRequired] = useState<string | null>(null);
 
   const [errors, setErrors] = useState<{
     dateOfBirth?: string;
@@ -113,6 +120,27 @@ export default function CompleteProfile(): React.JSX.Element {
     min.setFullYear(min.getFullYear() - 120);
     return { dobMin: min, dobMax: max };
   }, []);
+
+  const legalDisplayVersion = useMemo(
+    () => (legalVersionRequired ?? LEGAL_AGREEMENT_VERSION).trim() || LEGAL_AGREEMENT_VERSION,
+    [legalVersionRequired]
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      void fetchRequiredTermsPrivacyVersion()
+        .then((v) => {
+          if (!cancelled) setLegalVersionRequired(v);
+        })
+        .catch(() => {
+          if (!cancelled) setLegalVersionRequired(null);
+        });
+      return () => {
+        cancelled = true;
+      };
+    }, [])
+  );
 
   /** Android hardware back cannot dismiss this screen — avoids nav reset loops with the profile gate. Use Sign out to leave. */
   useFocusEffect(
@@ -217,17 +245,28 @@ export default function CompleteProfile(): React.JSX.Element {
     const phoneE164 = `${DIAL_CODE}${national}`;
     setSaving(true);
     try {
-      await updateUserProfileFields({
-        dateOfBirth: dateOfBirth.trim(),
-        gender: gender as string,
-        phone: phoneE164,
-      });
-      patchUser({
-        dateOfBirth: dateOfBirth.trim(),
-        gender: gender as string,
-        phone: national,
-      });
-      await refreshUser();
+      const submitProfile = async () => {
+        await updateUserProfileFields({
+          dateOfBirth: dateOfBirth.trim(),
+          gender: gender as string,
+          phone: phoneE164,
+        });
+        patchUser({
+          dateOfBirth: dateOfBirth.trim(),
+          gender: gender as string,
+          phone: national,
+        });
+        await refreshUser();
+      };
+
+      const hintedVersion = legalVersionRequired?.trim() || '';
+      if (hintedVersion) {
+        await acceptTermsPrivacyVersion({
+          version: hintedVersion,
+          platform: Platform.OS,
+        });
+      }
+      await submitProfile();
       setSaving(false);
       setFinishing(true);
       await new Promise((r) => setTimeout(r, 520));
@@ -236,6 +275,41 @@ export default function CompleteProfile(): React.JSX.Element {
       });
       goMain();
     } catch (e: unknown) {
+      const requiredVersion = extractLegalAcceptanceRequiredVersion(e);
+      if (requiredVersion) {
+        try {
+          setLegalVersionRequired(requiredVersion);
+          await acceptTermsPrivacyVersion({
+            version: requiredVersion,
+            platform: Platform.OS,
+          });
+          await updateUserProfileFields({
+            dateOfBirth: dateOfBirth.trim(),
+            gender: gender as string,
+            phone: phoneE164,
+          });
+          patchUser({
+            dateOfBirth: dateOfBirth.trim(),
+            gender: gender as string,
+            phone: national,
+          });
+          await refreshUser();
+          setSaving(false);
+          setFinishing(true);
+          await new Promise((r) => setTimeout(r, 520));
+          await new Promise<void>((resolve) => {
+            InteractionManager.runAfterInteractions(() => resolve());
+          });
+          goMain();
+          return;
+        } catch {
+          Alert.alert(
+            'Legal acceptance required',
+            'Please review and accept the latest Terms and Privacy Policy to continue.'
+          );
+          return;
+        }
+      }
       const msg = friendlyProfileSaveError(e);
       Alert.alert('Couldn’t save changes', msg);
     } finally {
@@ -336,26 +410,39 @@ export default function CompleteProfile(): React.JSX.Element {
               <View style={styles.dobModalRoot}>
                 <Pressable style={styles.dobModalBackdrop} onPress={() => setDobPickerOpen(false)} />
                 <SafeAreaView edges={['bottom']} style={styles.dobModalSheet}>
-                  <View style={styles.dobModalHeader}>
-                    <TouchableOpacity onPress={() => setDobPickerOpen(false)} hitSlop={12}>
-                      <Text style={styles.dobModalCancel}>Cancel</Text>
-                    </TouchableOpacity>
-                    <Text style={styles.dobModalTitle}>Date of birth</Text>
-                    <TouchableOpacity onPress={confirmIosDob} hitSlop={12}>
-                      <Text style={styles.dobModalDone}>Done</Text>
-                    </TouchableOpacity>
+                  <View style={styles.dobModalGrabberWrap} pointerEvents="none">
+                    <View style={styles.dobModalGrabber} />
                   </View>
-                  <DateTimePicker
-                    value={dobPickerDate}
-                    mode="date"
-                    display="inline"
-                    minimumDate={dobMin}
-                    maximumDate={dobMax}
-                    onChange={(_, d) => {
-                      if (d) setDobPickerDate(clampDate(d, dobMin, dobMax));
-                    }}
-                    themeVariant="light"
-                  />
+                  <View style={styles.dobModalHeader}>
+                    <View style={styles.dobModalHeaderSide}>
+                      <TouchableOpacity onPress={() => setDobPickerOpen(false)} hitSlop={12}>
+                        <Text style={styles.dobModalCancel}>Cancel</Text>
+                      </TouchableOpacity>
+                    </View>
+                    <View style={styles.dobModalTitleBlock}>
+                      <Text style={styles.dobModalTitle}>Date of birth</Text>
+                      <Text style={styles.dobModalSubtitle}>Choose a day on the calendar</Text>
+                    </View>
+                    <View style={[styles.dobModalHeaderSide, styles.dobModalHeaderSideEnd]}>
+                      <TouchableOpacity onPress={confirmIosDob} hitSlop={12}>
+                        <Text style={styles.dobModalDone}>Done</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                  <View style={styles.dobPickerWrap}>
+                    <DateTimePicker
+                      style={styles.dobPickerNative}
+                      value={dobPickerDate}
+                      mode="date"
+                      display="inline"
+                      minimumDate={dobMin}
+                      maximumDate={dobMax}
+                      onChange={(_, d) => {
+                        if (d) setDobPickerDate(clampDate(d, dobMin, dobMax));
+                      }}
+                      themeVariant="light"
+                    />
+                  </View>
                 </SafeAreaView>
               </View>
             </Modal>
@@ -455,13 +542,21 @@ export default function CompleteProfile(): React.JSX.Element {
                 {termsAccepted ? <Ionicons name="checkmark" size={16} color={COLORS.white} /> : null}
               </View>
               <Text style={styles.termsText}>
-                I agree to the <Text style={styles.termsBold}>Terms & Privacy Policy</Text>
+                I agree to the <Text style={styles.termsBold}>Terms and Privacy Policy</Text>
               </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => navigation.navigate('LegalAgreement', { source: 'complete_profile' })}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              accessibilityRole="link"
+              accessibilityLabel="Read full legal agreement"
+            >
+              <Text style={styles.termsLink}>Read full legal agreement (v{legalDisplayVersion})</Text>
             </TouchableOpacity>
             <View style={styles.infoRow}>
               <Ionicons name="information-circle-outline" size={16} color={COLORS.secondary} style={styles.infoIcon} />
               <Text style={styles.infoText}>
-                We will only use this info to verify your bookings and ensure a safe community.
+                Used for ride verification, safety, and account notices—see Privacy Policy.
               </Text>
             </View>
           </View>
@@ -599,27 +694,56 @@ const styles = StyleSheet.create({
   },
   dobModalBackdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(15,23,42,0.45)',
+    backgroundColor: 'rgba(15, 23, 42, 0.5)',
   },
   dobModalSheet: {
     backgroundColor: COLORS.background,
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
-    paddingBottom: 8,
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    paddingBottom: 4,
+  },
+  dobModalGrabberWrap: {
+    alignItems: 'center',
+    paddingTop: 10,
+    paddingBottom: 6,
+  },
+  dobModalGrabber: {
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: COLORS.border,
   },
   dobModalHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 14,
+    paddingHorizontal: 12,
+    paddingBottom: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: COLORS.border,
+    borderBottomColor: COLORS.borderLight,
+  },
+  dobModalHeaderSide: {
+    width: 76,
+    justifyContent: 'center',
+  },
+  dobModalHeaderSideEnd: {
+    alignItems: 'flex-end',
+  },
+  dobModalTitleBlock: {
+    flex: 1,
+    alignItems: 'center',
+    paddingHorizontal: 4,
   },
   dobModalTitle: {
-    fontSize: 16,
+    fontSize: 17,
     fontWeight: '700',
     color: COLORS.text,
+  },
+  dobModalSubtitle: {
+    marginTop: 2,
+    fontSize: 12,
+    fontWeight: '500',
+    color: COLORS.textMuted,
   },
   dobModalCancel: {
     fontSize: 16,
@@ -630,6 +754,16 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: COLORS.primary,
     fontWeight: '700',
+  },
+  dobPickerWrap: {
+    paddingHorizontal: 8,
+    paddingTop: 4,
+    paddingBottom: 12,
+    alignItems: 'stretch',
+    width: '100%',
+  },
+  dobPickerNative: {
+    width: '100%',
   },
   genderDropdown: {
     flexDirection: 'row',
@@ -770,6 +904,13 @@ const styles = StyleSheet.create({
   termsBold: {
     fontWeight: '800',
     color: COLORS.secondary,
+  },
+  termsLink: {
+    marginTop: 8,
+    marginLeft: 34,
+    fontSize: 13,
+    fontWeight: '700',
+    color: COLORS.secondaryDark,
   },
   infoRow: {
     flexDirection: 'row',

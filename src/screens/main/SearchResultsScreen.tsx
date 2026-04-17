@@ -51,6 +51,7 @@ import {
 } from '../../services/place-recent-storage';
 import { pickPublisherAvatarUrl } from '../../utils/avatarUrl';
 import RideCardSkeleton from '../../components/rides/RideCardSkeleton';
+import { buildPassengerSearchStraightLinePayload } from '../../utils/passengerSearchStraightLine';
 import {
   getSearchResultsCache,
   setSearchResultsCache,
@@ -1213,6 +1214,12 @@ export default function SearchResultsScreen(): React.JSX.Element {
                 );
               const seatFullBlocked =
                 !isOwner && isRideSeatsFull(item) && !hasMyBooking;
+              const passengerSearchStraightLine = buildPassengerSearchStraightLinePayload(item, {
+                fromLatitude: searchFromLat,
+                fromLongitude: searchFromLon,
+                toLatitude: searchToLat,
+                toLongitude: searchToLon,
+              });
               return (
                 <RideListCard
                   ride={item}
@@ -1220,6 +1227,7 @@ export default function SearchResultsScreen(): React.JSX.Element {
                   currentUserName={currentUserName}
                   viewerAvatarUrl={viewerAvatarUrl}
                   seatFullUnavailable={seatFullBlocked}
+                  passengerSearchStraightLine={passengerSearchStraightLine}
                   onPress={() => {
                     if (seatFullBlocked) {
                       showToast({
@@ -1469,7 +1477,15 @@ export default function SearchResultsScreen(): React.JSX.Element {
         onDone={(n) => setDraftPassengers(String(n))}
       />
 
-      <Modal visible={showLocationModal} animationType="slide" presentationStyle="fullScreen">
+      <Modal
+        visible={showLocationModal}
+        animationType="slide"
+        presentationStyle="fullScreen"
+        onRequestClose={() => {
+          sessionTokenRef.current = null;
+          setShowLocationModal(false);
+        }}
+      >
         <SafeAreaView style={styles.locationModalContainer} edges={['top']}>
           <View style={styles.locationModalHeader}>
             <TouchableOpacity

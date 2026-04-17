@@ -25,6 +25,7 @@ import {
 import { getRideAvailabilityShort, isRideSeatsFull } from '../../utils/rideSeats';
 import { bookingPassengerDisplayName, ridePublisherDisplayName } from '../../utils/displayNames';
 import UserAvatar from '../common/UserAvatar';
+import type { PassengerSearchStraightLinePayload } from '../../utils/passengerSearchStraightLine';
 
 export type RideListCardProps = {
   ride: RideListItem;
@@ -61,6 +62,11 @@ export type RideListCardProps = {
   myRidesOwnerSummary?: boolean;
   /** Past owner cards: keep owner identity avatar/name instead of passenger avatar. */
   ownerUseSelfIdentity?: boolean;
+  /**
+   * Search results: straight-line distance from the passenger’s search start/end pins to this ride’s
+   * pickup and drop-off (Haversine). Omitted on other lists.
+   */
+  passengerSearchStraightLine?: PassengerSearchStraightLinePayload | null;
 };
 
 /** One-line preview for lists; full names only on ride detail. */
@@ -88,6 +94,7 @@ export default function RideListCard({
   hideSeatAvailability,
   myRidesOwnerSummary,
   ownerUseSelfIdentity,
+  passengerSearchStraightLine,
 }: RideListCardProps): React.JSX.Element {
   const showSeatAvailabilityRow = !hideSeatAvailability && ride.seats != null;
   const showFullUnavailableUi = Boolean(seatFullUnavailable && !hideSeatAvailability);
@@ -269,13 +276,42 @@ export default function RideListCard({
           <View style={styles.timelineDash} />
           <View style={styles.hollowDotBottom} />
         </View>
-        <View style={styles.routeTextCol}>
-          <Text style={styles.routePlace} numberOfLines={1} ellipsizeMode="tail">
-            {pickup}
-          </Text>
-          <Text style={styles.routePlace} numberOfLines={1} ellipsizeMode="tail">
-            {dest}
-          </Text>
+        <View
+          style={[
+            styles.routeTextCol,
+            passengerSearchStraightLine ? styles.routeTextColWithSearchOffsets : null,
+          ]}
+        >
+          <View style={styles.routeLineBlock}>
+            <Text style={styles.routePlace} numberOfLines={1} ellipsizeMode="tail">
+              {pickup}
+            </Text>
+            {passengerSearchStraightLine ? (
+              <Text
+                style={styles.searchStraightLine}
+                numberOfLines={1}
+                ellipsizeMode="tail"
+                accessibilityLabel={passengerSearchStraightLine.pickupAccessibilityLabel}
+              >
+                {passengerSearchStraightLine.pickupLine}
+              </Text>
+            ) : null}
+          </View>
+          <View style={styles.routeLineBlock}>
+            <Text style={styles.routePlace} numberOfLines={1} ellipsizeMode="tail">
+              {dest}
+            </Text>
+            {passengerSearchStraightLine ? (
+              <Text
+                style={styles.searchStraightLine}
+                numberOfLines={1}
+                ellipsizeMode="tail"
+                accessibilityLabel={passengerSearchStraightLine.destinationAccessibilityLabel}
+              >
+                {passengerSearchStraightLine.destinationLine}
+              </Text>
+            ) : null}
+          </View>
         </View>
         {priceDisplay !== '—' ? (
           <Text style={styles.priceInline} numberOfLines={1}>
@@ -550,10 +586,23 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     minHeight: 72,
   },
+  routeTextColWithSearchOffsets: {
+    minHeight: 92,
+  },
+  routeLineBlock: {
+    minWidth: 0,
+  },
   routePlace: {
     fontSize: 14,
     fontWeight: '800',
     color: COLORS.text,
+  },
+  searchStraightLine: {
+    marginTop: 3,
+    fontSize: 11,
+    fontWeight: '600',
+    color: COLORS.textSecondary,
+    letterSpacing: 0.1,
   },
   divider: {
     height: StyleSheet.hairlineWidth,

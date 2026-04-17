@@ -17,6 +17,7 @@ import { validation } from '../../constants/validation';
 import Input from '../../components/common/Input';
 import Button from '../../components/common/Button';
 import { COLORS } from '../../constants/colors';
+import AppLogo from '../../components/common/AppLogo';
 import {
   firebaseAuthErrorToMessage,
   sendPasswordResetEmailToAddress,
@@ -84,9 +85,7 @@ export default function ForgotPassword(): React.JSX.Element {
           </TouchableOpacity>
 
           <View style={styles.header}>
-            <View style={styles.logoBox}>
-              <Text style={styles.logoText}>D</Text>
-            </View>
+            <AppLogo />
             <Text style={styles.title}>Forgot password</Text>
             <Text style={styles.subtitle}>
               Enter your email and we will send a reset link (via Firebase). Use the same email you signed up
@@ -146,20 +145,6 @@ const styles = StyleSheet.create({
   header: {
     alignItems: 'center',
     marginBottom: 28,
-  },
-  logoBox: {
-    width: 56,
-    height: 56,
-    borderRadius: 16,
-    backgroundColor: COLORS.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 16,
-  },
-  logoText: {
-    fontSize: 28,
-    fontWeight: '800',
-    color: COLORS.text,
   },
   title: {
     fontSize: 26,

@@ -72,6 +72,12 @@ export type User = {
   accountDeletionEffectiveAt?: string;
   /** Backend `accountActive`; when `false`, session must end (see deactivate flow). */
   accountActive?: boolean;
+  /** Legal acceptance snapshot from backend auth/me payload. */
+  legalAcceptance?: {
+    termsPrivacyVersion?: string;
+    termsPrivacyAcceptedAt?: string;
+    termsPrivacyContentHash?: string;
+  };
 };
 
 type AuthState = {
@@ -257,6 +263,23 @@ function buildSessionUser(fbUser: FirebaseUser, backendUser: BackendAuthUser): U
   const accountDeletionPending =
     accountDeletionExplicitPending || accountDeletionPendingByDate;
 
+  const legalRaw =
+    (rec.legalAcceptance && typeof rec.legalAcceptance === 'object'
+      ? (rec.legalAcceptance as Record<string, unknown>)
+      : null) ??
+    (rec.legal_acceptance && typeof rec.legal_acceptance === 'object'
+      ? (rec.legal_acceptance as Record<string, unknown>)
+      : null);
+  const legalTermsVersion = legalRaw
+    ? strField(legalRaw.termsPrivacyVersion) || strField(legalRaw.terms_privacy_version)
+    : '';
+  const legalTermsAcceptedAt = legalRaw
+    ? strField(legalRaw.termsPrivacyAcceptedAt) || strField(legalRaw.terms_privacy_accepted_at)
+    : '';
+  const legalTermsHash = legalRaw
+    ? strField(legalRaw.termsPrivacyContentHash) || strField(legalRaw.terms_privacy_content_hash)
+    : '';
+
   const baseUser: User = {
     id: mongoId,
     phone: bePhone || fbPhone,
@@ -280,6 +303,15 @@ function buildSessionUser(fbUser: FirebaseUser, backendUser: BackendAuthUser): U
       ? { accountDeletionEffectiveAt: accountDeletionEffectiveAtRaw }
       : {}),
     ...(backendUserRecordInactive(backendUser) ? { accountActive: false } : {}),
+    ...(legalRaw
+      ? {
+          legalAcceptance: {
+            ...(legalTermsVersion ? { termsPrivacyVersion: legalTermsVersion } : {}),
+            ...(legalTermsAcceptedAt ? { termsPrivacyAcceptedAt: legalTermsAcceptedAt } : {}),
+            ...(legalTermsHash ? { termsPrivacyContentHash: legalTermsHash } : {}),
+          },
+        }
+      : {}),
   };
 
   /** No `vehicles` array on payload — legacy flat fields only (do not set `vehicles`; Profile uses them). */

@@ -1,13 +1,13 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { StyleSheet, Text, View, ScrollView, KeyboardAvoidingView, Platform } from 'react-native';
 import { Alert } from '../../utils/themedAlert';
-import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import type { RootStackScreenProps } from '../../navigation/types';
 import { useAuth } from '../../contexts/AuthContext';
 import Button from '../../components/common/Button';
 import { COLORS } from '../../constants/colors';
+import AppLogo from '../../components/common/AppLogo';
 import {
   firebaseAuthErrorToMessage,
   resendEmailVerificationForCurrentUser,
@@ -130,9 +130,7 @@ export default function VerifyEmail(): React.JSX.Element {
           showsVerticalScrollIndicator={false}
         >
           <View style={styles.header}>
-            <View style={styles.logoBox}>
-              <Ionicons name="mail-outline" size={30} color={COLORS.text} />
-            </View>
+            <AppLogo />
             <Text style={styles.title}>Verify your email</Text>
             <Text style={styles.subtitle}>
               We sent a verification link to{' '}
@@ -187,15 +185,6 @@ const styles = StyleSheet.create({
   header: {
     alignItems: 'center',
     marginBottom: 28,
-  },
-  logoBox: {
-    width: 56,
-    height: 56,
-    borderRadius: 16,
-    backgroundColor: COLORS.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 16,
   },
   title: {
     fontSize: 26,

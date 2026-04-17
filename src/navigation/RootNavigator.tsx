@@ -8,13 +8,14 @@ import {
   Text,
   View,
 } from 'react-native';
-import { NavigationContainer } from '@react-navigation/native';
+import { DefaultTheme, NavigationContainer, type Theme } from '@react-navigation/native';
 import { rootNavigationRef } from './rootNavigationRef';
 import { useAuth } from '../contexts/AuthContext';
 import { useNotificationPreferences } from '../contexts/NotificationPreferencesContext';
 import { useLocation } from '../contexts/LocationContext';
 import { usePushNotifications } from '../hooks/usePushNotifications';
 import RootStack from './RootStack';
+import SearchRidesSkeleton from '../components/search/SearchRidesSkeleton';
 import { COLORS } from '../constants/colors';
 import { resetNavigationToVerifyEmail } from './navigateToVerifyEmail';
 import { resetNavigationToCompleteProfile } from './navigateToCompleteProfile';
@@ -25,9 +26,18 @@ import { chatWSManager } from '../services/chatWebSocketManager';
 import { resolveApiBaseOrigin } from '../config/apiBaseUrl';
 import { getAccessToken } from '../services/token-storage';
 
+const NAV_THEME: Theme = {
+  ...DefaultTheme,
+  colors: {
+    ...DefaultTheme.colors,
+    background: COLORS.background,
+    card: COLORS.background,
+  },
+};
+
 /**
  * RootNavigator (inside AuthProvider)
- * While isLoading: show nothing (or a splash) so we don't flash wrong state before restore.
+ * While isLoading: startup gate blocks nav so we don't flash wrong state before restore.
  * Guests land on Main tabs (Search); Login/Register are modals from book / locked tabs.
  */
 export default function RootNavigator(): React.JSX.Element | null {
@@ -224,7 +234,8 @@ export default function RootNavigator(): React.JSX.Element | null {
       }
       if (!rootNavigationRef.isReady()) return;
       const r = rootNavigationRef.getCurrentRoute();
-      if (r?.name === 'CompleteProfile') return;
+      /** User may open Legal Agreement from Complete Profile — do not reset stack or the modal closes immediately. */
+      if (r?.name === 'CompleteProfile' || r?.name === 'LegalAgreement') return;
       const now = Date.now();
       if (now - lastCompleteProfileResetAtRef.current < 700) return;
       lastCompleteProfileResetAtRef.current = now;
@@ -351,11 +362,8 @@ export default function RootNavigator(): React.JSX.Element | null {
   /** Only block the first paint; never unmount `NavigationContainer` for auth/logout gates — that wiped stack state (e.g. Ride Detail → Search) and broke post-login booking. */
   if (startupGateOpen) {
     return (
-      <View style={{ flex: 1, backgroundColor: COLORS.backgroundSecondary, alignItems: 'center', justifyContent: 'center' }}>
-        <ActivityIndicator size="large" color={COLORS.primary} />
-        <Text style={{ marginTop: 12, color: COLORS.textSecondary, fontWeight: '600' }}>
-          Thinking
-        </Text>
+      <View style={styles.startupGateRoot} accessibilityLabel="Loading">
+        <SearchRidesSkeleton />
       </View>
     );
   }
@@ -363,6 +371,7 @@ export default function RootNavigator(): React.JSX.Element | null {
   return (
     <View style={styles.navRoot}>
       <NavigationContainer
+        theme={NAV_THEME}
         ref={rootNavigationRef}
         onReady={() => {
           setNavReady(true);
@@ -388,7 +397,11 @@ export default function RootNavigator(): React.JSX.Element | null {
 }
 
 const styles = StyleSheet.create({
-  navRoot: { flex: 1 },
+  navRoot: { flex: 1, backgroundColor: COLORS.background },
+  startupGateRoot: {
+    flex: 1,
+    backgroundColor: COLORS.backgroundSecondary,
+  },
   logoutOverlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(248, 250, 252, 0.97)',

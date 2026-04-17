@@ -441,6 +441,8 @@ export type RootStackParamList = {
   Main: NavigatorScreenParams<MainTabParamList> | undefined;
   Login: { reason?: 'book' | 'tab' } | undefined;
   Register: undefined;
+  /** Full legal agreement rendered from product-provided terms document. */
+  LegalAgreement: { source?: 'complete_profile' } | undefined;
   /** After email/password signup — user must open Firebase verification link, then Continue. */
   VerifyEmail: { email?: string } | undefined;
   /** After email is verified — DOB, gender, phone, terms (optional skip). */
@@ -469,6 +471,7 @@ export type RootAuthScreenProps<
   T extends
     | 'Login'
     | 'Register'
+    | 'LegalAgreement'
     | 'VerifyEmail'
     | 'CompleteProfile'
     | 'ForgotPassword'
