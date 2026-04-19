@@ -456,29 +456,6 @@ export function InboxProvider({ children }: { children: React.ReactNode }): Reac
     return unsubscribe;
   }, []);
 
-  useEffect(() => {
-    chatWSManager.onOrphanMessage((msg) => {
-      if (!chatApiReady || !currentUserId) return;
-      // Some servers occasionally emit chat_message without threadKey/rideId.
-      // Recover by refreshing inbox from HTTP, debounced to avoid request bursts.
-      const now = Date.now();
-      if (now - lastOrphanRefreshAtRef.current < 1000) return;
-      if (orphanRefreshTimerRef.current) return;
-      orphanRefreshTimerRef.current = setTimeout(() => {
-        orphanRefreshTimerRef.current = null;
-        lastOrphanRefreshAtRef.current = Date.now();
-        void runInboxPollIfIdle();
-      }, 450);
-    });
-    return () => {
-      if (orphanRefreshTimerRef.current) {
-        clearTimeout(orphanRefreshTimerRef.current);
-        orphanRefreshTimerRef.current = null;
-      }
-      chatWSManager.onOrphanMessage(null);
-    };
-  }, [chatApiReady, currentUserId, runInboxPollIfIdle]);
-
   const refreshConversations = useCallback(async () => {
     if (!chatApiReady || !currentUserId) return;
     try {
@@ -505,6 +482,29 @@ export function InboxProvider({ children }: { children: React.ReactNode }): Reac
       inboxPollInFlightRef.current = false;
     }
   }, [chatApiReady, currentUserId, refreshConversations]);
+
+  useEffect(() => {
+    chatWSManager.onOrphanMessage((msg) => {
+      if (!chatApiReady || !currentUserId) return;
+      // Some servers occasionally emit chat_message without threadKey/rideId.
+      // Recover by refreshing inbox from HTTP, debounced to avoid request bursts.
+      const now = Date.now();
+      if (now - lastOrphanRefreshAtRef.current < 1000) return;
+      if (orphanRefreshTimerRef.current) return;
+      orphanRefreshTimerRef.current = setTimeout(() => {
+        orphanRefreshTimerRef.current = null;
+        lastOrphanRefreshAtRef.current = Date.now();
+        void runInboxPollIfIdle();
+      }, 450);
+    });
+    return () => {
+      if (orphanRefreshTimerRef.current) {
+        clearTimeout(orphanRefreshTimerRef.current);
+        orphanRefreshTimerRef.current = null;
+      }
+      chatWSManager.onOrphanMessage(null);
+    };
+  }, [chatApiReady, currentUserId, runInboxPollIfIdle]);
 
   // Load conversations from backend so inbox survives app reinstall / device change
   useEffect(() => {

@@ -5,7 +5,7 @@
  * Origin only — no `/api`, no trailing slash. After edits: `npx expo start --clear`.
  * Emulator: `http://10.0.2.2:3000` · Simulator: `http://localhost:3000` · Device: your LAN IP.
  *
- * - Sends Authorization: Bearer <Drivido JWT> on every request. Tokens come from POST /api/auth/firebase
+ * - Sends Authorization: Bearer <EcoPickO JWT> on every request. Tokens come from POST /api/auth/firebase
  *   (Firebase `getIdToken()` exchange in AuthContext), not raw Firebase ID tokens — the API middleware uses JWT_ACCESS_SECRET.
  * - If the header is missing, you get 401 Unauthorized (not 404).
  * - On 401: with a backend refreshToken, calls /auth/refresh and retries once; otherwise tries a fresh Firebase ID token and re-exchange (see firebaseIdToken).
@@ -16,24 +16,13 @@
  * - CORS/network: in dev tools Network tab check the login request (status and response body) to see if the issue is no token in response, 401, or something else.
  * - "Aborted" = request timed out (default 15s) or connection failed; we surface a clearer "Connection timed out" message.
  */
-import { Platform } from 'react-native';
 import { resolveApiBaseOrigin } from '../config/apiBaseUrl';
 import { API } from '../constants/API';
 import { isAccountDeactivatedApiError } from '../utils/deactivatedAccount';
 import { setStoredTokens, clearStoredTokens } from './token-storage';
 import { getFreshFirebaseIdToken } from './firebaseIdToken';
 import { exchangeFirebaseIdTokenForBackendSession } from './backendAuthExchange';
-
-/** Hint for "cannot reach server" based on run environment. */
-function getConnectionHint(): string {
-  if (Platform.OS === 'android') {
-    return ' On Android emulator, set EXPO_PUBLIC_API_URL=http://10.0.2.2:3000 in .env (10.0.2.2 is the host).';
-  }
-  if (Platform.OS === 'ios') {
-    return ' On iOS Simulator, set EXPO_PUBLIC_API_URL=http://localhost:3000 in .env.';
-  }
-  return ' On a physical device use your Mac IP (same WiFi) and allow port 3000 in Mac firewall.';
-}
+import { OFFLINE_USER_MESSAGE } from '../constants/offlineMessaging';
 
 /**
  * GET `/api/rides/:id` can 404 when the ride was deleted/expired but bookings or list payloads
@@ -184,7 +173,7 @@ async function request<T>(
   const method = String(init.method ?? 'GET').toUpperCase();
   const isChatPath = path.includes('/chat/');
   if (method === 'GET' && !isChatPath && Date.now() < networkErrorCooldownUntil) {
-    throw new Error('No internet connection. Showing cached data. Pull to refresh when online.');
+    throw new Error(OFFLINE_USER_MESSAGE);
   }
   const isFormDataBody = typeof FormData !== 'undefined' && init.body instanceof FormData;
   const pathWithPrefix = path.startsWith('http')
@@ -276,21 +265,11 @@ async function request<T>(
       }
       if (isNetworkFailed) {
         maybeSetNetworkCooldown(e);
-        const base = getApiBaseUrl() || 'backend';
-        const testUrl = base + (API_PREFIX || '/api') + '/health';
-        throw new Error(
-          'Cannot reach server at ' +
-            base +
-            '.' +
-            getConnectionHint() +
-            ' Checklist: (1) Backend running on Mac. (2) Phone & Mac on same WiFi, VPN off. (3) Mac Firewall: allow port 3000. (4) On phone browser open ' +
-            testUrl +
-            ' – if it fails, fix network first. Then: npx expo start --clear'
-        );
+        throw new Error(OFFLINE_USER_MESSAGE);
       }
       throw e;
     }
-    throw new Error('Network error – is the backend running on port 3000?');
+    throw new Error(OFFLINE_USER_MESSAGE);
   }
 }
 
@@ -418,21 +397,11 @@ async function getJsonWithEtagImpl<T>(
       }
       if (isNetworkFailed) {
         maybeSetNetworkCooldown(e);
-        const base = getApiBaseUrl() || 'backend';
-        const testUrl = base + (API_PREFIX || '/api') + '/health';
-        throw new Error(
-          'Cannot reach server at ' +
-            base +
-            '.' +
-            getConnectionHint() +
-            ' Checklist: (1) Backend running on Mac. (2) Phone & Mac on same WiFi, VPN off. (3) Mac Firewall: allow port 3000. (4) On phone browser open ' +
-            testUrl +
-            ' – if it fails, fix network first. Then: npx expo start --clear'
-        );
+        throw new Error(OFFLINE_USER_MESSAGE);
       }
       throw e;
     }
-    throw new Error('Network error – is the backend running on port 3000?');
+    throw new Error(OFFLINE_USER_MESSAGE);
   }
 }
 

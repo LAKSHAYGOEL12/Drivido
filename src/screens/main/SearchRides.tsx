@@ -10,10 +10,10 @@ import {
 } from 'react-native';
 import { Alert } from '../../utils/themedAlert';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useMainTabScrollBottomInset } from '../../navigation/useMainTabScrollBottomInset';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute, useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../../contexts/AuthContext';
-import { useLocation } from '../../contexts/LocationContext';
 import { COLORS } from '../../constants/colors';
 import DatePickerModal from '../../components/common/DatePickerModal';
 import PassengersPickerModal from '../../components/common/PassengersPickerModal';
@@ -175,8 +175,8 @@ export default function SearchRides(): React.JSX.Element {
   const route = useRoute<any>();
   const { user, isAuthenticated, needsProfileCompletion } = useAuth();
   const sessionReady = isAuthenticated && !needsProfileCompletion;
+  const mainTabScrollBottomPad = useMainTabScrollBottomInset();
   const recentUserKey = (user?.id ?? user?.phone ?? '').trim();
-  const { error: locationError } = useLocation();
   const welcomeName =
     user?.name?.trim() || user?.phone?.trim() || user?.email?.trim() || '';
   const [from, setFrom] = useState('');
@@ -348,19 +348,19 @@ export default function SearchRides(): React.JSX.Element {
     const fromTrim = from.trim();
     const toTrim = to.trim();
     if (!fromTrim || !toTrim) {
-      Alert.alert('Missing locations', 'Please enter pickup and destination.');
+      Alert.alert('Pickup and destination required', 'Add both a pickup and a destination to continue.');
       return;
     }
     if (!date) {
-      Alert.alert('Select date', 'Please select a date for your trip.');
+      Alert.alert('Travel date required', 'Choose a date for this trip.');
       return;
     }
     const fromSelectedOnMap = fromLat != null && fromLon != null;
     const toSelectedOnMap = toLat != null && toLon != null;
     if (!fromSelectedOnMap || !toSelectedOnMap) {
       Alert.alert(
-        'Select from map',
-        'Choose pickup and destination from the location picker so we can match routes correctly.'
+        'Confirm locations on the map',
+        'Open the location picker and confirm pickup and destination on the map so we can match routes accurately.'
       );
       return;
     }
@@ -434,7 +434,7 @@ export default function SearchRides(): React.JSX.Element {
     <SafeAreaView style={styles.safe} edges={['top']}>
       <ScrollView
         style={styles.scroll}
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: mainTabScrollBottomPad }]}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
@@ -446,12 +446,12 @@ export default function SearchRides(): React.JSX.Element {
                 <Text style={styles.welcomeName}>{welcomeName}</Text>
               </>
             ) : (
-              'Welcome back'
+              'Welcome'
             )}
           </Text>
         ) : null}
         <Text style={styles.heroTitle}>Find a ride</Text>
-        <Text style={styles.heroSubtitle}>Set pickup, destination & date</Text>
+        <Text style={styles.heroSubtitle}>Choose pickup, destination, and travel date.</Text>
 
         <View style={styles.card}>
           <View style={styles.row}>
@@ -465,7 +465,7 @@ export default function SearchRides(): React.JSX.Element {
               activeOpacity={0.7}
             >
               <Text style={[styles.pickupText, !from && styles.placeholder]} numberOfLines={1}>
-                {from || 'Add pickup'}
+                {from || 'Select pickup'}
               </Text>
               <Text style={styles.label}>Pickup</Text>
             </TouchableOpacity>
@@ -489,7 +489,7 @@ export default function SearchRides(): React.JSX.Element {
             </View>
             <View style={styles.inputWrap}>
               <Text style={[styles.pickupText, !to && styles.placeholder]} numberOfLines={1}>
-                {to || 'Add destination'}
+                {to || 'Select destination'}
               </Text>
               <Text style={styles.label}>Destination</Text>
             </View>
@@ -536,16 +536,16 @@ export default function SearchRides(): React.JSX.Element {
             onPress={handleSearch}
             activeOpacity={0.85}
           >
-            <Text style={styles.searchButtonText}>Search</Text>
+            <Text style={styles.searchButtonText}>Search rides</Text>
           </TouchableOpacity>
         </View>
 
         {sessionReady && recents.length > 0 ? (
           <View style={styles.recentsSection}>
             <View style={styles.recentsHeader}>
-              <Text style={styles.recentsTitle}>RECENT SEARCHES</Text>
+              <Text style={styles.recentsTitle}>Recent searches</Text>
               <TouchableOpacity onPress={() => void onClearRecents()} hitSlop={8}>
-                <Text style={styles.clearAll}>Clear all</Text>
+                <Text style={styles.clearAll}>Clear</Text>
               </TouchableOpacity>
             </View>
             {recents.map((item) => (
@@ -594,12 +594,6 @@ export default function SearchRides(): React.JSX.Element {
             ))}
           </View>
         ) : null}
-
-        {locationError ? (
-          <View style={styles.errorBanner}>
-            <Text style={styles.errorText}>{locationError}</Text>
-          </View>
-        ) : null}
       </ScrollView>
 
       <DatePickerModal
@@ -607,7 +601,7 @@ export default function SearchRides(): React.JSX.Element {
         onClose={() => setShowDatePicker(false)}
         selectedDate={selectedDateForModal}
         onSelectDate={handleSelectDateFromModal}
-        title="When are you going? Select date."
+        title="Select travel date"
       />
 
       <PassengersPickerModal
@@ -632,7 +626,6 @@ const styles = StyleSheet.create({
   scrollContent: {
     paddingHorizontal: 16,
     paddingTop: 24,
-    paddingBottom: 32,
   },
   welcomeLine: {
     fontSize: 20,
@@ -661,14 +654,16 @@ const styles = StyleSheet.create({
   },
   card: {
     backgroundColor: '#fff',
-    borderRadius: 16,
+    borderRadius: 18,
     paddingVertical: 16,
     paddingHorizontal: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 12,
-    elevation: 4,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: COLORS.borderLight,
+    shadowColor: '#0f172a',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.06,
+    shadowRadius: 16,
+    elevation: 2,
   },
   cardDivider: {
     height: StyleSheet.hairlineWidth,
@@ -758,13 +753,13 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   recentsTitle: {
-    fontSize: 11,
-    fontWeight: '800',
-    color: COLORS.textMuted,
-    letterSpacing: 0.6,
+    fontSize: 12,
+    fontWeight: '700',
+    color: COLORS.textSecondary,
+    letterSpacing: 0.2,
   },
   clearAll: {
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '600',
     color: COLORS.primary,
   },
@@ -843,18 +838,5 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 6,
     justifyContent: 'center',
-  },
-  errorBanner: {
-    marginTop: 16,
-    marginHorizontal: 0,
-    backgroundColor: 'rgba(239,68,68,0.92)',
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    borderRadius: 8,
-    zIndex: 10,
-  },
-  errorText: {
-    fontSize: 13,
-    color: '#fff',
   },
 });

@@ -11,6 +11,7 @@ import {
   deleteUser,
 } from '@firebase/auth';
 import { getFirebaseAuth, isFirebaseAuthConfigured } from '../config/firebase';
+import { OFFLINE_USER_MESSAGE } from '../constants/offlineMessaging';
 
 function getFirebaseAuthErrorCode(e: unknown): string | undefined {
   if (e && typeof e === 'object' && 'code' in e) {
@@ -36,7 +37,7 @@ export function firebaseAuthErrorToMessage(e: unknown): string {
     case 'auth/too-many-requests':
       return 'Too many attempts. Try again later.';
     case 'auth/network-request-failed':
-      return 'Network error. Check your connection.';
+      return OFFLINE_USER_MESSAGE;
     case 'auth/invalid-action-code':
     case 'auth/expired-action-code':
       return 'This link has expired. Request a new email from the app.';

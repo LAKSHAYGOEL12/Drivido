@@ -103,14 +103,14 @@ async function registerCurrentDevicePushTokenInternal(
     }
     if (final !== 'granted') {
       console.warn(
-        '[push] Notification permission not granted — open Settings → Apps → Drivido → Notifications:',
+        '[push] Notification permission not granted — open Settings → Apps → EcoPickO → Notifications:',
         final
       );
       if (showPermissionDeniedAlert && !permissionDeniedAlertShown) {
         permissionDeniedAlertShown = true;
         Alert.alert(
           'Notifications are off',
-          'Enable notifications for Drivido to get ride updates and messages.',
+          'Enable notifications for EcoPickO to get ride updates and messages.',
           [
             { text: 'Not now', style: 'cancel' },
             {

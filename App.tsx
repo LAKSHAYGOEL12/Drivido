@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Platform, StatusBar, StyleSheet, View } from 'react-native';
 import BootSplash from './src/components/common/BootSplash';
+import { AppErrorBoundary } from './src/components/common/AppErrorBoundary';
 import { useFonts } from 'expo-font';
 import * as SplashScreen from 'expo-splash-screen';
 import {
@@ -126,24 +127,26 @@ export default function App(): React.JSX.Element | null {
     <View style={styles.appRoot}>
       {appCoreReady ? (
         <SafeAreaProvider style={styles.appRoot}>
-          <AuthProvider>
-            <NotificationPreferencesProvider>
-              <ThemeProvider>
-                <AppAlertProvider>
-                  <ToastProvider>
-                    <ThemedStatusBar />
-                    <LocationProvider>
-                      <OwnerPendingRequestsProvider>
-                        <InboxProvider>
-                          <RootNavigator />
-                        </InboxProvider>
-                      </OwnerPendingRequestsProvider>
-                    </LocationProvider>
-                  </ToastProvider>
-                </AppAlertProvider>
-              </ThemeProvider>
-            </NotificationPreferencesProvider>
-          </AuthProvider>
+          <AppErrorBoundary>
+            <AuthProvider>
+              <NotificationPreferencesProvider>
+                <ThemeProvider>
+                  <AppAlertProvider>
+                    <ToastProvider>
+                      <ThemedStatusBar />
+                      <LocationProvider>
+                        <OwnerPendingRequestsProvider>
+                          <InboxProvider>
+                            <RootNavigator />
+                          </InboxProvider>
+                        </OwnerPendingRequestsProvider>
+                      </LocationProvider>
+                    </ToastProvider>
+                  </AppAlertProvider>
+                </ThemeProvider>
+              </NotificationPreferencesProvider>
+            </AuthProvider>
+          </AppErrorBoundary>
         </SafeAreaProvider>
       ) : null}
       {showBootSplashOverlay ? (

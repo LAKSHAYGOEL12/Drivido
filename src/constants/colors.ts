@@ -1,39 +1,60 @@
-/**
- * App-wide colors. Use named constants instead of raw hex.
- */
 export const COLORS = {
-  primary: '#29be8b',
-  primaryDark: '#00cc6a',
-  primaryLight: '#66ffb3',
+  /** Brand — Spotify green (#1DB954). RGB 29,185,84 for alpha helpers below. */
+  primary: '#1DB954',
+  primaryDark: '#169C46',
+  primaryLight: '#1ED760',
+  primaryRipple: 'rgba(29, 185, 84, 0.14)',
+  primaryMuted22: 'rgba(29, 185, 84, 0.22)',
+  primaryMuted38: 'rgba(29, 185, 84, 0.38)',
 
-  secondary: '#2563eb',
-  secondaryDark: '#1d4ed8',
+  /** Secondary — links, informational highlights */
+  secondary: '#2563EB',
+  secondaryLight: '#60A5FA',
 
-  background: '#ffffff',
-  backgroundSecondary: '#f8fafc',
+  /** Surfaces */
+  background: '#FFFFFF',
+  backgroundSecondary: '#F8FAFC',
+  surface: '#FFFFFF',
 
-  text: '#0f172a',
-  textSecondary: '#64748b',
-  textMuted: '#94a3b8',
+  /** Typography */
+  text: '#0F172A',
+  textSecondary: '#475569',
+  textMuted: '#94A3B8',
 
-  border: '#e2e8f0',
-  borderLight: '#f1f5f9',
+  /** Dividers and chrome */
+  border: '#E2E8F0',
+  borderLight: '#F1F5F9',
 
-  success: '#22c55e',
-  warning: '#f59e0b',
-  error: '#ef4444',
-  info: '#3b82f6',
+  /** Floating bottom tab pill (MainBottomTabBar) — softer edge + inactive icons */
+  tabBarPillBorder: 'rgba(15, 23, 42, 0.09)',
+  /** Selected tab icon well (neutral “glass” chip, iOS-style). */
+  tabBarSelectedWell: 'rgba(15, 23, 42, 0.055)',
+  tabBarIconInactive: '#64748B',
 
-  white: '#ffffff',
+  /** Semantic status */
+  success: '#1DB954',
+  warning: '#F59E0B',
+  error: '#DC2626',
+  info: '#2563EB',
+
+  /** Ride availability */
+  rideAvailable: '#1DB954',
+  rideFull: '#EF4444',
+  rideFewSeats: '#F59E0B',
+
+  white: '#FFFFFF',
   black: '#000000',
 
-  // Dark mode (optional)
+  /** Dark palette (reserved for future theme toggle) */
   dark: {
-    background: '#0f172a',
-    backgroundSecondary: '#1e293b',
-    text: '#f8fafc',
-    textSecondary: '#94a3b8',
-    border: '#334155',
+    background: '#020617',
+    backgroundSecondary: '#0F172A',
+    surface: '#111827',
+
+    text: '#F8FAFC',
+    textSecondary: '#94A3B8',
+
+    border: '#1F2937',
   },
 } as const;
 

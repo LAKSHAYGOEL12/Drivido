@@ -31,7 +31,7 @@ import { changePasswordForCurrentUser, firebaseAuthErrorToMessage } from '../../
 import { getFreshFirebaseIdToken } from '../../services/firebaseIdToken';
 
 const SUPPORT_MAILTO =
-  'mailto:developers@drivido.in?subject=' + encodeURIComponent('Drivido — Account & security');
+  'mailto:developers@drivido.in?subject=' + encodeURIComponent('EcoPickO — Account & security');
 
 /** Green tint behind icons — matches Edit Profile vehicle chips. */
 const PRIMARY_TINT = 'rgba(41, 190, 139, 0.12)';

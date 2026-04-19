@@ -11,7 +11,7 @@ export const API = {
     auth: {
       login: '/auth/login',
       register: '/auth/register',
-      /** POST `{ idToken }` — Firebase `getIdToken()` → Drivido JWT + refresh (see `backendAuthExchange.ts`). */
+      /** POST `{ idToken }` — Firebase `getIdToken()` → EcoPickO JWT + refresh (see `backendAuthExchange.ts`). */
       firebase: '/auth/firebase',
       me: '/auth/me',
       logout: '/auth/logout',

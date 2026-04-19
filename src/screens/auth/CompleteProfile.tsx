@@ -910,7 +910,7 @@ const styles = StyleSheet.create({
     marginLeft: 34,
     fontSize: 13,
     fontWeight: '700',
-    color: COLORS.secondaryDark,
+    color: COLORS.secondary,
   },
   infoRow: {
     flexDirection: 'row',

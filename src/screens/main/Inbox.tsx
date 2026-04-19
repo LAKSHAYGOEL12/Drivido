@@ -12,6 +12,7 @@ import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { InboxStackParamList } from '../../navigation/types';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useMainTabScrollBottomInset } from '../../navigation/useMainTabScrollBottomInset';
 import { Ionicons } from '@expo/vector-icons';
 import { useInbox, type InboxConversation } from '../../contexts/InboxContext';
 import { COLORS } from '../../constants/colors';
@@ -35,6 +36,7 @@ function formatConversationTime(ts: number): string {
 
 export default function Inbox(): React.JSX.Element {
   const navigation = useNavigation<NativeStackNavigationProp<InboxStackParamList>>();
+  const mainTabScrollBottomPad = useMainTabScrollBottomInset();
   const { conversations, markConversationAsRead, refreshConversations } = useInbox();
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
@@ -129,14 +131,14 @@ export default function Inbox(): React.JSX.Element {
     <SafeAreaView style={styles.safe} edges={['top']}>
       <View style={styles.container}>
         <View style={styles.header}>
-          <Text style={styles.title}>Chats</Text>
+          <Text style={styles.title}>Messages</Text>
         </View>
 
         <View style={styles.searchWrap}>
           <Ionicons name="search" size={20} color={COLORS.textMuted} />
           <TextInput
             style={styles.searchInput}
-            placeholder="Search messages..."
+            placeholder="Search by name or message"
             placeholderTextColor={COLORS.textMuted}
             value={search}
             onChangeText={setSearch}
@@ -144,7 +146,7 @@ export default function Inbox(): React.JSX.Element {
         </View>
 
         <View style={styles.sectionHead}>
-          <Text style={styles.sectionTitle}>RECENT CONVERSATIONS</Text>
+          <Text style={styles.sectionTitle}>Recent conversations</Text>
         </View>
 
         {loading && filtered.length === 0 ? (
@@ -164,12 +166,12 @@ export default function Inbox(): React.JSX.Element {
             data={filtered}
             renderItem={renderItem}
             keyExtractor={(item) => item.id}
-            contentContainerStyle={styles.listContent}
+            contentContainerStyle={[styles.listContent, { paddingBottom: mainTabScrollBottomPad }]}
             showsVerticalScrollIndicator={false}
             ItemSeparatorComponent={() => <View style={styles.separator} />}
             ListEmptyComponent={
               <View style={styles.empty}>
-                <Text style={styles.emptyText}>No messages yet</Text>
+                <Text style={styles.emptyText}>No conversations yet</Text>
               </View>
             }
           />
@@ -225,12 +227,11 @@ const styles = StyleSheet.create({
   sectionTitle: {
     fontSize: 12,
     fontWeight: '700',
-    color: COLORS.textMuted,
-    letterSpacing: 0.5,
+    color: COLORS.textSecondary,
+    letterSpacing: 0.2,
   },
   listContent: {
     paddingHorizontal: 20,
-    paddingBottom: 24,
   },
   row: {
     flexDirection: 'row',

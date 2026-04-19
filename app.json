@@ -1,8 +1,8 @@
 {
   "expo": {
-    "name": "Drivido",
-    "slug": "Drivido",
-    "scheme": "drivido",
+    "name": "EcoPickO",
+    "slug": "ecopicko",
+    "scheme": "ecopicko",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/app-logo.png",
@@ -20,7 +20,7 @@
         "expo-notifications",
         {
           "icon": "./assets/app-logo.png",
-          "color": "#0ea5e9",
+          "color": "#1DB954",
           "defaultChannel": "default",
           "sounds": [],
           "enableBackgroundRemoteNotifications": true
@@ -29,7 +29,7 @@
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "Drivido needs your location to find rides near you and set pickup."
+          "locationWhenInUsePermission": "EcoPickO uses your location while the app is open to suggest nearby pickups and improve route accuracy."
         }
       ],
       [
@@ -50,7 +50,7 @@
         "barStyle": "dark-content"
       },
       "adaptiveIcon": {
-        "backgroundColor": "#E8F5EE",
+        "backgroundColor": "#E6F9EE",
         "foregroundImage": "./assets/app-logo.png"
       }
     },

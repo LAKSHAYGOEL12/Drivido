@@ -1,4 +1,4 @@
-# Drivido (Expo)
+# EcoPickO (Expo)
 
 ## Push notifications
 

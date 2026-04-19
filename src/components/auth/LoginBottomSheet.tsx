@@ -22,6 +22,7 @@ import { validation } from '../../constants/validation';
 import Button from '../common/Button';
 import Input from '../common/Input';
 import { COLORS } from '../../constants/colors';
+import { OFFLINE_USER_MESSAGE } from '../../constants/offlineMessaging';
 import type { RootStackParamList } from '../../navigation/types';
 import { hasAuthAccessToken } from '../../services/api';
 import { getFirebaseAuth } from '../../config/firebase';
@@ -250,7 +251,7 @@ export default function LoginBottomSheet({
         return;
       }
       setSigningIn(false);
-      const failMsg = 'Could not complete sign-in. Check your connection and try again.';
+      const failMsg = OFFLINE_USER_MESSAGE;
       setErrors({ password: failMsg });
       Alert.alert('Sign in failed', failMsg);
     } catch (e: unknown) {

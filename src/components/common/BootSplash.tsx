@@ -1,5 +1,6 @@
-import React, { useCallback } from 'react';
-import { Image, StyleSheet, View } from 'react-native';
+import React, { useCallback, useState } from 'react';
+import { ActivityIndicator, Image, StyleSheet, View } from 'react-native';
+import { COLORS } from '../../constants/colors';
 import { IMAGES } from '../../constants/images';
 
 export type BootSplashProps = {
@@ -12,7 +13,9 @@ export type BootSplashProps = {
  * Native launch uses a blank drawable (`splash-native-blank.png`); this view is the first branded frame once JS runs.
  */
 export default function BootSplash({ onContentReady }: BootSplashProps): React.JSX.Element {
+  const [imageReady, setImageReady] = useState(false);
   const handleLoadEnd = useCallback(() => {
+    setImageReady(true);
     onContentReady?.();
   }, [onContentReady]);
 
@@ -25,6 +28,11 @@ export default function BootSplash({ onContentReady }: BootSplashProps): React.J
         accessibilityIgnoresInvertColors
         onLoadEnd={handleLoadEnd}
       />
+      {!imageReady ? (
+        <View style={styles.loaderOverlay} pointerEvents="none">
+          <ActivityIndicator size="large" color={COLORS.primary} />
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -40,5 +48,11 @@ const styles = StyleSheet.create({
     flex: 1,
     width: '100%',
     height: '100%',
+  },
+  loaderOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.65)',
   },
 });

@@ -10,8 +10,8 @@
  *
  * Auth / onboarding lives outside `BottomTabs` and has no tab bar.
  *
- * Primary enforcement: `BottomTabs` → `MainBottomTabBar` + `useNavigationState` (updates on every
- * nested navigation). A few screens also call `setOptions({ tabBarStyle })` for edge timing; keep
+ * Primary enforcement: `BottomTabs` (material top tab + bottom custom bar) → `MainBottomTabBar` + tab `state`
+ * (updates on every nested navigation). A few screens also call `setOptions({ tabBarStyle })` for edge timing; keep
  * those aligned with this map.
  */
 export const MAIN_TAB_PRIMARY_NESTED_ROUTE = {

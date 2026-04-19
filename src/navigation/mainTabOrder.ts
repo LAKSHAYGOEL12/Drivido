@@ -4,8 +4,8 @@
  */
 export const MAIN_TAB_ORDER = [
   'SearchStack',
-  'PublishStack',
   'YourRides',
+  'PublishStack',
   'Inbox',
   'Profile',
 ] as const;

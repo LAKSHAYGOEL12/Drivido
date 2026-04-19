@@ -13,6 +13,7 @@ import {
   Keyboard,
   ScrollView,
 } from 'react-native';
+import NetInfo from '@react-native-community/netinfo';
 import { Alert } from '../../utils/themedAlert';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -20,6 +21,7 @@ import type { SearchStackParamList } from '../../navigation/types';
 import { useLocation } from '../../contexts/LocationContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { COLORS } from '../../constants/colors';
+import { OFFLINE_HEADLINE, OFFLINE_SUBTITLE_RETRY } from '../../constants/offlineMessaging';
 import { Ionicons } from '@expo/vector-icons';
 import {
   getPlaceSuggestions,
@@ -36,6 +38,7 @@ import {
   type PlaceRecentFieldType,
 } from '../../services/place-recent-storage';
 import type { RecentPublishedEntry } from '../../services/recent-published-storage';
+import { showToast } from '../../utils/toast';
 
 type Props = NativeStackScreenProps<SearchStackParamList, 'LocationPicker'>;
 
@@ -193,6 +196,19 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
   const publishSearchOnly = isPublishFlow && !publishMapVisible;
   /** Full-screen map + floating controls (Publish). */
   const publishImmersiveMap = isPublishFlow && publishMapVisible;
+
+  const [netOnline, setNetOnline] = useState<boolean | null>(null);
+  const offline = netOnline === false;
+
+  useEffect(() => {
+    const unsub = NetInfo.addEventListener((s) => {
+      setNetOnline(s.isConnected === true && s.isInternetReachable !== false);
+    });
+    void NetInfo.fetch().then((s) => {
+      setNetOnline(s.isConnected === true && s.isInternetReachable !== false);
+    });
+    return () => unsub();
+  }, []);
 
   const bumpSkipPublishGeocode = useCallback((ms = PUBLISH_SKIP_GEOCODE_AFTER_ANIM_MS) => {
     skipPublishGeocodeUntilRef.current = Date.now() + ms;
@@ -604,6 +620,10 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
   );
 
   const handleUseCurrentLocation = useCallback(async () => {
+    if (netOnline === false) {
+      showToast({ title: OFFLINE_HEADLINE, message: OFFLINE_SUBTITLE_RETRY, variant: 'info' });
+      return;
+    }
     /** Publish pickup: center map on GPS, reverse-geocode label, fine-tune on map — same as picking a recent. */
     if (isPublishFlow && field === 'from') {
       setUseCurrentLoading(true);
@@ -721,6 +741,7 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
     focusPublishMapOnCoords,
     placeFieldType,
     recentUserKey,
+    netOnline,
   ]);
 
   const handleDone = () => {
@@ -752,6 +773,11 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
 
   // Debounced place suggestions
   useEffect(() => {
+    if (offline) {
+      setSuggestions([]);
+      setSuggestionsLoading(false);
+      return;
+    }
     const q = searchQuery.trim();
     if (!isFocused) return;
 
@@ -779,10 +805,15 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
         .finally(() => setSuggestionsLoading(false));
     }, 400);
     return () => clearTimeout(t);
-  }, [searchQuery, isFocused]);
+  }, [searchQuery, isFocused, offline]);
 
   /** After user pauses typing: move map to area + show nearby POIs (does not change selection until user taps). */
   useEffect(() => {
+    if (offline) {
+      setNearbyPlacesList([]);
+      setMapExploring(false);
+      return;
+    }
     const q = searchQuery.trim();
     if (suppressMapExploreRef.current) {
       // Selection handlers (recent/google/current location/map tap) toggle this to avoid extra Place API calls.
@@ -834,10 +865,14 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
       clearTimeout(timer);
       mapExploreSeq.current += 1;
     };
-  }, [searchQuery, isPublishFlow, publishMapVisible]);
+  }, [searchQuery, isPublishFlow, publishMapVisible, offline]);
 
   const handleSelectSuggestion = useCallback(
     async (item: PlacePrediction) => {
+      if (offline) {
+        showToast({ title: OFFLINE_HEADLINE, message: OFFLINE_SUBTITLE_RETRY, variant: 'info' });
+        return;
+      }
       Keyboard.dismiss();
       setSuggestions([]);
       setNearbyPlacesList([]);
@@ -934,11 +969,15 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
         navigateBackWithValue(item.description);
       }
     },
-    [returnScreen, isPublishFlow, focusPublishMapOnCoords, navigateBackWithValue, placeFieldType, recentUserKey]
+    [returnScreen, isPublishFlow, focusPublishMapOnCoords, navigateBackWithValue, placeFieldType, recentUserKey, offline]
   );
 
   const handleSelectRecent = useCallback(
     async (item: PlaceRecentEntry) => {
+      if (offline) {
+        showToast({ title: OFFLINE_HEADLINE, message: OFFLINE_SUBTITLE_RETRY, variant: 'info' });
+        return;
+      }
       Keyboard.dismiss();
       setSuggestions([]);
       setNearbyPlacesList([]);
@@ -986,7 +1025,7 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
         longitude: item.longitude,
       });
     },
-    [navigateBackWithValue, recentUserKey, returnScreen, isPublishFlow, focusPublishMapOnCoords]
+    [navigateBackWithValue, recentUserKey, returnScreen, isPublishFlow, focusPublishMapOnCoords, offline]
   );
 
   const handleMapPress = useCallback(
@@ -1054,6 +1093,14 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
       const lng = region.longitude;
       setSelectedCoords({ latitude: lat, longitude: lng });
 
+      if (offline) {
+        if (publishGeocodeTimerRef.current) clearTimeout(publishGeocodeTimerRef.current);
+        publishGeocodeTimerRef.current = null;
+        setReverseGeocodeLoading(false);
+        setNearbyPlacesList([]);
+        return;
+      }
+
       if (Date.now() < skipPublishGeocodeUntilRef.current) {
         return;
       }
@@ -1087,21 +1134,29 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
         })();
       }, PUBLISH_REVERSE_GEOCODE_DEBOUNCE_MS);
     },
-    [isPublishFlow, publishMapVisible, reverseGeocodeLatLng]
+    [isPublishFlow, publishMapVisible, reverseGeocodeLatLng, offline]
   );
 
   const handlePublishMapPress = useCallback(
     (e: { nativeEvent: { coordinate: { latitude: number; longitude: number } } }) => {
       if (!isPublishFlow) return;
+      if (offline) {
+        showToast({ title: OFFLINE_HEADLINE, message: OFFLINE_SUBTITLE_RETRY, variant: 'info' });
+        return;
+      }
       const { latitude, longitude } = e.nativeEvent.coordinate;
       bumpSkipPublishGeocode();
       mapRef.current?.animateToRegion?.(centerRegion(latitude, longitude, STREET_DELTA), 350);
     },
-    [isPublishFlow, bumpSkipPublishGeocode]
+    [isPublishFlow, bumpSkipPublishGeocode, offline]
   );
 
   const selectNearbyPlace = useCallback(
     async (p: NearbyPlace) => {
+      if (offline) {
+        showToast({ title: OFFLINE_HEADLINE, message: OFFLINE_SUBTITLE_RETRY, variant: 'info' });
+        return;
+      }
       skipAutocompleteRef.current = true;
       suppressMapExploreRef.current = true;
       placesSessionTokenRef.current = null;
@@ -1140,7 +1195,7 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
       }
       lastPublishGeocodedRef.current = coords;
     },
-    [bumpSkipPublishGeocode]
+    [bumpSkipPublishGeocode, offline]
   );
 
   const clearPublishSelection = () => {
@@ -1315,11 +1370,14 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
               styles.searchInput,
               (returnScreen === 'SearchRides' || publishSearchOnly || publishImmersiveMap) &&
                 styles.searchInputEmbedded,
+              offline && styles.searchInputOffline,
             ]}
             placeholder={field === 'to' ? 'Search destination' : 'Search for a place or address'}
             placeholderTextColor={COLORS.textMuted}
             value={searchQuery}
+            editable={!offline}
             onChangeText={(v) => {
+                if (offline) return;
                 // User started typing again (not selecting a recent item).
                 skipAutocompleteRef.current = false;
                 suppressMapExploreRef.current = false;
@@ -1358,12 +1416,22 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
           )}
         </View>
 
+        {offline ? (
+          <View style={styles.locationOfflineBanner} accessibilityRole="alert">
+            <Ionicons name="cloud-offline-outline" size={16} color={COLORS.textSecondary} />
+            <View style={styles.locationOfflineBannerTextCol}>
+              <Text style={styles.locationOfflineBannerTitle}>{OFFLINE_HEADLINE}</Text>
+              <Text style={styles.locationOfflineBannerSub}>{OFFLINE_SUBTITLE_RETRY}</Text>
+            </View>
+          </View>
+        ) : null}
+
           {canShowUseCurrentLocation &&
             (returnScreen === 'SearchRides' || (isPublishFlow && field === 'from')) && (
               <TouchableOpacity
                 style={styles.useCurrentLocationRow}
                 onPress={handleUseCurrentLocation}
-                disabled={locationLoading || useCurrentLoading}
+                disabled={offline || locationLoading || useCurrentLoading}
                 activeOpacity={0.7}
               >
                 {locationLoading || useCurrentLoading ? (
@@ -1377,7 +1445,7 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
               </TouchableOpacity>
             )}
 
-          {isFocused && searchQuery.trim().length < 3 && recentPlaces.length > 0 && (
+          {!offline && isFocused && searchQuery.trim().length < 3 && recentPlaces.length > 0 && (
             <View
               style={[
                 styles.suggestionsList,
@@ -1421,7 +1489,7 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
             </View>
           )}
 
-          {isFocused && searchQuery.trim().length >= 3 && suggestions.length > 0 && (
+          {!offline && isFocused && searchQuery.trim().length >= 3 && suggestions.length > 0 && (
             <View
               style={[
                 styles.suggestionsList,
@@ -1456,7 +1524,8 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
             </View>
           )}
 
-          {isFocused &&
+          {!offline &&
+            isFocused &&
             suggestionsLoading &&
             suggestions.length === 0 &&
             searchQuery.trim().length >= 3 && (
@@ -1476,7 +1545,11 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
                 </View>
               </View>
             )}
-          {isPublishFlow && publishMapVisible && !publishImmersiveMap && nearbyPlacesList.length > 0 && (
+          {!offline &&
+            isPublishFlow &&
+            publishMapVisible &&
+            !publishImmersiveMap &&
+            nearbyPlacesList.length > 0 && (
             <View style={styles.nearbySection}>
               <Text style={styles.nearbySectionTitle}>Center the pin, or pick a nearby place</Text>
               <ScrollView
@@ -1498,7 +1571,8 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
               </ScrollView>
             </View>
           )}
-          {isPublishFlow &&
+          {!offline &&
+            isPublishFlow &&
             publishMapVisible &&
             !publishImmersiveMap &&
             mapExploring &&
@@ -1527,7 +1601,7 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
               </TouchableOpacity>
             </View>
           ) : null}
-          {nearbyPlacesList.length > 0 ? (
+          {!offline && nearbyPlacesList.length > 0 ? (
             <View style={styles.nearbySectionBottom}>
               <Text style={styles.nearbySectionTitleBottom}>Nearby</Text>
               <ScrollView
@@ -1551,7 +1625,7 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
               </ScrollView>
             </View>
           ) : null}
-          {mapExploring && nearbyPlacesList.length === 0 && searchQuery.trim().length >= 3 ? (
+          {!offline && mapExploring && nearbyPlacesList.length === 0 && searchQuery.trim().length >= 3 ? (
             <View style={styles.exploringRowBottom}>
               <ActivityIndicator size="small" color={COLORS.primary} />
               <Text style={styles.exploringText}>Finding area on map…</Text>
@@ -1858,6 +1932,38 @@ const styles = StyleSheet.create({
     borderWidth: 0,
     borderRadius: 0,
     paddingLeft: 8,
+  },
+  searchInputOffline: {
+    opacity: 0.55,
+  },
+  locationOfflineBanner: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    marginTop: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    backgroundColor: COLORS.backgroundSecondary,
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: COLORS.border,
+  },
+  locationOfflineBannerTextCol: {
+    flex: 1,
+    minWidth: 0,
+  },
+  locationOfflineBannerTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: COLORS.text,
+    letterSpacing: -0.2,
+  },
+  locationOfflineBannerSub: {
+    marginTop: 3,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '500',
+    color: COLORS.textSecondary,
   },
   clearButton: {
     padding: 8,

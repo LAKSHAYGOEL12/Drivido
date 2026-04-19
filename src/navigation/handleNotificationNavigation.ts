@@ -71,12 +71,12 @@ function dispatchOpenChatFromNotification(
                 state: { routes: [{ name: 'SearchRides' as const }], index: 0 },
               },
               {
-                name: 'PublishStack',
-                state: { routes: [{ name: 'PublishRide' as const }], index: 0 },
-              },
-              {
                 name: 'YourRides',
                 state: { routes: [{ name: 'YourRidesList' as const }], index: 0 },
+              },
+              {
+                name: 'PublishStack',
+                state: { routes: [{ name: 'PublishRide' as const }], index: 0 },
               },
               {
                 name: 'Inbox',

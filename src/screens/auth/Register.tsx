@@ -82,7 +82,7 @@ export default function Register(): React.JSX.Element {
     } catch (e: unknown) {
       const message = firebaseAuthErrorToMessage(e);
       setErrors({ password: message });
-      Alert.alert('Sign up failed', message);
+      Alert.alert('Unable to create account', message);
       return;
     } finally {
       setIsLoading(false);
@@ -108,8 +108,8 @@ export default function Register(): React.JSX.Element {
             <AppLogo />
             <Text style={styles.title}>Create account</Text>
             <Text style={styles.subtitle}>
-              Enter your name, email, and password. After verifying your email, you’ll complete your profile and accept
-              the terms and privacy policy there.
+              Enter your name, email, and password. After you verify your email, you will finish your profile and accept
+              the terms of use and privacy policy.
             </Text>
           </View>
 

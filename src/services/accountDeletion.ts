@@ -1,7 +1,7 @@
 /**
  * Scheduled account deletion (grace period), not instant client-side Firebase delete.
  *
- * ## Backend contract (Drivido API)
+ * ## Backend contract (EcoPickO API)
  *
  * ### User model
  * - `accountDeletionPending` (boolean)

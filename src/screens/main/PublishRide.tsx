@@ -14,12 +14,15 @@ import {
   TextInput,
   KeyboardAvoidingView,
 } from 'react-native';
+import NetInfo from '@react-native-community/netinfo';
 import { Alert } from '../../utils/themedAlert';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { CommonActions, useNavigation, useRoute, useFocusEffect } from '@react-navigation/native';
 import { findMainTabNavigator } from '../../navigation/findMainTabNavigator';
+import { mainTabScrollBottomInset } from '../../navigation/tabBarMetrics';
 import { COLORS } from '../../constants/colors';
+import { OFFLINE_HEADLINE, OFFLINE_SUBTITLE_RETRY } from '../../constants/offlineMessaging';
 import { useAuth } from '../../contexts/AuthContext';
 import { useLocation } from '../../contexts/LocationContext';
 import api from '../../services/api';
@@ -72,6 +75,7 @@ import {
 import { formatPublishStyleDateLabel } from '../../utils/rideDisplay';
 import { validation, validationErrors } from '../../constants/validation';
 import { briefRouteListLabel } from '../../utils/routeListBriefLabel';
+import { showToast } from '../../utils/toast';
 
 const MAX_PASSENGERS = 6;
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -211,12 +215,11 @@ function getAvailableTimeSlots(selectedDate: Date): { hour: number; minute: numb
   return slots;
 }
 
-const SCROLL_BOTTOM_PADDING = 44;
-
 export default function PublishRide(): React.JSX.Element {
   const navigation = useNavigation<any>();
   const route = useRoute<any>();
   const insets = useSafeAreaInsets();
+  const publishScrollBottomPad = mainTabScrollBottomInset(insets.bottom);
   const { user, patchUser, refreshUser, isAuthenticated, needsProfileCompletion } = useAuth();
   const sessionReady = isAuthenticated && !needsProfileCompletion;
   const recentUserKey = useMemo(() => (user?.id ?? user?.phone ?? '').trim(), [user?.id, user?.phone]);
@@ -264,6 +267,22 @@ export default function PublishRide(): React.JSX.Element {
   const scrollRef = useRef<ScrollView>(null);
   /** Matches Find tab `_tabResetToken` — tab bar tap must clear form; `navigate` does not remount this screen. */
   const publishTabResetHandledRef = useRef(0);
+  const [netOnline, setNetOnline] = useState<boolean | null>(null);
+  const offline = netOnline === false;
+
+  useEffect(() => {
+    const unsub = NetInfo.addEventListener((s) => {
+      setNetOnline(s.isConnected === true && s.isInternetReachable !== false);
+    });
+    void NetInfo.fetch().then((s) => {
+      setNetOnline(s.isConnected === true && s.isInternetReachable !== false);
+    });
+    return () => unsub();
+  }, []);
+
+  const showOfflineHint = useCallback(() => {
+    showToast({ title: OFFLINE_HEADLINE, message: OFFLINE_SUBTITLE_RETRY, variant: 'info' });
+  }, []);
 
   const calendarDays = useMemo(
     () => getCalendarDays(calendarMonth.getFullYear(), calendarMonth.getMonth()),
@@ -649,13 +668,18 @@ export default function PublishRide(): React.JSX.Element {
         typeof (d as { clockHour24?: unknown }).clockHour24 === 'number'
           ? Math.max(0, Math.min(23, Math.floor((d as { clockHour24: number }).clockHour24)))
           : (() => {
-              const h12 = typeof (d as { clockHour12?: unknown }).clockHour12 === 'number'
-                ? Math.max(1, Math.min(12, Math.floor((d as { clockHour12: number }).clockHour12)))
-                : 12;
-              const am = typeof (d as { clockAM?: unknown }).clockAM === 'boolean'
-                ? Boolean((d as { clockAM: boolean }).clockAM)
-                : true;
-              return h12 === 12 ? (am ? 0 : 12) : (am ? h12 : h12 + 12);
+              const h12 =
+                typeof (d as { clockHour12?: unknown }).clockHour12 === 'number'
+                  ? Math.max(
+                      1,
+                      Math.min(12, Math.floor((d as unknown as { clockHour12: number }).clockHour12))
+                    )
+                  : 12;
+              const am =
+                typeof (d as { clockAM?: unknown }).clockAM === 'boolean'
+                  ? Boolean((d as unknown as { clockAM: boolean }).clockAM)
+                  : true;
+              return h12 === 12 ? (am ? 0 : 12) : am ? h12 : h12 + 12;
             })();
       setClockHour24(draftHour24);
       setClockMinute(d.clockMinute);
@@ -836,6 +860,10 @@ export default function PublishRide(): React.JSX.Element {
   }, [pickupLatitude, pickupLongitude, destinationLatitude, destinationLongitude]);
 
   const openLocationPicker = (field: 'from' | 'to') => {
+    if (offline) {
+      showOfflineHint();
+      return;
+    }
     const publishRestoreKey = `pr_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
     stashPublishRideDraft(publishRestoreKey, {
       pickup,
@@ -898,7 +926,8 @@ export default function PublishRide(): React.JSX.Element {
 
   useEffect(() => {
     const p = route.params as Record<string, unknown> | undefined;
-    const token = p?._publishTabResetToken;
+    if (p == null) return;
+    const token = p._publishTabResetToken;
     if (typeof token !== 'number' || Number.isNaN(token)) return;
     if (token === publishTabResetHandledRef.current) return;
 
@@ -935,6 +964,10 @@ export default function PublishRide(): React.JSX.Element {
   const proceedPublish = useCallback(
     async (vehicleExtra?: VehicleFormValues, rideOpts?: { vehicleId?: string }) => {
       if (publishLoading) return;
+      if (netOnline === false) {
+        showToast({ title: OFFLINE_HEADLINE, message: OFFLINE_SUBTITLE_RETRY, variant: 'info' });
+        return;
+      }
       const fromList =
         mergedVehicles.find((x) => x.id === selectedVehicleId) ?? mergedVehicles[0];
       const resolved: VehicleFormValues | undefined = vehicleExtra
@@ -1128,6 +1161,7 @@ export default function PublishRide(): React.JSX.Element {
       rideDescription,
       route.params,
       selectedRouteDistanceKm,
+      netOnline,
     ]
   );
 
@@ -1196,6 +1230,10 @@ export default function PublishRide(): React.JSX.Element {
 
   const handlePublish = useCallback(async () => {
     if (publishLoading) return;
+    if (offline) {
+      showOfflineHint();
+      return;
+    }
     if (isTimeInPast || isTimeTooSoon) {
       alertDepartureTimeInPast();
       return;
@@ -1248,6 +1286,8 @@ export default function PublishRide(): React.JSX.Element {
     destinationLatitude,
     destinationLongitude,
     rate,
+    offline,
+    showOfflineHint,
   ]);
 
   return (
@@ -1260,19 +1300,29 @@ export default function PublishRide(): React.JSX.Element {
         <ScrollView
             ref={scrollRef}
           style={styles.scroll}
-          contentContainerStyle={styles.scrollContent}
+          contentContainerStyle={[styles.scrollContent, { paddingBottom: publishScrollBottomPad }]}
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode="on-drag"
           showsVerticalScrollIndicator={false}
         >
-        <Text style={styles.publishHeading}>Offer a ride</Text>
+        <Text style={styles.publishHeading}>Publish a ride</Text>
         <Text style={styles.publishSubheading}>
-          Set your route, time, and fare — passengers can book when you publish.
+          Set route, schedule, and fare. Passengers can request seats once the ride is live.
         </Text>
+        {offline ? (
+          <View style={styles.publishOfflineBanner} accessibilityRole="alert">
+            <Ionicons name="cloud-offline-outline" size={16} color={COLORS.textSecondary} />
+            <Text style={styles.publishOfflineBannerText}>{OFFLINE_HEADLINE}</Text>
+          </View>
+        ) : null}
 
         <View style={styles.singleCard}>
           <Text style={[styles.cardSectionLabel, styles.cardSectionLabelFirst]}>Route</Text>
-          <TouchableOpacity style={styles.fieldRow} onPress={() => openLocationPicker('from')} activeOpacity={0.75}>
+          <TouchableOpacity
+            style={[styles.fieldRow, offline && styles.fieldRowOfflineMuted]}
+            onPress={() => openLocationPicker('from')}
+            activeOpacity={0.75}
+          >
             <View style={styles.fieldLeft}>
               <View style={styles.greenDot} />
               <View style={styles.dottedLine} />
@@ -1282,32 +1332,49 @@ export default function PublishRide(): React.JSX.Element {
                 style={[styles.fieldValue, !pickup.trim() && styles.fieldValuePlaceholder]}
                 numberOfLines={1}
               >
-                {pickup.trim() ? pickup : 'Add pickup location'}
+                {pickup.trim() ? pickup : 'Select pickup location'}
               </Text>
-              <Text style={[styles.fieldLabel, styles.pickupLabel]}>PICKUP</Text>
+              <Text style={[styles.fieldLabel, styles.pickupLabel]}>Pickup</Text>
             </View>
-            <TouchableOpacity style={styles.swapBtn} onPress={() => {
-              const p = pickup; const d = destination;
-              const pLat = pickupLatitude; const pLon = pickupLongitude;
-              const dLat = destinationLatitude; const dLon = destinationLongitude;
-              setPickup(d); setDestination(p);
-              setPickupLatitude(dLat); setPickupLongitude(dLon);
-              setDestinationLatitude(pLat); setDestinationLongitude(pLon);
-            }}>
+            <TouchableOpacity
+              style={styles.swapBtn}
+              onPress={() => {
+                if (offline) {
+                  showOfflineHint();
+                  return;
+                }
+                const p = pickup;
+                const d = destination;
+                const pLat = pickupLatitude;
+                const pLon = pickupLongitude;
+                const dLat = destinationLatitude;
+                const dLon = destinationLongitude;
+                setPickup(d);
+                setDestination(p);
+                setPickupLatitude(dLat);
+                setPickupLongitude(dLon);
+                setDestinationLatitude(pLat);
+                setDestinationLongitude(pLon);
+              }}
+            >
               <Ionicons name="swap-vertical" size={21} color={COLORS.primary} />
             </TouchableOpacity>
           </TouchableOpacity>
 
-          <TouchableOpacity style={styles.fieldRow} onPress={() => openLocationPicker('to')} activeOpacity={0.75}>
+          <TouchableOpacity
+            style={[styles.fieldRow, offline && styles.fieldRowOfflineMuted]}
+            onPress={() => openLocationPicker('to')}
+            activeOpacity={0.75}
+          >
             <View style={styles.fieldLeft}><View style={styles.redPin} /></View>
             <View style={styles.fieldInputWrap}>
               <Text
                 style={[styles.fieldValue, !destination.trim() && styles.fieldValuePlaceholder]}
                 numberOfLines={1}
               >
-                {destination.trim() ? destination : 'Add destination'}
+                {destination.trim() ? destination : 'Select destination'}
               </Text>
-              <Text style={[styles.fieldLabel, styles.destinationLabel]}>DESTINATION</Text>
+              <Text style={[styles.fieldLabel, styles.destinationLabel]}>Destination</Text>
             </View>
             <Ionicons name="chevron-forward" size={21} color={COLORS.textMuted} />
           </TouchableOpacity>
@@ -1317,7 +1384,7 @@ export default function PublishRide(): React.JSX.Element {
             <View style={styles.fieldLeft}><Ionicons name="calendar-outline" size={23} color={COLORS.textSecondary} /></View>
             <View style={styles.fieldInputWrap}>
               <Text style={styles.fieldValue}>{dateLabel}</Text>
-              <Text style={styles.fieldLabel}>DATE</Text>
+              <Text style={styles.fieldLabel}>Date</Text>
             </View>
             <Ionicons name="chevron-forward" size={21} color={COLORS.textMuted} />
           </TouchableOpacity>
@@ -1331,7 +1398,7 @@ export default function PublishRide(): React.JSX.Element {
             </View>
             <View style={styles.fieldInputWrap}>
               <Text style={[styles.fieldValue, styles.timeValue]}>{timeLabel}</Text>
-              <Text style={styles.fieldLabel}>TIME</Text>
+              <Text style={styles.fieldLabel}>Time</Text>
             </View>
             <Ionicons name="chevron-forward" size={21} color={COLORS.textMuted} />
           </TouchableOpacity>
@@ -1341,6 +1408,10 @@ export default function PublishRide(): React.JSX.Element {
           <TouchableOpacity
             style={[styles.fieldRow, !canSetFare && styles.fieldRowDisabled]}
             onPress={() => {
+              if (offline) {
+                showOfflineHint();
+                return;
+              }
               if (!canSetFare) {
                 alertRouteRequiredBeforePrice();
                 return;
@@ -1356,7 +1427,7 @@ export default function PublishRide(): React.JSX.Element {
             </View>
             <View style={styles.fieldInputWrap}>
               <Text style={[styles.fieldValue, styles.fareValue]}>{estimatedFareLabel}</Text>
-              <Text style={styles.fieldLabel}>FARE PER SEAT</Text>
+              <Text style={styles.fieldLabel}>Fare per seat</Text>
             </View>
             {canSetFare ? (
               <Ionicons name="chevron-forward" size={21} color={COLORS.textMuted} />
@@ -1371,7 +1442,7 @@ export default function PublishRide(): React.JSX.Element {
             <View style={styles.fieldLeft}><Ionicons name="people-outline" size={23} color="#6b7280" /></View>
             <View style={styles.fieldInputWrap}>
               <Text style={styles.fieldValue}>{seats} seat{seats !== 1 ? 's' : ''} offered</Text>
-              <Text style={styles.fieldLabel}>PASSENGERS</Text>
+              <Text style={styles.fieldLabel}>Passengers</Text>
             </View>
             <Ionicons name="chevron-forward" size={21} color={COLORS.textMuted} />
           </TouchableOpacity>
@@ -1742,7 +1813,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   scroll: { flex: 1 },
-  scrollContent: { paddingHorizontal: 20, paddingBottom: SCROLL_BOTTOM_PADDING },
+  scrollContent: { paddingHorizontal: 20 },
   publishHeading: {
     marginTop: 16,
     marginBottom: 8,
@@ -1894,10 +1965,10 @@ const styles = StyleSheet.create({
   },
   fieldInputWrap: { flex: 1, marginLeft: 12 },
   fieldLabel: {
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: '600',
     color: COLORS.textMuted,
-    letterSpacing: 0.5,
+    letterSpacing: 0.15,
     marginBottom: 3,
   },
   pickupLabel: {
@@ -2601,5 +2672,26 @@ const styles = StyleSheet.create({
     color: COLORS.text,
     minWidth: 32,
     textAlign: 'center',
+  },
+  publishOfflineBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 7,
+    paddingHorizontal: 14,
+    marginBottom: 12,
+    backgroundColor: COLORS.backgroundSecondary,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: COLORS.border,
+  },
+  publishOfflineBannerText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLORS.text,
+    letterSpacing: -0.2,
+  },
+  fieldRowOfflineMuted: {
+    opacity: 0.55,
   },
 });

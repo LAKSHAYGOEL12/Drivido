@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   StyleSheet,
   Text,
@@ -15,8 +15,9 @@ import {
 } from 'react-native';
 import { Alert } from '../../utils/themedAlert';
 import { useNavigation, useRoute, useFocusEffect, type RouteProp } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { SearchStackParamList } from '../../navigation/types';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAuth } from '../../contexts/AuthContext';
 import api from '../../services/api';
@@ -25,6 +26,12 @@ import { geocodeAddressWithFallbacks } from '../../services/places';
 import type { PlacePrediction } from '../../services/places';
 import type { RideListItem } from '../../types/api';
 import { COLORS } from '../../constants/colors';
+import {
+  OFFLINE_HEADLINE,
+  OFFLINE_SUBTITLE_RETRY,
+  OFFLINE_USER_MESSAGE,
+  isLikelyOfflineErrorMessage,
+} from '../../constants/offlineMessaging';
 import RideListCard from '../../components/rides/RideListCard';
 import {
   getRideScheduledAt as rideScheduledAt,
@@ -624,7 +631,7 @@ type SearchResultsRouteProp = RouteProp<SearchStackParamList, 'SearchResults'>;
 type RidesResponse = { rides?: unknown[] } | unknown[];
 
 export default function SearchResultsScreen(): React.JSX.Element {
-  const navigation = useNavigation();
+  const navigation = useNavigation<NativeStackNavigationProp<SearchStackParamList>>();
   const route = useRoute<SearchResultsRouteProp>();
   const { user, isAuthenticated, needsProfileCompletion } = useAuth();
   const sessionReady = isAuthenticated && !needsProfileCompletion;
@@ -806,7 +813,8 @@ export default function SearchResultsScreen(): React.JSX.Element {
         touched = true;
       }
       if (!touched) return;
-      (navigation as { setParams: (params: Record<string, unknown>) => void }).setParams({
+      /** Clear merged LocationPicker params; not all keys exist on `SearchResults` in the type table. */
+      (navigation as unknown as { setParams: (params: Record<string, unknown>) => void }).setParams({
         selectedFrom: undefined,
         selectedTo: undefined,
         preservedDate: undefined,
@@ -946,7 +954,7 @@ export default function SearchResultsScreen(): React.JSX.Element {
           e && typeof e === 'object' && 'message' in e
             ? String((e as { message: unknown }).message)
             : 'Failed to load rides.';
-        setError(message);
+        setError(isLikelyOfflineErrorMessage(message) ? OFFLINE_USER_MESSAGE : message);
       } finally {
         setLoading(false);
         setListRefreshing(false);
@@ -1052,7 +1060,7 @@ export default function SearchResultsScreen(): React.JSX.Element {
     };
   }, []);
 
-  const openEditSheet = () => {
+  const openEditSheet = useCallback(() => {
     setDraftFrom(searchFrom);
     setDraftTo(searchTo);
     setDraftDate(searchDate);
@@ -1072,7 +1080,26 @@ export default function SearchResultsScreen(): React.JSX.Element {
     node?.measureInWindow?.((x: number, y: number, w: number, h: number) => {
       setPillFrame({ pageX: x, pageY: y, width: w, height: h });
     });
-  };
+  }, [searchFrom, searchTo, searchDate, searchPassengers, searchFromLat, searchFromLon, searchToLat, searchToLon]);
+
+  const listEmptyComponent = useMemo(
+    () => (
+      <View style={styles.emptyStateRoot}>
+        <View style={styles.emptyStateCard}>
+          <View style={styles.emptyNoRidesMark} accessibilityRole="image" accessibilityLabel="No rides">
+            <MaterialCommunityIcons name="car-off" size={38} color={COLORS.error} />
+          </View>
+          <Text style={styles.emptyStateTitle}>No rides found</Text>
+          <Text style={styles.emptyStateBody}>Try another date or route, or pull to refresh.</Text>
+          <TouchableOpacity style={styles.emptyCtaButton} onPress={openEditSheet} activeOpacity={0.88}>
+            <Ionicons name="options-outline" size={18} color={COLORS.white} />
+            <Text style={styles.emptyCtaButtonText}>Adjust search</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    ),
+    [openEditSheet]
+  );
 
   const closeEditSheet = () => {
     isClosingRef.current = true;
@@ -1155,9 +1182,9 @@ export default function SearchResultsScreen(): React.JSX.Element {
       {sameRouteWarning ? (
         <View style={styles.center}>
           <Ionicons name="warning-outline" size={48} color={COLORS.warning} />
-          <Text style={styles.emptyTitle}>Invalid route</Text>
+          <Text style={styles.emptyTitle}>Same pickup and destination</Text>
           <Text style={styles.emptySubtitle}>
-            Pickup and destination are same, select different destination.
+            Pickup and destination cannot be the same. Adjust one of the stops and search again.
           </Text>
         </View>
       ) : loading && rides.length === 0 ? (
@@ -1168,18 +1195,31 @@ export default function SearchResultsScreen(): React.JSX.Element {
         </View>
       ) : error && rides.length === 0 ? (
         <View style={styles.center}>
-          <Ionicons name="alert-circle-outline" size={48} color={COLORS.error} />
-          <Text style={styles.errorText}>{error}</Text>
+          <Ionicons
+            name={isLikelyOfflineErrorMessage(error) ? 'cloud-offline-outline' : 'alert-circle-outline'}
+            size={48}
+            color={isLikelyOfflineErrorMessage(error) ? COLORS.textMuted : COLORS.error}
+          />
+          {isLikelyOfflineErrorMessage(error) ? (
+            <>
+              <Text style={styles.emptyTitle}>{OFFLINE_HEADLINE}</Text>
+              <Text style={styles.emptySubtitle}>{OFFLINE_SUBTITLE_RETRY}</Text>
+            </>
+          ) : (
+            <Text style={styles.errorText}>{error}</Text>
+          )}
           <TouchableOpacity style={styles.retryButton} onPress={fetchRides}>
-            <Text style={styles.retryButtonText}>Retry</Text>
+            <Text style={styles.retryButtonText}>Try again</Text>
           </TouchableOpacity>
         </View>
       ) : (
         <>
           {error ? (
             <View style={styles.staleBanner}>
-              <Ionicons name="cloud-offline-outline" size={14} color={COLORS.warning} />
-              <Text style={styles.staleBannerText}>{error}</Text>
+              <Ionicons name="cloud-offline-outline" size={14} color={COLORS.textSecondary} />
+              <Text style={styles.staleBannerText}>
+                {isLikelyOfflineErrorMessage(error) ? OFFLINE_HEADLINE : error}
+              </Text>
             </View>
           ) : null}
           <FlatList
@@ -1193,13 +1233,7 @@ export default function SearchResultsScreen(): React.JSX.Element {
                 colors={[COLORS.primary]}
               />
             }
-            ListEmptyComponent={
-              <View style={styles.empty}>
-                <Ionicons name="car-outline" size={56} color={COLORS.textMuted} />
-                <Text style={styles.emptyTitle}>No rides found</Text>
-                <Text style={styles.emptySubtitle}>No rides match this date and route. Try another date or locations.</Text>
-              </View>
-            }
+            ListEmptyComponent={listEmptyComponent}
             renderItem={({ item }) => {
               const isOwner = isViewerRideOwner(item, currentUserId);
               const hasMyBooking =
@@ -1699,7 +1733,79 @@ const styles = StyleSheet.create({
   emptyList: {
     flexGrow: 1,
     paddingHorizontal: 16,
+    paddingTop: 4,
+    paddingBottom: 24,
     justifyContent: 'center',
+  },
+  emptyStateRoot: {
+    width: '100%',
+    alignItems: 'center',
+  },
+  emptyStateCard: {
+    width: '100%',
+    maxWidth: 360,
+    alignSelf: 'center',
+    backgroundColor: COLORS.background,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: COLORS.borderLight,
+    paddingHorizontal: 18,
+    paddingVertical: 18,
+    alignItems: 'center',
+    ...Platform.select({
+      ios: {
+        shadowColor: '#0f172a',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.06,
+        shadowRadius: 10,
+      },
+      android: { elevation: 2 },
+      default: {},
+    }),
+  },
+  emptyNoRidesMark: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    alignSelf: 'center',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 2,
+    backgroundColor: 'rgba(220, 38, 38, 0.12)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(220, 38, 38, 0.22)',
+  },
+  emptyStateTitle: {
+    marginTop: 6,
+    fontSize: 18,
+    fontWeight: '800',
+    letterSpacing: -0.3,
+    color: COLORS.text,
+    textAlign: 'center',
+  },
+  emptyStateBody: {
+    marginTop: 6,
+    fontSize: 14,
+    lineHeight: 19,
+    fontWeight: '500',
+    color: COLORS.textSecondary,
+    textAlign: 'center',
+  },
+  emptyCtaButton: {
+    marginTop: 14,
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: COLORS.primary,
+    paddingVertical: 12,
+    borderRadius: 12,
+  },
+  emptyCtaButtonText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: COLORS.white,
   },
   empty: {
     alignItems: 'center',
@@ -1710,6 +1816,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: COLORS.text,
     marginTop: 16,
+    textAlign: 'center',
   },
   emptySubtitle: {
     fontSize: 14,

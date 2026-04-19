@@ -405,7 +405,7 @@ export default function EditProfileScreen(): React.JSX.Element {
             setProfileBio(t);
             setBioError(undefined);
           }}
-          placeholder="A short line about you — driving style, interests, or how you use Drivido."
+          placeholder="A short line about you — driving style, interests, or how you use EcoPickO."
           placeholder="Write a short bio."
           placeholderTextColor={COLORS.textMuted}
           multiline

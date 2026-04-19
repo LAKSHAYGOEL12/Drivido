@@ -7,7 +7,6 @@ import {
   Platform,
   ScrollView,
   TouchableOpacity,
-  ActivityIndicator,
   Modal,
 } from 'react-native';
 import { Alert } from '../../utils/themedAlert';
@@ -26,7 +25,9 @@ import {
 import Button from '../../components/common/Button';
 import Input from '../../components/common/Input';
 import { COLORS } from '../../constants/colors';
+import { OFFLINE_USER_MESSAGE } from '../../constants/offlineMessaging';
 import AppLogo from '../../components/common/AppLogo';
+import LoadingSpinner from '../../components/common/LoadingSpinner';
 import { requestForegroundLocationAfterAuth } from '../../services/location-permission-auth';
 import { useAuth } from '../../contexts/AuthContext';
 import { resetNavigationToCompleteProfile } from '../../navigation/navigateToCompleteProfile';
@@ -200,13 +201,13 @@ export default function Login(): React.JSX.Element {
         return;
       }
       setSigningIn(false);
-      const failMsg = 'Could not complete sign-in. Check your connection and try again.';
+      const failMsg = OFFLINE_USER_MESSAGE;
       setErrors({ password: failMsg });
-      Alert.alert('Sign in failed', failMsg);
+      Alert.alert('Unable to sign in', failMsg);
     } catch (e: unknown) {
       const message = firebaseAuthErrorToMessage(e);
       setErrors({ password: message });
-      Alert.alert('Sign in failed', message);
+      Alert.alert('Unable to sign in', message);
       setSigningIn(false);
     }
   };
@@ -219,13 +220,15 @@ export default function Login(): React.JSX.Element {
             {overlaySuccess ? (
               <>
                 <Ionicons name="checkmark-circle" size={56} color={COLORS.primary} />
-                <Text style={styles.loaderText}>Welcome back!</Text>
+                <Text style={styles.loaderText}>You are signed in</Text>
               </>
             ) : (
-              <>
-                <ActivityIndicator size="large" color={COLORS.primary} />
-                <Text style={styles.loaderText}>Signing in…</Text>
-              </>
+              <LoadingSpinner
+                inline
+                size="lg"
+                label="Signing in…"
+                style={{ padding: 0 }}
+              />
             )}
           </View>
         </View>
@@ -245,7 +248,7 @@ export default function Login(): React.JSX.Element {
           <View style={styles.header}>
             <AppLogo />
             <Text style={styles.title}>Log in</Text>
-            <Text style={styles.subtitle}>Sign in with your email and password</Text>
+            <Text style={styles.subtitle}>Sign in with the email and password for your account.</Text>
           </View>
 
           <View style={styles.form}>
@@ -264,7 +267,7 @@ export default function Login(): React.JSX.Element {
               label="Password"
               value={password}
               onChangeText={setPassword}
-              placeholder="Your password"
+              placeholder="Password"
               error={errors.password}
               secureTextEntry={true}
               editable={!signingIn}

@@ -55,9 +55,9 @@ Book from passenger → notify **driver** → check **driver phone** (not passen
 
 ## 5. Phone / OS
 
-- **Settings → Apps → Drivido → Notifications** → allowed.
+- **Settings → Apps → EcoPickO → Notifications** → allowed.
 - **Do Not Disturb** off.
-- **Battery** → unrestricted / not restricted for Drivido (OEM “optimization”).
+- **Battery** → unrestricted / not restricted for EcoPickO (OEM “optimization”).
 - App **open in foreground** vs **background** — both should show something if `notification` + channels are correct; if only broken in one state, say which.
 
 ## 6. Rebuild after env change

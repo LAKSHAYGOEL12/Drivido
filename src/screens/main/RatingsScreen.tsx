@@ -18,7 +18,7 @@ export default function RatingsScreen(): React.JSX.Element {
   const { user } = useAuth();
   const route = useRoute<RouteProp<ProfileStackParamList, 'Ratings'>>();
   const targetUserId = (route.params?.userId ?? user?.id ?? '').trim();
-  const targetDisplayName = route.params?.displayName?.trim() || user?.name?.trim() || 'Drivido User';
+  const targetDisplayName = route.params?.displayName?.trim() || user?.name?.trim() || 'EcoPickO User';
   const targetDateOfBirth = (route.params as any)?.dateOfBirth;
   const targetAge = calculateAge(targetDateOfBirth);
   const isViewingSelf = Boolean(user?.id?.trim() && targetUserId === user.id.trim());

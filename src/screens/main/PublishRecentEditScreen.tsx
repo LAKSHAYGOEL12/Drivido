@@ -11,6 +11,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import NetInfo from '@react-native-community/netinfo';
 import { Alert } from '../../utils/themedAlert';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -20,6 +21,7 @@ import type { PublishStackParamList } from '../../navigation/types';
 import { findMainTabNavigator, findMainTabNavigatorWithOptions } from '../../navigation/findMainTabNavigator';
 import { resetPublishTabAndFocusYourRidesInMainTabs } from '../../navigation/resetPublishStackToRideRoot';
 import { COLORS } from '../../constants/colors';
+import { OFFLINE_HEADLINE, OFFLINE_SUBTITLE_RETRY } from '../../constants/offlineMessaging';
 import { useAuth } from '../../contexts/AuthContext';
 import api from '../../services/api';
 import { fetchRideDetailRaw } from '../../services/rideDetailCache';
@@ -63,6 +65,7 @@ import {
   routeParamsIncludePolylineField,
 } from '../../utils/ridePublisherCoords';
 import { formatPublishStyleDateLabel } from '../../utils/rideDisplay';
+import { showToast } from '../../utils/toast';
 
 const MIN_LEAD_MINUTES = 30;
 const CLOCK_SIZE = 232;
@@ -188,6 +191,22 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
   const [selectedRouteDistanceKm, setSelectedRouteDistanceKm] = useState<number | null>(null);
   const [routePolylineEncoded, setRoutePolylineEncoded] = useState<string | null>(null);
   const lastRouteFareCoordsKeyRef = useRef<string | null>(null);
+  const [netOnline, setNetOnline] = useState<boolean | null>(null);
+  const offline = netOnline === false;
+
+  useEffect(() => {
+    const unsub = NetInfo.addEventListener((s) => {
+      setNetOnline(s.isConnected === true && s.isInternetReachable !== false);
+    });
+    void NetInfo.fetch().then((s) => {
+      setNetOnline(s.isConnected === true && s.isInternetReachable !== false);
+    });
+    return () => unsub();
+  }, []);
+
+  const showOfflineHint = useCallback(() => {
+    showToast({ title: OFFLINE_HEADLINE, message: OFFLINE_SUBTITLE_RETRY, variant: 'info' });
+  }, []);
 
   const goBackFromRepublish = useCallback(() => {
     if (handlingBackRef.current) return;
@@ -463,6 +482,10 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
   );
 
   const openLocationPicker = (field: 'from' | 'to') => {
+    if (offline) {
+      showOfflineHint();
+      return;
+    }
     navigation.navigate('LocationPicker', {
       field,
       currentFrom: pickup,
@@ -477,6 +500,10 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
   };
 
   const openRoutePreviewFromForm = () => {
+    if (offline) {
+      showOfflineHint();
+      return;
+    }
     if (
       !isPublishStopsComplete({
         selectedFrom: pickup,
@@ -504,6 +531,10 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
   const proceedPublish = useCallback(
     async (vehicleExtra?: VehicleFormValues, rideOpts?: { vehicleId?: string }) => {
       if (publishLoading || !baseEntry) return;
+      if (netOnline === false) {
+        showToast({ title: OFFLINE_HEADLINE, message: OFFLINE_SUBTITLE_RETRY, variant: 'info' });
+        return;
+      }
       const fromList =
         mergedVehicles.find((x) => x.id === selectedVehicleId) ?? mergedVehicles[0];
       const resolved: VehicleFormValues | undefined = vehicleExtra
@@ -712,6 +743,7 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
       route.params,
       selectedRouteDistanceKm,
       routePolylineEncoded,
+      netOnline,
     ]
   );
 
@@ -779,6 +811,10 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
 
   const handlePublish = useCallback(async () => {
     if (publishLoading) return;
+    if (offline) {
+      showOfflineHint();
+      return;
+    }
     if (isTimeInPast || isTimeTooSoon) {
       alertDepartureTimeInPast();
       return;
@@ -837,6 +873,8 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
     rate,
     mergedVehicles.length,
     proceedPublish,
+    offline,
+    showOfflineHint,
   ]);
 
   const applyClockTime = useCallback((hour: number, minute: number) => {
@@ -899,6 +937,10 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
   };
 
   const openFareBottomSheet = () => {
+    if (offline) {
+      showOfflineHint();
+      return;
+    }
     if (!canSetFare) {
       alertRouteRequiredBeforePrice();
       return;
@@ -908,6 +950,10 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
   };
 
   const swapStops = () => {
+    if (offline) {
+      showOfflineHint();
+      return;
+    }
     const p = pickup;
     const d = destination;
     const pLat = pickupLatitude;
@@ -946,9 +992,15 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.card}>
+          {offline ? (
+            <View style={styles.publishOfflineBanner} accessibilityRole="alert">
+              <Ionicons name="cloud-offline-outline" size={16} color={COLORS.textSecondary} />
+              <Text style={styles.publishOfflineBannerText}>{OFFLINE_HEADLINE}</Text>
+            </View>
+          ) : null}
           <View style={styles.pickRow}>
             <TouchableOpacity
-              style={styles.pickRowMain}
+              style={[styles.pickRowMain, offline && styles.pickRowOfflineMuted]}
               onPress={() => openLocationPicker('from')}
               activeOpacity={0.75}
             >
@@ -969,7 +1021,11 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
             </TouchableOpacity>
           </View>
 
-          <TouchableOpacity style={styles.pickRow} onPress={() => openLocationPicker('to')} activeOpacity={0.75}>
+          <TouchableOpacity
+            style={[styles.pickRow, offline && styles.pickRowOfflineMuted]}
+            onPress={() => openLocationPicker('to')}
+            activeOpacity={0.75}
+          >
             <View style={styles.pickIconCol}>
               <View style={styles.redPin} />
             </View>
@@ -1722,5 +1778,26 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
     color: COLORS.white,
+  },
+  publishOfflineBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 7,
+    paddingHorizontal: 14,
+    marginBottom: 12,
+    backgroundColor: COLORS.backgroundSecondary,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: COLORS.border,
+  },
+  publishOfflineBannerText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLORS.text,
+    letterSpacing: -0.2,
+  },
+  pickRowOfflineMuted: {
+    opacity: 0.55,
   },
 });

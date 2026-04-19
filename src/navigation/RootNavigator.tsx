@@ -1,13 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import {
-  ActivityIndicator,
-  Animated,
-  Easing,
-  InteractionManager,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
+import { Animated, Easing, InteractionManager, StyleSheet, View } from 'react-native';
 import { DefaultTheme, NavigationContainer, type Theme } from '@react-navigation/native';
 import { rootNavigationRef } from './rootNavigationRef';
 import { useAuth } from '../contexts/AuthContext';
@@ -17,6 +9,7 @@ import { usePushNotifications } from '../hooks/usePushNotifications';
 import RootStack from './RootStack';
 import SearchRidesSkeleton from '../components/search/SearchRidesSkeleton';
 import { COLORS } from '../constants/colors';
+import LoadingSpinner from '../components/common/LoadingSpinner';
 import { resetNavigationToVerifyEmail } from './navigateToVerifyEmail';
 import { resetNavigationToCompleteProfile } from './navigateToCompleteProfile';
 import { resetNavigationToAccountDeactivated } from './navigateToAccountDeactivated';
@@ -387,8 +380,7 @@ export default function RootNavigator(): React.JSX.Element | null {
           pointerEvents="auto"
         >
           <View style={styles.logoutCard}>
-            <ActivityIndicator size="large" color={COLORS.primary} />
-            <Text style={styles.logoutTitle}>Shutting down</Text>
+            <LoadingSpinner inline size="lg" label="Shutting down…" style={{ padding: 0 }} />
           </View>
         </Animated.View>
       ) : null}
@@ -422,12 +414,5 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.08,
     shadowRadius: 24,
     elevation: 6,
-  },
-  logoutTitle: {
-    marginTop: 20,
-    fontSize: 18,
-    fontWeight: '700',
-    color: COLORS.text,
-    letterSpacing: -0.3,
   },
 });

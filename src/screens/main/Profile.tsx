@@ -15,6 +15,7 @@ import { Alert } from '../../utils/themedAlert';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect, useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { mainTabScrollBottomInset } from '../../navigation/tabBarMetrics';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useAuth } from '../../contexts/AuthContext';
 import { useNotificationPreferences } from '../../contexts/NotificationPreferencesContext';
@@ -38,9 +39,12 @@ import { unregisterPushTokenWithBackend } from '../../services/pushTokenRegistra
 import RidePreferenceChips from '../../components/profile/RidePreferenceChips';
 import { normalizeRidePreferenceIds } from '../../constants/ridePreferences';
 import SkeletonBlock from '../../components/common/SkeletonBlock';
+import NetInfo from '@react-native-community/netinfo';
+import { OFFLINE_HEADLINE } from '../../constants/offlineMessaging';
 
 export default function Profile(): React.JSX.Element {
   const insets = useSafeAreaInsets();
+  const mainTabScrollBottomPad = mainTabScrollBottomInset(insets.bottom);
   const { user, logout, refreshUser, patchUser, isAuthenticated, needsProfileCompletion } = useAuth();
   const { pushNotificationsAllowed, setPushNotificationsAllowed } = useNotificationPreferences();
   /** Keeps Switch visually ON while the enable confirmation alert is open (avoids controlled-value snap-back). */
@@ -50,7 +54,7 @@ export default function Profile(): React.JSX.Element {
   const { pickFromGallery, takePhoto } = useImagePicker();
   const navigation = useNavigation<NativeStackNavigationProp<ProfileStackParamList>>();
   const route = useRoute<RouteProp<ProfileStackParamList, 'ProfileHome' | 'ProfileEntry'>>();
-  const [profileName, setProfileName] = useState(user?.name?.trim() || 'Drivido User');
+  const [profileName, setProfileName] = useState(user?.name?.trim() || 'EcoPickO User');
   const [avgRating, setAvgRating] = useState(0);
   const [totalRatings, setTotalRatings] = useState(0);
   const [tripsLoading, setTripsLoading] = useState(true);
@@ -59,7 +63,7 @@ export default function Profile(): React.JSX.Element {
   const [tripsCompletedThisMonth, setTripsCompletedThisMonth] = useState(0);
   const [memberSinceLabel, setMemberSinceLabel] = useState('—');
   const [loading, setLoading] = useState(true);
-  const [backgroundRefreshing, setBackgroundRefreshing] = useState(false);
+  const [netOnline, setNetOnline] = useState<boolean | null>(null);
   const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
   const [avatarUploading, setAvatarUploading] = useState(false);
   const [photoMenuVisible, setPhotoMenuVisible] = useState(false);
@@ -82,7 +86,7 @@ export default function Profile(): React.JSX.Element {
   //   Otherwise you will see your own profile flash while params are still applying.
   const targetUserId = isProfileEntryScreen ? (routeUserId ?? '') : ((routeUserId ?? user?.id ?? '').trim());
 
-  const targetDisplayName = routeDisplayName || user?.name?.trim() || 'Drivido User';
+  const targetDisplayName = routeDisplayName || user?.name?.trim() || 'EcoPickO User';
   const isSelf = Boolean(user?.id?.trim() && targetUserId === user.id.trim());
   const profileRidePreferenceIds = useMemo(
     () =>
@@ -147,6 +151,16 @@ export default function Profile(): React.JSX.Element {
       setPushEnableConfirmPending(false);
     }
   }, [pushNotificationsAllowed]);
+
+  useEffect(() => {
+    const unsub = NetInfo.addEventListener((s) => {
+      setNetOnline(s.isConnected === true && s.isInternetReachable !== false);
+    });
+    void NetInfo.fetch().then((s) => {
+      setNetOnline(s.isConnected === true && s.isInternetReachable !== false);
+    });
+    return () => unsub();
+  }, []);
 
   const onPushNotificationsSwitch = useCallback(
     (value: boolean) => {
@@ -230,7 +244,6 @@ export default function Profile(): React.JSX.Element {
       prevProfileSubjectIdRef.current = targetUserId;
       const showBlockingLoader = profileSubjectChanged || !hasLoadedOnce;
       setLoading(showBlockingLoader);
-      setBackgroundRefreshing(!showBlockingLoader);
       setMemberSinceLabel(formatMemberSinceLabel(isSelf ? user?.createdAt : undefined));
       const tripsSubjectChanged = prevTripsSubjectIdRef.current !== targetUserId;
       prevTripsSubjectIdRef.current = targetUserId;
@@ -297,7 +310,6 @@ export default function Profile(): React.JSX.Element {
         } finally {
           if (!cancelled) {
             setLoading(false);
-            setBackgroundRefreshing(false);
             setHasLoadedOnce(true);
             setTripsLoading(false);
           }
@@ -330,7 +342,7 @@ export default function Profile(): React.JSX.Element {
         <View style={[styles.statusBarFill, { height: insets.top }]} />
         <ScrollView
           style={styles.screen}
-          contentContainerStyle={styles.skeletonContent}
+          contentContainerStyle={[styles.skeletonContent, { paddingBottom: mainTabScrollBottomPad }]}
           showsVerticalScrollIndicator={false}
         >
           <View style={styles.skeletonHeaderCard}>
@@ -377,15 +389,15 @@ export default function Profile(): React.JSX.Element {
       <View style={[styles.statusBarFill, { height: insets.top }]} />
       <ScrollView
         style={styles.screen}
-        contentContainerStyle={styles.content}
+        contentContainerStyle={[styles.content, { paddingBottom: mainTabScrollBottomPad }]}
         showsVerticalScrollIndicator={false}
         contentInsetAdjustmentBehavior={Platform.OS === 'ios' ? 'never' : undefined}
       >
       <View style={styles.headerCard}>
-        {backgroundRefreshing ? (
+        {netOnline === false ? (
           <View style={styles.offlineHintRow}>
             <Ionicons name="cloud-offline-outline" size={14} color={COLORS.textSecondary} />
-            <Text style={styles.offlineHintText}>Updating when network is available</Text>
+            <Text style={styles.offlineHintText}>{OFFLINE_HEADLINE}</Text>
           </View>
         ) : null}
         <View style={styles.headerTopRow}>
@@ -910,7 +922,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   skeletonContent: {
-    padding: 16,
+    paddingHorizontal: 16,
+    paddingTop: 16,
     gap: 12,
   },
   skeletonHeaderCard: {
@@ -941,8 +954,7 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.backgroundSecondary,
   },
   content: {
-    padding: 16,
-    paddingBottom: 30,
+    paddingHorizontal: 16,
     paddingTop: 8,
     gap: 10,
   },

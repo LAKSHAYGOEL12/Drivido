@@ -17,12 +17,13 @@ import {
   BackHandler,
   DeviceEventEmitter,
 } from 'react-native';
+import NetInfo from '@react-native-community/netinfo';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Alert } from '../../utils/themedAlert';
 import { useFocusEffect, useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RidesStackParamList } from '../../navigation/types';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useAuth } from '../../contexts/AuthContext';
 import { useOwnerPendingRequests } from '../../contexts/OwnerPendingRequestsContext';
 import api from '../../services/api';
@@ -42,6 +43,14 @@ import { loadOwnerCancelledRides } from '../../services/ownerCancelledRidesStora
 import { API } from '../../constants/API';
 import type { RideListItem } from '../../types/api';
 import { COLORS } from '../../constants/colors';
+import {
+  OFFLINE_A11Y_CACHED_LIST,
+  OFFLINE_HEADLINE,
+  OFFLINE_SUBTITLE_REFRESH,
+  OFFLINE_SUBTITLE_RETRY,
+  OFFLINE_USER_MESSAGE,
+} from '../../constants/offlineMessaging';
+import LoadingSpinner from '../../components/common/LoadingSpinner';
 import RideListCard from '../../components/rides/RideListCard';
 import {
   getRideScheduledAt,
@@ -89,8 +98,10 @@ import {
 } from '../../services/ratedRidesStorage';
 import { pickPublisherAvatarUrl } from '../../utils/avatarUrl';
 import { findMainTabNavigatorWithOptions } from '../../navigation/findMainTabNavigator';
+import { useMainTabScrollBottomInset } from '../../navigation/useMainTabScrollBottomInset';
 import RideCardSkeleton from '../../components/rides/RideCardSkeleton';
 import type { RecentPublishedEntry } from '../../services/recent-published-storage';
+import { loadYourRidesListCache, saveYourRidesListCache } from '../../services/yourRidesListCache';
 
 type FilterTab = YourRidesFilterTab;
 
@@ -382,13 +393,51 @@ function apiErrorStatus(e: unknown): number | undefined {
   return undefined;
 }
 
+/** True when the transport layer failed (offline, DNS, refused, timeout) — not HTTP 4xx/5xx bodies. */
+function isLikelyNetworkFailure(e: unknown): boolean {
+  if (!e || typeof e !== 'object') return false;
+  const err = e as {
+    message?: unknown;
+    code?: unknown;
+    response?: unknown;
+  };
+  if (err.response != null) return false;
+  const code = String(err.code ?? '');
+  if (code === 'ERR_NETWORK' || code === 'ECONNABORTED') return true;
+  const msg = String(err.message ?? '').toLowerCase();
+  return (
+    msg.includes('network request failed') ||
+    msg.includes('network error') ||
+    msg.includes('failed to fetch') ||
+    msg.includes('aborted') ||
+    msg.includes('load failed') ||
+    msg.includes('internet connection appears') ||
+    (msg.includes('connection') && msg.includes('refused')) ||
+    (msg.includes('could not connect') && msg.includes('server')) ||
+    msg.includes('timed out') ||
+    msg.includes('timeout') ||
+    msg.includes('the internet connection appears to be offline')
+  );
+}
+
+type ApiGetOrNullResult = {
+  data: unknown | null;
+  status?: number;
+  /** Request never reached a JSON body (offline / DNS / timeout / connection reset). */
+  networkError: boolean;
+};
+
 /** GET without throwing — used to combine results and avoid parallel rate-limit bursts. */
-async function apiGetOrNull(path: string): Promise<{ data: unknown | null; status?: number }> {
+async function apiGetOrNull(path: string): Promise<ApiGetOrNullResult> {
   try {
     const data = await api.get<unknown>(path);
-    return { data };
+    return { data, networkError: false };
   } catch (e: unknown) {
-    return { data: null, status: apiErrorStatus(e) };
+    return {
+      data: null,
+      status: apiErrorStatus(e),
+      networkError: isLikelyNetworkFailure(e),
+    };
   }
 }
 
@@ -671,6 +720,7 @@ export default function YourRides(): React.JSX.Element {
   const navigation = useNavigation<YourRidesNavProp>();
   const route = useRoute<RouteProp<RidesStackParamList, 'YourRidesList'>>();
   const insets = useSafeAreaInsets();
+  const listContentBottomPad = useMainTabScrollBottomInset();
   const { user } = useAuth();
   const { syncFromRideList } = useOwnerPendingRequests();
   const currentUserId = (user?.id ?? '').trim();
@@ -683,6 +733,12 @@ export default function YourRides(): React.JSX.Element {
   ridesRef.current = rides;
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  /** Empty list because requests failed at the network layer (not “you have no trips”). */
+  const [offlineEmpty, setOfflineEmpty] = useState(false);
+  /** `null` until first NetInfo read — avoids treating “unknown” as offline. */
+  const [netConnected, setNetConnected] = useState<boolean | null>(null);
+  /** List was restored from AsyncStorage while offline. */
+  const [showingStaleFromCache, setShowingStaleFromCache] = useState(false);
   /** Softer copy + animation right after booking navigates here. */
   const [justBookedWelcome, setJustBookedWelcome] = useState(false);
   /** Soft / focus refetch: keep filters + list chrome; show spinner in list area instead of empty state. */
@@ -911,14 +967,75 @@ export default function YourRides(): React.JSX.Element {
     };
   }, [ratingKeyboardOffset]);
 
+  useEffect(() => {
+    const unsub = NetInfo.addEventListener((state) => {
+      const online = state.isConnected === true && state.isInternetReachable !== false;
+      setNetConnected(online);
+      if (online) {
+        setShowingStaleFromCache(false);
+      }
+    });
+    void NetInfo.fetch().then((s) => {
+      const online = s.isConnected === true && s.isInternetReachable !== false;
+      setNetConnected(online);
+    });
+    return () => unsub();
+  }, []);
+
   const fetchRides = useCallback(async (softRefresh = false) => {
     setError(null);
+
+    const netState = await NetInfo.fetch();
+    const online = netState.isConnected === true && netState.isInternetReachable !== false;
+    setNetConnected(online);
+
+    if (!online && softRefresh && ridesRef.current.length > 0) {
+      setBackgroundRefreshing(false);
+      setLoading(false);
+      setJustBookedWelcome(false);
+      return;
+    }
+
+    if (!online && !softRefresh && ridesRef.current.length > 0) {
+      setLoading(false);
+      setBackgroundRefreshing(false);
+      setJustBookedWelcome(false);
+      return;
+    }
+
+    const ownerId = currentUserId.trim();
+
+    if (!online && ridesRef.current.length === 0) {
+      if (ownerId) {
+        const cached = await loadYourRidesListCache(ownerId);
+        if (cached && cached.rides.length > 0) {
+          setRides(cached.rides);
+          setBookedRideIds(new Set(cached.bookedIds));
+          setCachedAllRidesCount(cached.allRidesCount);
+          setOfflineEmpty(false);
+          setError(null);
+          setShowingStaleFromCache(true);
+          setLoading(false);
+          setBackgroundRefreshing(false);
+          setJustBookedWelcome(false);
+          return;
+        }
+      }
+      setOfflineEmpty(true);
+      setError(null);
+      setLoading(false);
+      setBackgroundRefreshing(false);
+      setJustBookedWelcome(false);
+      return;
+    }
+
+    setOfflineEmpty(false);
+
     if (softRefresh) {
       setBackgroundRefreshing(true);
     } else {
       setLoading(true);
     }
-    const ownerId = currentUserId.trim();
     try {
       let saw429 = false;
 
@@ -947,10 +1064,11 @@ export default function YourRides(): React.JSX.Element {
       }
 
       /** Legacy backends: driver list only on GET /rides/mine when /my-rides errors out. */
+      let mineResMeta: ApiGetOrNullResult = { data: null, networkError: false };
       if (publishedRaw.length === 0 && myPublishedRes.data == null) {
-        const mineRes = await apiGetOrNull(API.endpoints.rides.mine);
-        if (mineRes.data != null) {
-          publishedRaw = extractRideListFromResponse(mineRes.data);
+        mineResMeta = await apiGetOrNull(API.endpoints.rides.mine);
+        if (mineResMeta.data != null) {
+          publishedRaw = extractRideListFromResponse(mineResMeta.data);
         }
       }
 
@@ -1141,12 +1259,23 @@ export default function YourRides(): React.JSX.Element {
         }
       }
 
+      const networkHitCount = [
+        myPublishedRes.networkError,
+        browseListResult.networkError,
+        bookedResult.networkError,
+        bookingsWrap.networkError,
+        mineResMeta.networkError,
+      ].filter(Boolean).length;
+
       if (list.length === 0 && saw429) {
         setError(
           'Too many requests (429): your backend is rate-limiting. Wait 30–60 seconds, pull to refresh, or raise limits for development.'
         );
+        setOfflineEmpty(false);
       } else {
         setError(null);
+        /** Don’t replace a populated list with an empty merge on pull-to-refresh while offline. */
+        setOfflineEmpty(!softRefresh && list.length === 0 && networkHitCount >= 1);
       }
 
       /** Keep passenger ride ids for filters when owner cancels but list still has booking/status merge. */
@@ -1164,40 +1293,69 @@ export default function YourRides(): React.JSX.Element {
         }
       }
 
-      setCachedAllRidesCount(list.filter(matchesAllRidesTab).length);
-      if (__DEV__) {
-        const devCtx: YourRidesListContext = { userId: ownerId, bookedRideIds: bookedIds };
-        const mergedWithId = list.filter((r) => (r.id ?? '').trim() !== '').length;
-        console.log('[YourRides] ride payload / display counts', {
-          payloadRowsFromMyRidesOrMine: publishedRaw.length,
-          payloadRowsFromRidesBooked: bookedRaw.length,
-          payloadRowsFromRidesBrowse: browseRaw.length,
-          payloadRowsFromBookingsList: bookingsPayloadRowCount,
-          normalizedDriverRides: published.filter((r) => (r.id ?? '').trim() !== '').length,
-          normalizedBookedRides: bookedPassenger.filter((r) => (r.id ?? '').trim() !== '').length,
-          normalizedBrowseRides: browseCatalog.filter((r) => (r.id ?? '').trim() !== '').length,
-          mergedUniqueRidesInList: list.length,
-          mergedRidesWithNonEmptyId: mergedWithId,
-          cardsShownMyRidesTab: countForTab(list, 'myRides', devCtx),
-          cardsShownAllRidesTab: countForTab(list, 'allRides', devCtx),
-          cardsShownPastRidesTab: countForTab(list, 'pastRides', devCtx),
-        });
-        devLogYourRidesMyTabScheduleBreakdown(list, published, devCtx, ownerId);
-        devLogLivePublishedRidePayloads(published, publishedRaw);
+      const preserveListOnSoftNetworkEmpty =
+        softRefresh && list.length === 0 && networkHitCount >= 1 && ridesRef.current.length > 0;
+
+      if (!preserveListOnSoftNetworkEmpty) {
+        setCachedAllRidesCount(list.filter(matchesAllRidesTab).length);
+        if (__DEV__) {
+          const devCtx: YourRidesListContext = { userId: ownerId, bookedRideIds: bookedIds };
+          const mergedWithId = list.filter((r) => (r.id ?? '').trim() !== '').length;
+          console.log('[YourRides] ride payload / display counts', {
+            payloadRowsFromMyRidesOrMine: publishedRaw.length,
+            payloadRowsFromRidesBooked: bookedRaw.length,
+            payloadRowsFromRidesBrowse: browseRaw.length,
+            payloadRowsFromBookingsList: bookingsPayloadRowCount,
+            normalizedDriverRides: published.filter((r) => (r.id ?? '').trim() !== '').length,
+            normalizedBookedRides: bookedPassenger.filter((r) => (r.id ?? '').trim() !== '').length,
+            normalizedBrowseRides: browseCatalog.filter((r) => (r.id ?? '').trim() !== '').length,
+            mergedUniqueRidesInList: list.length,
+            mergedRidesWithNonEmptyId: mergedWithId,
+            cardsShownMyRidesTab: countForTab(list, 'myRides', devCtx),
+            cardsShownAllRidesTab: countForTab(list, 'allRides', devCtx),
+            cardsShownPastRidesTab: countForTab(list, 'pastRides', devCtx),
+          });
+          devLogYourRidesMyTabScheduleBreakdown(list, published, devCtx, ownerId);
+          devLogLivePublishedRidePayloads(published, publishedRaw);
+        }
+        setRides(list);
+        setBookedRideIds(bookedIds);
+        setShowingStaleFromCache(false);
+        if (ownerId && list.length > 0) {
+          void saveYourRidesListCache(ownerId, {
+            rides: list,
+            bookedIds: [...bookedIds],
+            allRidesCount: list.filter(matchesAllRidesTab).length,
+            savedAt: Date.now(),
+          });
+        }
       }
-      setRides(list);
-      setBookedRideIds(bookedIds);
     } catch (e: unknown) {
       let message = e && typeof e === 'object' && 'message' in e
         ? String((e as { message: unknown }).message)
         : 'Failed to load rides.';
       if (message === 'Network request failed' || message === 'Aborted' || message.includes('timed out')) {
-        message = 'Cannot reach server. Check that the backend is running and your device is on the same network.';
+        message = OFFLINE_USER_MESSAGE;
       }
+      const networkish =
+        isLikelyNetworkFailure(e) ||
+        message.toLowerCase().includes('could not reach the server') ||
+        message.toLowerCase().includes('check your connection');
       if (!softRefresh) {
+        if (networkish) {
+          setOfflineEmpty(ridesRef.current.length === 0);
+          setError(null);
+        } else {
+          setOfflineEmpty(false);
+          setError(message);
+        }
+        const keepExistingList = ridesRef.current.length > 0 && networkish;
+        if (!keepExistingList) {
+          setRides([]);
+          setBookedRideIds(new Set());
+        }
+      } else if (!networkish) {
         setError(message);
-        setRides([]);
-        setBookedRideIds(new Set());
       }
     } finally {
       setLoading(false);
@@ -1259,25 +1417,50 @@ export default function YourRides(): React.JSX.Element {
 
   useFocusEffect(
     useCallback(() => {
-      // Main list screen should always show bottom tabs.
-      const mainTabs = findMainTabNavigatorWithOptions(navigation as { getParent?: () => unknown });
-      mainTabs?.setOptions?.({ tabBarStyle: undefined });
-
-      const afterBook = route.params?._afterBookRefresh;
-      if (afterBook != null) {
-        setJustBookedWelcome(true);
-        setFilter('myRides');
-        navigation.setParams({ _afterBookRefresh: undefined });
-        setRides([]);
-        setBookedRideIds(new Set());
-        setCachedAllRidesCount(0);
-        setError(null);
-        setLoading(true);
-        void fetchRides(false);
-        return;
-      }
-      void fetchRides(ridesRef.current.length > 0);
-    }, [fetchRides, navigation, route.params])
+      let cancelled = false;
+      const run = async () => {
+        const afterBook = route.params?._afterBookRefresh;
+        if (afterBook != null) {
+          setJustBookedWelcome(true);
+          setFilter('myRides');
+          navigation.setParams({ _afterBookRefresh: undefined });
+          setRides([]);
+          setBookedRideIds(new Set());
+          setCachedAllRidesCount(0);
+          setError(null);
+          setShowingStaleFromCache(false);
+          setLoading(true);
+          await fetchRides(false);
+          return;
+        }
+        const net = await NetInfo.fetch();
+        if (cancelled) return;
+        const online = net.isConnected === true && net.isInternetReachable !== false;
+        setNetConnected(online);
+        if (!online && currentUserId.trim()) {
+          const cached = await loadYourRidesListCache(currentUserId.trim());
+          if (cancelled) return;
+          if (cached && cached.rides.length > 0) {
+            setRides(cached.rides);
+            setBookedRideIds(new Set(cached.bookedIds));
+            setCachedAllRidesCount(cached.allRidesCount);
+            setOfflineEmpty(false);
+            setError(null);
+            setShowingStaleFromCache(true);
+            setLoading(false);
+            void fetchRides(true);
+            return;
+          }
+          void fetchRides(false);
+          return;
+        }
+        void fetchRides(ridesRef.current.length > 0);
+      };
+      void run();
+      return () => {
+        cancelled = true;
+      };
+    }, [fetchRides, navigation, route.params, currentUserId])
   );
 
   const goRideDetail = useCallback(
@@ -1647,42 +1830,113 @@ export default function YourRides(): React.JSX.Element {
     [rides, listCtx, currentUserId]
   );
 
+  const showOfflineInTabEmpty = netConnected === false && !backgroundRefreshing;
+
+  const staleTripsBanner =
+    rides.length > 0 && (netConnected === false || showingStaleFromCache) ? (
+      <View
+        style={styles.staleTripsBanner}
+        accessibilityRole="alert"
+        accessibilityLabel={OFFLINE_A11Y_CACHED_LIST}
+      >
+        <Ionicons name="cloud-offline-outline" size={16} color={COLORS.textSecondary} />
+        <Text style={styles.staleTripsBannerText}>{OFFLINE_HEADLINE}</Text>
+      </View>
+    ) : null;
+
   const initialLoadBlock =
-    loading && rides.length === 0 && !error ? (
+    loading && rides.length === 0 && !error && netConnected !== false ? (
       <View style={styles.skeletonListWrap}>
         {Array.from({ length: 4 }).map((_, idx) => (
           <RideCardSkeleton key={`your-rides-skeleton-${idx}`} />
         ))}
         <View style={styles.skeletonHint}>
           <Text style={styles.skeletonHintText}>
-            {justBookedWelcome ? 'Syncing your bookings…' : 'Loading your rides…'}
+            {justBookedWelcome ? 'Updating your bookings…' : 'Loading trips…'}
           </Text>
         </View>
       </View>
     ) : null;
 
+  const initialOfflineBlock =
+    rides.length === 0 && !loading && !error && (offlineEmpty || netConnected === false) ? (
+      <View style={styles.offlineFullBleed}>
+        <View style={[styles.offlineCard, styles.offlineCardCompact]}>
+          <View style={[styles.offlineIconWrap, styles.offlineIconWrapCompact]}>
+            <Ionicons name="cloud-offline-outline" size={28} color={COLORS.textSecondary} />
+          </View>
+          <Text style={[styles.offlineTitle, styles.offlineTitleCompact]}>{OFFLINE_HEADLINE}</Text>
+          <Text style={[styles.offlineSubtitle, styles.offlineSubtitleCompact]}>{OFFLINE_SUBTITLE_RETRY}</Text>
+          <TouchableOpacity
+            style={styles.offlineRetryBtn}
+            activeOpacity={0.88}
+            accessibilityRole="button"
+            accessibilityLabel="Try again"
+            onPress={() => {
+              clearRideDetailCache();
+              void fetchRides(false);
+            }}
+          >
+            <Ionicons name="refresh" size={20} color={COLORS.white} />
+            <Text style={styles.offlineRetryText}>Try again</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    ) : null;
+
   const initialErrorBlock =
-    error && rides.length === 0 ? (
-      <View style={styles.listBody}>
-        <Ionicons name="alert-circle-outline" size={48} color={COLORS.error} />
-        <Text style={styles.errorText}>{error}</Text>
-        <TouchableOpacity
-          style={styles.retryButton}
-          onPress={() => {
-            clearRideDetailCache();
-            void fetchRides(false);
-          }}
-        >
-          <Text style={styles.retryButtonText}>Retry</Text>
-        </TouchableOpacity>
+    !offlineEmpty && error && rides.length === 0 ? (
+      <View style={styles.offlineFullBleed}>
+        <View style={styles.offlineCard}>
+          <View style={[styles.offlineIconWrap, styles.offlineIconWrapDanger]}>
+            <Ionicons name="alert-circle-outline" size={38} color={COLORS.error} />
+          </View>
+          <Text style={styles.offlineTitle}>{`Couldn't load trips`}</Text>
+          <Text style={styles.offlineErrorDetail}>{error}</Text>
+          <TouchableOpacity
+            style={styles.offlineRetryBtn}
+            activeOpacity={0.88}
+            accessibilityRole="button"
+            accessibilityLabel="Try again"
+            onPress={() => {
+              clearRideDetailCache();
+              void fetchRides(false);
+            }}
+          >
+            <Ionicons name="refresh" size={20} color={COLORS.white} />
+            <Text style={styles.offlineRetryText}>Try again</Text>
+          </TouchableOpacity>
+        </View>
       </View>
     ) : null;
   const blockingRefreshBlock = blockingRefreshLoading ? (
     <View style={styles.listBody}>
-      <ActivityIndicator size="large" color={COLORS.primary} />
-      <Text style={styles.blockingLoaderCaption}>Updating rides...</Text>
+      <LoadingSpinner inline size="lg" label="Refreshing trips…" style={{ padding: 12 }} />
     </View>
   ) : null;
+
+  const renderTripsEmptyCard = useCallback((variant: 'upcoming' | 'past') => {
+    const isPast = variant === 'past';
+    return (
+      <View style={styles.tripsEmptyRoot}>
+        <View style={styles.tripsEmptyCard}>
+          <View style={styles.tripsEmptyMark} accessibilityRole="image" accessibilityLabel={isPast ? 'No past trips' : 'No upcoming trips'}>
+            <MaterialCommunityIcons
+              name={isPast ? 'history' : 'car-off'}
+              size={isPast ? 34 : 38}
+              color={COLORS.error}
+            />
+          </View>
+          <Text style={styles.tripsEmptyTitle}>{isPast ? 'No past trips' : 'No upcoming trips'}</Text>
+          <Text style={styles.tripsEmptyBody}>
+            {isPast
+              ? 'Ended or cancelled trips appear here after the ride is complete.'
+              : 'Publish or book a ride to see it here. Pull to refresh.'}
+          </Text>
+        </View>
+      </View>
+    );
+  }, []);
 
   return (
     <View style={styles.wrapper}>
@@ -1723,12 +1977,17 @@ export default function YourRides(): React.JSX.Element {
         </TouchableOpacity>
       </View>
       </View>
-      {initialLoadBlock ?? initialErrorBlock ?? blockingRefreshBlock ?? (
+      {staleTripsBanner}
+      {initialLoadBlock ?? initialOfflineBlock ?? initialErrorBlock ?? blockingRefreshBlock ?? (
         filter === 'allRides' ? (
           <FlatList
             data={allRidesFlat}
             keyExtractor={(item) => item.id}
-            contentContainerStyle={allRidesFlat.length === 0 ? styles.emptyList : styles.list}
+            contentContainerStyle={
+              allRidesFlat.length === 0
+                ? [styles.emptyList, { paddingBottom: listContentBottomPad }]
+                : [styles.list, { paddingBottom: listContentBottomPad }]
+            }
             refreshControl={
               <RefreshControl
                 refreshing={loading}
@@ -1741,18 +2000,15 @@ export default function YourRides(): React.JSX.Element {
             }
             ListEmptyComponent={
               backgroundRefreshing ? (
-                <View style={styles.empty}>
-                  <ActivityIndicator size="large" color={COLORS.primary} />
-                  <Text style={styles.emptySubtitle}>Loading rides…</Text>
+                <LoadingSpinner inline size="md" label="Loading trips…" style={{ paddingVertical: 28 }} />
+              ) : showOfflineInTabEmpty ? (
+                <View style={[styles.empty, styles.emptyOffline]}>
+                  <Ionicons name="cloud-offline-outline" size={40} color={COLORS.textMuted} />
+                  <Text style={styles.emptyTitle}>{OFFLINE_HEADLINE}</Text>
+                  <Text style={styles.emptySubtitle}>{OFFLINE_SUBTITLE_REFRESH}</Text>
                 </View>
               ) : (
-                <View style={styles.empty}>
-                  <Ionicons name="car-outline" size={56} color={COLORS.textMuted} />
-                  <Text style={styles.emptyTitle}>No upcoming rides</Text>
-                  <Text style={styles.emptySubtitle}>
-                    Nothing scheduled ahead right now. Pull to refresh or check back later.
-                  </Text>
-                </View>
+                renderTripsEmptyCard('upcoming')
               )
             }
             renderItem={({ item }) => (
@@ -1782,8 +2038,8 @@ export default function YourRides(): React.JSX.Element {
             stickySectionHeadersEnabled={false}
             contentContainerStyle={
               (filter === 'myRides' ? myRidesSections : pastRidesSections).length === 0
-                ? styles.emptyList
-                : styles.list
+                ? [styles.emptyList, { paddingBottom: listContentBottomPad }]
+                : [styles.list, { paddingBottom: listContentBottomPad }]
             }
             refreshControl={
               <RefreshControl
@@ -1797,22 +2053,15 @@ export default function YourRides(): React.JSX.Element {
             }
             ListEmptyComponent={
               backgroundRefreshing ? (
-                <View style={styles.empty}>
-                  <ActivityIndicator size="large" color={COLORS.primary} />
-                  <Text style={styles.emptySubtitle}>Loading rides…</Text>
+                <LoadingSpinner inline size="md" label="Loading trips…" style={{ paddingVertical: 28 }} />
+              ) : showOfflineInTabEmpty ? (
+                <View style={[styles.empty, styles.emptyOffline]}>
+                  <Ionicons name="cloud-offline-outline" size={40} color={COLORS.textMuted} />
+                  <Text style={styles.emptyTitle}>{OFFLINE_HEADLINE}</Text>
+                  <Text style={styles.emptySubtitle}>{OFFLINE_SUBTITLE_REFRESH}</Text>
                 </View>
               ) : (
-                <View style={styles.empty}>
-                  <Ionicons name="car-outline" size={56} color={COLORS.textMuted} />
-                  <Text style={styles.emptyTitle}>
-                    {filter === 'myRides' ? 'No upcoming rides' : 'No past rides'}
-                  </Text>
-                  <Text style={styles.emptySubtitle}>
-                    {filter === 'myRides'
-                      ? 'Publish a ride or book a seat — your active trips show up here, split by driving vs riding.'
-                      : 'When a ride ends or is cancelled, it moves here (for rides you hosted or joined).'}
-                  </Text>
-                </View>
+                renderTripsEmptyCard(filter === 'pastRides' ? 'past' : 'upcoming')
               )
             }
             renderItem={({ item }) => (
@@ -2111,39 +2360,183 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     lineHeight: 22,
   },
-  blockingLoaderCaption: {
-    marginTop: 12,
-    fontSize: 13,
-    fontWeight: '600',
-    color: COLORS.textSecondary,
-    letterSpacing: 0.1,
+  staleTripsBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    gap: 8,
+    paddingVertical: 7,
+    paddingHorizontal: 14,
+    backgroundColor: COLORS.backgroundSecondary,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: COLORS.border,
   },
-  errorText: {
+  staleTripsBannerText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLORS.text,
+    letterSpacing: -0.2,
+  },
+  offlineFullBleed: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: COLORS.backgroundSecondary,
+    paddingHorizontal: 20,
+    paddingVertical: 28,
+  },
+  offlineCard: {
+    width: '100%',
+    maxWidth: 400,
+    backgroundColor: COLORS.surface,
+    borderRadius: 20,
+    paddingVertical: 28,
+    paddingHorizontal: 24,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: COLORS.border,
+    shadowColor: '#0f172a',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.06,
+    shadowRadius: 16,
+    elevation: 3,
+  },
+  offlineCardCompact: {
+    paddingVertical: 22,
+    paddingHorizontal: 22,
+    borderRadius: 16,
+  },
+  offlineIconWrap: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: COLORS.backgroundSecondary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    alignSelf: 'center',
+  },
+  offlineIconWrapCompact: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+  },
+  offlineIconWrapDanger: {
+    backgroundColor: 'rgba(220, 38, 38, 0.08)',
+  },
+  offlineTitle: {
+    marginTop: 16,
+    fontSize: 20,
+    fontWeight: '700',
+    color: COLORS.text,
+    textAlign: 'center',
+    letterSpacing: -0.35,
+  },
+  offlineTitleCompact: {
     marginTop: 12,
+    fontSize: 18,
+    letterSpacing: -0.28,
+  },
+  offlineSubtitle: {
+    marginTop: 10,
     fontSize: 15,
+    lineHeight: 22,
+    color: COLORS.textSecondary,
+    textAlign: 'center',
+  },
+  offlineSubtitleCompact: {
+    marginTop: 6,
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  offlineErrorDetail: {
+    marginTop: 10,
+    fontSize: 14,
+    lineHeight: 21,
     color: COLORS.error,
     textAlign: 'center',
   },
-  retryButton: {
-    marginTop: 16,
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-    backgroundColor: COLORS.primary,
-    borderRadius: 10,
+  emptyOffline: {
+    paddingVertical: 32,
   },
-  retryButtonText: {
+  offlineRetryBtn: {
+    marginTop: 18,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    alignSelf: 'stretch',
+    backgroundColor: COLORS.primary,
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    borderRadius: 12,
+    gap: 8,
+  },
+  offlineRetryText: {
     fontSize: 16,
     fontWeight: '600',
-    color: COLORS.text,
+    color: COLORS.white,
   },
   list: {
     padding: 16,
-    paddingBottom: 32,
   },
   emptyList: {
     flexGrow: 1,
-    padding: 16,
+    paddingHorizontal: 16,
+    paddingTop: 4,
+    paddingBottom: 24,
     justifyContent: 'center',
+  },
+  tripsEmptyRoot: {
+    width: '100%',
+    alignItems: 'center',
+  },
+  tripsEmptyCard: {
+    width: '100%',
+    maxWidth: 360,
+    alignSelf: 'center',
+    backgroundColor: COLORS.background,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: COLORS.borderLight,
+    paddingHorizontal: 18,
+    paddingVertical: 18,
+    alignItems: 'center',
+    ...Platform.select({
+      ios: {
+        shadowColor: '#0f172a',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.06,
+        shadowRadius: 10,
+      },
+      android: { elevation: 2 },
+      default: {},
+    }),
+  },
+  tripsEmptyMark: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    alignSelf: 'center',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 2,
+    backgroundColor: 'rgba(220, 38, 38, 0.12)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(220, 38, 38, 0.22)',
+  },
+  tripsEmptyTitle: {
+    marginTop: 6,
+    fontSize: 18,
+    fontWeight: '800',
+    letterSpacing: -0.3,
+    color: COLORS.text,
+    textAlign: 'center',
+  },
+  tripsEmptyBody: {
+    marginTop: 6,
+    fontSize: 14,
+    lineHeight: 19,
+    fontWeight: '500',
+    color: COLORS.textSecondary,
+    textAlign: 'center',
   },
   empty: {
     alignItems: 'center',

@@ -1,5 +1,5 @@
 /**
- * Exchange Firebase ID token for Drivido API JWTs.
+ * Exchange Firebase ID token for EcoPickO API JWTs.
  * The backend verifies the token with Firebase Admin and returns `{ token, refreshToken, user }`.
  */
 import { resolveApiBaseOrigin } from '../config/apiBaseUrl';
@@ -145,7 +145,7 @@ export async function exchangeFirebaseIdTokenForBackendSession(
 ): Promise<BackendAuthExchangeResult> {
   const base = resolveApiBaseOrigin().trim();
   if (!base) {
-    throw new Error('EXPO_PUBLIC_API_URL is not set — cannot reach Drivido API.');
+    throw new Error('EXPO_PUBLIC_API_URL is not set — cannot reach the EcoPickO API.');
   }
   const path = API.endpoints.auth.firebase.startsWith('/')
     ? API.endpoints.auth.firebase

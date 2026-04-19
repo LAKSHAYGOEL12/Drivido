@@ -94,7 +94,7 @@ export default function ReactivateAccount(): React.JSX.Element {
             <AppLogo />
             <Text style={styles.title}>Account deactivated</Text>
             <Text style={styles.subtitle}>
-              You’re signed in as <Text style={styles.emphasis}>{displayEmail}</Text>. Reactivate to use Drivido
+              You’re signed in as <Text style={styles.emphasis}>{displayEmail}</Text>. Reactivate to use EcoPickO
               again — your trip counts, ratings, and profile come back as normal.
             </Text>
             <Text style={styles.note}>

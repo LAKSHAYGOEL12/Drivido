@@ -27,7 +27,7 @@ export default function AppLogo({ style }: Props): React.JSX.Element {
     <View
       style={[styles.wrap, { width: boxWidth, aspectRatio: LOGO_ASPECT }, style]}
       accessibilityRole="image"
-      accessibilityLabel="App logo"
+      accessibilityLabel="EcoPickO logo"
     >
       <Image source={IMAGES.logo} style={styles.image} resizeMode="contain" />
     </View>

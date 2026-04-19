@@ -10,7 +10,7 @@ import { COLORS } from '../../constants/colors';
 import { rootNavigationRef } from '../../navigation/rootNavigationRef';
 
 const SUPPORT_MAILTO =
-  'mailto:developers@drivido.in?subject=' + encodeURIComponent('Drivido — Reactivate account');
+  'mailto:developers@drivido.in?subject=' + encodeURIComponent('EcoPickO — Reactivate account');
 
 type Props = RootStackScreenProps<'AccountDeactivated'>;
 

@@ -50,7 +50,7 @@ If the app registered **FCM** but the server only uses **Expo batch**, nothing w
 
 ## 5. Android OS
 
-- **Battery optimization** off for Drivido (optional but helps).
+- **Battery optimization** off for EcoPickO (optional but helps).
 - **Do Not Disturb** off for test.
 - Notifications not blocked per-channel (ride events often use `rides` **channelId** on the server payload).
 

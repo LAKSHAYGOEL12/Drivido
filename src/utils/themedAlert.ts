@@ -1,6 +1,6 @@
 /**
  * Drop-in replacement for `Alert` from react-native: same `Alert.alert(title, message?, buttons?)` shape,
- * rendered as a themed in-app modal (Drivido colors, dark mode, iOS/Android-friendly layout).
+ * rendered as a themed in-app modal (EcoPickO / brand colors, dark mode, iOS/Android-friendly layout).
  */
 import { showAppAlert, type AppAlertButton, type AppAlertOptions } from './appAlert';
 

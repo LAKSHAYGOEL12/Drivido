@@ -2,26 +2,35 @@ import React from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS } from '../../constants/colors';
+import {
+  FAB_VISUAL_RISE,
+  mainTabBarChromeLayoutStyle,
+  mainTabBarSlotHeight,
+  mainTabScrollBottomInset,
+  TAB_BAR_EXTRA_BOTTOM_INSET,
+  TAB_ROW_MIN,
+} from '../../navigation/tabBarMetrics';
 
 const BAR = '#e8eef4';
 const BAR_SOFT = '#f1f5f9';
-
-/** Matches `BottomTabs` — extra inset above home indicator, not duplicated in `tabBarStyle.paddingBottom`. */
-const TAB_BAR_EXTRA_BOTTOM_INSET = 6;
 
 /**
  * Placeholder layout aligned with main tabs + `SearchRides` — cold-start auth restore.
  */
 export default function SearchRidesSkeleton(): React.JSX.Element {
   const { bottom: safeBottom } = useSafeAreaInsets();
-  const tabBarPaddingBottom = safeBottom + TAB_BAR_EXTRA_BOTTOM_INSET;
+  const scrollBottomPad = mainTabScrollBottomInset(safeBottom);
+  const tabBarSlotHeight = mainTabBarSlotHeight(safeBottom);
+  /** Matches {@link MainBottomTabBar} (`BottomTabs.tsx`): pill sits on bottom inset, FAB anchored in same slot. */
+  const bottomPad = safeBottom + TAB_BAR_EXTRA_BOTTOM_INSET;
+  const fabAnchorBottom = bottomPad + TAB_ROW_MIN / 2 - FAB_VISUAL_RISE;
 
   return (
     <View style={styles.shell}>
       <SafeAreaView style={styles.bodySafe} edges={['top']}>
         <ScrollView
           style={styles.scroll}
-          contentContainerStyle={styles.scrollContent}
+          contentContainerStyle={[styles.scrollContent, { paddingBottom: scrollBottomPad }]}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
         >
@@ -85,36 +94,54 @@ export default function SearchRidesSkeleton(): React.JSX.Element {
 
           <View style={styles.sessionRow} accessibilityLabel="Loading session">
             <ActivityIndicator size="small" color={COLORS.primary} />
-            <Text style={[styles.sessionText, styles.sessionTextSpacing]}>Restoring session…</Text>
+            <Text style={[styles.sessionText, styles.sessionTextSpacing]}>Restoring your session…</Text>
           </View>
         </ScrollView>
       </SafeAreaView>
 
-      <View style={[styles.tabBar, { paddingBottom: tabBarPaddingBottom }]}>
-        {TAB_SLOTS.map((slot, index) => (
-          <View key={slot.key} style={styles.tabItem}>
-            <View style={[styles.tabIconCircle, index === 0 && styles.tabIconCircleActive]} />
-            <View
-              style={[
-                styles.tabLabelBar,
-                index === 0 && styles.tabLabelBarActive,
-                { width: slot.labelWidth },
-              ]}
-            />
+      <View
+        style={[styles.tabBarChrome, mainTabBarChromeLayoutStyle(tabBarSlotHeight)]}
+        collapsable={false}
+        pointerEvents="box-none"
+      >
+        <View
+          style={[
+            styles.tabBarInner,
+            { paddingBottom: bottomPad, paddingHorizontal: 20 },
+          ]}
+          pointerEvents="box-none"
+        >
+          <View style={styles.tabPillShadow}>
+            <View style={styles.tabPill}>
+              <View style={styles.tabRow}>
+                {TAB_SLOTS.map((slot, index) =>
+                  slot.kind === 'fab' ? (
+                    <View key={slot.key} style={styles.tabFabSlot} />
+                  ) : (
+                    <View key={slot.key} style={styles.tabItem}>
+                      <View style={[styles.tabIconCircle, index === 0 && styles.tabIconCircleEmphasis]} />
+                    </View>
+                  )
+                )}
+              </View>
+            </View>
           </View>
-        ))}
+        </View>
+        <View style={[styles.skeletonFabAnchor, { bottom: fabAnchorBottom }]} pointerEvents="box-none">
+          <View style={styles.tabFabCircle} />
+        </View>
       </View>
     </View>
   );
 }
 
-/** Order matches `BottomTabs`: Find, Publish, Rides, Chats, Profile */
+/** Order matches main tabs: Find, My Trips, Publish (FAB), Messages, Profile */
 const TAB_SLOTS = [
-  { key: 'find', labelWidth: 30 },
-  { key: 'publish', labelWidth: 44 },
-  { key: 'rides', labelWidth: 34 },
-  { key: 'chats', labelWidth: 36 },
-  { key: 'profile', labelWidth: 40 },
+  { key: 'find', kind: 'tab' as const },
+  { key: 'rides', kind: 'tab' as const },
+  { key: 'publishFab', kind: 'fab' as const },
+  { key: 'inbox', kind: 'tab' as const },
+  { key: 'profile', kind: 'tab' as const },
 ] as const;
 
 const styles = StyleSheet.create({
@@ -133,7 +160,6 @@ const styles = StyleSheet.create({
   scrollContent: {
     paddingHorizontal: 16,
     paddingTop: 24,
-    paddingBottom: 28,
   },
   line: {
     borderRadius: 8,
@@ -178,7 +204,7 @@ const styles = StyleSheet.create({
     width: 12,
     height: 12,
     borderRadius: 6,
-    backgroundColor: 'rgba(41, 190, 139, 0.35)',
+    backgroundColor: COLORS.primaryMuted38,
   },
   dottedLine: {
     width: 2,
@@ -216,7 +242,7 @@ const styles = StyleSheet.create({
     marginTop: 18,
     height: 48,
     borderRadius: 14,
-    backgroundColor: 'rgba(41, 190, 139, 0.22)',
+    backgroundColor: COLORS.primaryMuted22,
   },
   recentsHeader: {
     flexDirection: 'row',
@@ -246,39 +272,81 @@ const styles = StyleSheet.create({
   sessionTextSpacing: {
     marginLeft: 10,
   },
-  tabBar: {
+  /** Same stacking model as `MainBottomTabBar`: overlay fixed-height slot so pill + FAB match cold start. */
+  tabBarChrome: {
+    backgroundColor: 'transparent',
+    overflow: 'visible',
+    zIndex: 50,
+    elevation: 50,
+  },
+  tabBarInner: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    overflow: 'visible',
+  },
+  tabPillShadow: {
+    borderRadius: 999,
+    backgroundColor: COLORS.surface,
+    shadowColor: '#0f172a',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.07,
+    shadowRadius: 24,
+    elevation: 10,
+  },
+  tabPill: {
+    borderRadius: 999,
+    backgroundColor: COLORS.surface,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: COLORS.tabBarPillBorder,
+    /** Match `BottomTabs` `floatingPill`. */
+    paddingVertical: 7,
+    paddingHorizontal: 10,
+  },
+  tabRow: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     justifyContent: 'space-between',
-    paddingTop: 6,
-    paddingHorizontal: 2,
-    backgroundColor: COLORS.white,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: COLORS.border,
+    minHeight: 48,
   },
   tabItem: {
     flex: 1,
     alignItems: 'center',
-    paddingTop: 2,
+    justifyContent: 'center',
   },
   tabIconCircle: {
-    width: 26,
-    height: 26,
-    borderRadius: 13,
-    backgroundColor: BAR,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: COLORS.borderLight,
   },
-  tabIconCircleActive: {
-    backgroundColor: 'rgba(41, 190, 139, 0.28)',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(41, 190, 139, 0.55)',
+  /** Matches selected tab well in `MainBottomTabBar`. */
+  tabIconCircleEmphasis: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: COLORS.tabBarSelectedWell,
   },
-  tabLabelBar: {
-    marginTop: 5,
-    height: 9,
-    borderRadius: 5,
-    backgroundColor: BAR_SOFT,
+  tabFabSlot: {
+    width: 64,
+    minWidth: 64,
   },
-  tabLabelBarActive: {
-    backgroundColor: 'rgba(41, 190, 139, 0.35)',
+  skeletonFabAnchor: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+  },
+  tabFabCircle: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: COLORS.primary,
+    borderWidth: 2,
+    borderColor: COLORS.white,
+    shadowColor: '#0f172a',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 10,
+    elevation: 10,
   },
 });

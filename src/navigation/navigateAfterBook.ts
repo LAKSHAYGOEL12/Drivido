@@ -27,15 +27,15 @@ function mainTabRoutesResetToSearchRides(token: number) {
       },
     },
     {
-      name: 'PublishStack' as const,
-      state: { routes: [{ name: 'PublishRide' as const }], index: 0 },
-    },
-    {
       name: 'YourRides' as const,
       state: { routes: [{ name: 'YourRidesList' as const }], index: 0 },
     },
     {
-      name: 'Inbox' as const,
+      name: 'PublishStack' as const,
+      state: { routes: [{ name: 'PublishRide' as const }], index: 0 },
+    },
+    {
+      name: 'Chats' as const,
       state: { routes: [{ name: 'InboxList' as const }], index: 0 },
     },
     { name: 'Profile' as const },
@@ -80,7 +80,7 @@ function buildResetToYourRidesAction(afterBookRefreshToken?: number) {
   const yourRidesListParams =
     afterBookRefreshToken != null ? { _afterBookRefresh: afterBookRefreshToken } : undefined;
   return CommonActions.reset({
-    index: 2,
+    index: 1,
     routes: [
       {
         name: 'SearchStack',
@@ -90,15 +90,15 @@ function buildResetToYourRidesAction(afterBookRefreshToken?: number) {
         },
       },
       {
-        name: 'PublishStack',
-        state: { routes: [{ name: 'PublishRide' }], index: 0 },
-      },
-      {
         name: 'YourRides',
         state: {
           routes: [{ name: 'YourRidesList', ...(yourRidesListParams ? { params: yourRidesListParams } : {}) }],
           index: 0,
         },
+      },
+      {
+        name: 'PublishStack',
+        state: { routes: [{ name: 'PublishRide' }], index: 0 },
       },
       {
         name: 'Inbox',
