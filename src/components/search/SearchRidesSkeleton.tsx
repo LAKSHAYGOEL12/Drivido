@@ -8,7 +8,6 @@ import {
   mainTabBarSlotHeight,
   mainTabScrollBottomInset,
   TAB_BAR_EXTRA_BOTTOM_INSET,
-  TAB_ROW_MIN,
 } from '../../navigation/tabBarMetrics';
 
 const BAR = '#e8eef4';
@@ -21,9 +20,8 @@ export default function SearchRidesSkeleton(): React.JSX.Element {
   const { bottom: safeBottom } = useSafeAreaInsets();
   const scrollBottomPad = mainTabScrollBottomInset(safeBottom);
   const tabBarSlotHeight = mainTabBarSlotHeight(safeBottom);
-  /** Matches {@link MainBottomTabBar} (`BottomTabs.tsx`): pill sits on bottom inset, FAB anchored in same slot. */
+  /** Matches {@link MainBottomTabBar} (`BottomTabs.tsx`): pill sits on bottom inset; FAB sits in the Publish column. */
   const bottomPad = safeBottom + TAB_BAR_EXTRA_BOTTOM_INSET;
-  const fabAnchorBottom = bottomPad + TAB_ROW_MIN / 2 - FAB_VISUAL_RISE;
 
   return (
     <View style={styles.shell}>
@@ -116,7 +114,9 @@ export default function SearchRidesSkeleton(): React.JSX.Element {
               <View style={styles.tabRow}>
                 {TAB_SLOTS.map((slot, index) =>
                   slot.kind === 'fab' ? (
-                    <View key={slot.key} style={styles.tabFabSlot} />
+                    <View key={slot.key} style={styles.tabFabSlot}>
+                      <View style={styles.tabFabCircle} />
+                    </View>
                   ) : (
                     <View key={slot.key} style={styles.tabItem}>
                       <View style={[styles.tabIconCircle, index === 0 && styles.tabIconCircleEmphasis]} />
@@ -127,15 +127,12 @@ export default function SearchRidesSkeleton(): React.JSX.Element {
             </View>
           </View>
         </View>
-        <View style={[styles.skeletonFabAnchor, { bottom: fabAnchorBottom }]} pointerEvents="box-none">
-          <View style={styles.tabFabCircle} />
-        </View>
       </View>
     </View>
   );
 }
 
-/** Order matches main tabs: Find, My Trips, Publish (FAB), Messages, Profile */
+/** Pill slot order: Find, My Trips, publish FAB, Messages, Profile (see `mainTabOrder.ts`). */
 const TAB_SLOTS = [
   { key: 'find', kind: 'tab' as const },
   { key: 'rides', kind: 'tab' as const },
@@ -329,12 +326,11 @@ const styles = StyleSheet.create({
   tabFabSlot: {
     width: 64,
     minWidth: 64,
-  },
-  skeletonFabAnchor: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
     alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: -FAB_VISUAL_RISE,
+    zIndex: 2,
+    elevation: 4,
   },
   tabFabCircle: {
     width: 60,

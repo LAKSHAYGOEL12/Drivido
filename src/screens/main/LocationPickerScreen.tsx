@@ -1,5 +1,12 @@
 import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
-import { CommonActions, useFocusEffect } from '@react-navigation/native';
+import {
+  CommonActions,
+  StackActions,
+  useFocusEffect,
+  type NavigationProp,
+  type ParamListBase,
+  type RouteProp,
+} from '@react-navigation/native';
 import {
   StyleSheet,
   Text,
@@ -12,12 +19,14 @@ import {
   FlatList,
   Keyboard,
   ScrollView,
+  BackHandler,
 } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
 import { Alert } from '../../utils/themedAlert';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import type { SearchStackParamList } from '../../navigation/types';
+import type { SharedLocationPickerParams } from '../../navigation/types';
+import type { MainTabName } from '../../navigation/mainTabOrder';
+import { dispatchResetPublishStackToWizardRoot } from '../../navigation/publishStackWizardRoot';
 import { useLocation } from '../../contexts/LocationContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { COLORS } from '../../constants/colors';
@@ -39,8 +48,15 @@ import {
 } from '../../services/place-recent-storage';
 import type { RecentPublishedEntry } from '../../services/recent-published-storage';
 import { showToast } from '../../utils/toast';
+import { rootNavigationRef } from '../../navigation/rootNavigationRef';
 
-type Props = NativeStackScreenProps<SearchStackParamList, 'LocationPicker'>;
+type LocationPickerRoute = RouteProp<{ LocationPicker: SharedLocationPickerParams | undefined }, 'LocationPicker'>;
+
+type Props = {
+  /** Same screen is registered on multiple stacks; use a loose navigation type and typed params. */
+  navigation: NavigationProp<ParamListBase>;
+  route: LocationPickerRoute;
+};
 
 const DEFAULT_REGION = {
   latitude: 20.5937,
@@ -130,8 +146,97 @@ try {
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
-function replaceCurrentWithPublishRoutePreview(navigation: unknown, params: Record<string, unknown>): void {
-  (navigation as { replace: (name: string, p: Record<string, unknown>) => void }).replace('PublishRoutePreview', params);
+function findNavigatorWithRouteName(
+  navigation: { getParent?: () => unknown; getState?: () => { routeNames?: string[] } },
+  routeName: string,
+  maxHops = 16
+): { getParent?: () => unknown; dispatch?: (a: unknown) => void; getState?: () => { routeNames?: string[] } } | null {
+  let walker: unknown = navigation;
+  for (let i = 0; i < maxHops && walker; i += 1) {
+    const n = walker as { getState?: () => { routeNames?: string[] }; getParent?: () => unknown };
+    const names = n.getState?.()?.routeNames;
+    if (Array.isArray(names) && names.includes(routeName)) {
+      return n as { dispatch?: (a: unknown) => void; getParent?: () => unknown; getState?: () => { routeNames?: string[] } };
+    }
+    walker = n.getParent?.();
+  }
+  return null;
+}
+
+/**
+ * `PublishStack` is mounted at the app root (not inside bottom tabs). When `LocationPicker` is opened
+ * from stacks like `RidesStack` (Edit & publish), local `replace('PublishRoutePreview')` is not handled.
+ * Prefer the navigator that actually owns `PublishRoutePreview`, else fall back to root ref.
+ */
+function goToPublishRoutePreview(
+  navigation: unknown,
+  params: Record<string, unknown>,
+  usePush: boolean
+): void {
+  const publishNav = findNavigatorWithRouteName(
+    navigation as { getParent?: () => unknown; getState?: () => { routeNames?: string[] } },
+    'PublishRoutePreview'
+  );
+
+  const action = usePush
+    ? StackActions.push('PublishRoutePreview', params)
+    : StackActions.replace('PublishRoutePreview', params);
+
+  if (publishNav?.dispatch) {
+    publishNav.dispatch(action);
+    return;
+  }
+
+  const dismissPickerIfNeeded = (): void => {
+    try {
+      if (typeof (navigation as { canGoBack?: () => boolean }).canGoBack === 'function') {
+        if ((navigation as { canGoBack: () => boolean }).canGoBack()) {
+          (navigation as { goBack: () => void }).goBack();
+        }
+      }
+    } catch {
+      /** ignore */
+    }
+  };
+
+  /**
+   * From nested stacks (e.g. Your Rides → PublishRecentEdit → LocationPicker), opening root `PublishStack`
+   * and then calling `goBack()` here used to reorder transitions so users only saw the picker dismiss and
+   * landed back on the republish form. Dismiss the picker first, then open `PublishStack` on the next frame
+   * (same `merge` pattern as {@link navigatePublishStackRecentEdit} for a predictable nested target).
+   */
+  const dispatchViaRoot = (): boolean => {
+    if (!rootNavigationRef.isReady() || !rootNavigationRef.dispatch) return false;
+    rootNavigationRef.dispatch(
+      CommonActions.navigate({
+        name: 'PublishStack',
+        /** `false` for “replace” semantics: republish / first route preview should own the publish stack. */
+        merge: usePush,
+        params: {
+          screen: 'PublishRoutePreview',
+          params,
+        },
+      } as never)
+    );
+    return true;
+  };
+
+  dismissPickerIfNeeded();
+
+  const tryOpen = (): void => {
+    if (dispatchViaRoot()) return;
+    let tries = 0;
+    const id = setInterval(() => {
+      tries += 1;
+      if (dispatchViaRoot() || tries >= 40) {
+        clearInterval(id);
+      }
+    }, 50);
+  };
+
+  requestAnimationFrame(() => {
+    tryOpen();
+  });
 }
 
 export default function LocationPickerScreen({ navigation, route }: Props): React.JSX.Element {
@@ -139,21 +244,22 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
   const field = route.params?.field ?? 'from';
   const currentFrom = route.params?.currentFrom ?? '';
   const currentTo = route.params?.currentTo ?? '';
-  const currentPickupLat = (route.params as { currentPickupLatitude?: number })?.currentPickupLatitude;
-  const currentPickupLon = (route.params as { currentPickupLongitude?: number })?.currentPickupLongitude;
-  const currentDestLat = (route.params as { currentDestinationLatitude?: number })?.currentDestinationLatitude;
-  const currentDestLon = (route.params as { currentDestinationLongitude?: number })?.currentDestinationLongitude;
-  const currentDate = (route.params as { currentDate?: string })?.currentDate;
-  const currentPassengers = (route.params as { currentPassengers?: string })?.currentPassengers ?? '1';
-  const currentFromLat = (route.params as { currentFromLatitude?: number })?.currentFromLatitude;
-  const currentFromLon = (route.params as { currentFromLongitude?: number })?.currentFromLongitude;
-  const currentToLat = (route.params as { currentToLatitude?: number })?.currentToLatitude;
-  const currentToLon = (route.params as { currentToLongitude?: number })?.currentToLongitude;
-  const returnScreen = (route.params as { returnScreen?: 'SearchRides' | 'PublishRide' | 'PublishRecentEdit' })
-    ?.returnScreen ?? 'SearchRides';
-  const publishRestoreKey = (route.params as { publishRestoreKey?: string })?.publishRestoreKey;
-  const publishRecentEditEntry = (route.params as { publishRecentEditEntry?: RecentPublishedEntry } | undefined)
-    ?.publishRecentEditEntry;
+  const p = route.params;
+  const currentPickupLat = p?.currentPickupLatitude;
+  const currentPickupLon = p?.currentPickupLongitude;
+  const currentDestLat = p?.currentDestinationLatitude;
+  const currentDestLon = p?.currentDestinationLongitude;
+  const currentDate = p?.currentDate;
+  const currentPassengers = p?.currentPassengers ?? '1';
+  const currentFromLat = p?.currentFromLatitude;
+  const currentFromLon = p?.currentFromLongitude;
+  const currentToLat = p?.currentToLatitude;
+  const currentToLon = p?.currentToLongitude;
+  const returnScreen = p?.returnScreen ?? 'SearchRides';
+  const publishRestoreKey = p?.publishRestoreKey;
+  const publishRecentEditEntry = p?.publishRecentEditEntry;
+  const publishWizardReview = p?.publishWizardReview === true;
+  const publishFabExitTab = p?.publishFabExitTab;
   const mapRef = useRef<any>(null);
   const {
     location,
@@ -192,10 +298,115 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
   const skipPublishGeocodeUntilRef = useRef(0);
   const lastPublishGeocodedRef = useRef<{ latitude: number; longitude: number } | null>(null);
 
-  const isPublishFlow = returnScreen === 'PublishRide' || returnScreen === 'PublishRecentEdit';
+  const isPublishFlow = returnScreen === 'PublishWizard' || returnScreen === 'PublishRecentEdit';
   const publishSearchOnly = isPublishFlow && !publishMapVisible;
   /** Full-screen map + floating controls (Publish). */
   const publishImmersiveMap = isPublishFlow && publishMapVisible;
+
+  /**
+   * Publish: hardware/header back. FAB wizard starts on pickup only — no `goBack()` target → leave
+   * Publish tab to the screen the user was on before opening the FAB (`publishFabExitTab`).
+   */
+  const dismissPublishLocationPicker = useCallback(() => {
+    /**
+     * Safety fallback: destination step should always return to pickup in wizard flows.
+     * If stack back state is unavailable for any reason, rebuild pickup as root instead of exiting tabs.
+     */
+    if (isPublishFlow && field === 'to' && !navigation.canGoBack()) {
+      navigation.dispatch(
+        CommonActions.reset({
+          index: 0,
+          routes: [
+            {
+              name: 'LocationPicker' as const,
+              params: {
+                field: 'from' as const,
+                currentFrom: currentFrom ?? '',
+                currentTo: currentTo ?? '',
+                currentPickupLatitude: currentPickupLat ?? 0,
+                currentPickupLongitude: currentPickupLon ?? 0,
+                currentDestinationLatitude: currentDestLat ?? 0,
+                currentDestinationLongitude: currentDestLon ?? 0,
+                returnScreen,
+                ...(publishRestoreKey ? { publishRestoreKey } : {}),
+                ...(publishRecentEditEntry ? { publishRecentEditEntry } : {}),
+                ...(publishWizardReview ? { publishWizardReview: true } : {}),
+                ...(publishFabExitTab ? { publishFabExitTab } : {}),
+              },
+            },
+          ],
+        }) as never
+      );
+      return;
+    }
+    if (navigation.canGoBack()) {
+      navigation.goBack();
+      return;
+    }
+    if (publishFabExitTab) {
+      navigation.dispatch(
+        CommonActions.navigate({
+          name: 'Main',
+          params: { screen: publishFabExitTab },
+          merge: false,
+        } as never)
+      );
+      return;
+    }
+    if (isPublishFlow) {
+      dispatchResetPublishStackToWizardRoot(navigation);
+    }
+  }, [
+    navigation,
+    isPublishFlow,
+    field,
+    currentFrom,
+    currentTo,
+    currentPickupLat,
+    currentPickupLon,
+    currentDestLat,
+    currentDestLon,
+    returnScreen,
+    publishRestoreKey,
+    publishRecentEditEntry,
+    publishWizardReview,
+    publishFabExitTab,
+  ]);
+
+  useEffect(() => {
+    if (!publishFabExitTab) return undefined;
+    return navigation.addListener('beforeRemove', (e) => {
+      if (field !== 'from') return;
+      if (navigation.canGoBack()) return;
+      const actionType = (e.data as { action?: { type?: string } } | undefined)?.action?.type;
+      /** Let programmatic stack clears through (e.g. after publish). Everything else is user back / gesture. */
+      if (actionType === 'RESET') return;
+      e.preventDefault();
+      navigation.dispatch(
+        CommonActions.navigate({
+          name: 'Main',
+          params: { screen: publishFabExitTab },
+          merge: false,
+        } as never)
+      );
+    });
+  }, [navigation, publishFabExitTab, field]);
+
+  /**
+   * Android: predictive back + edge gesture often route through `BackHandler` more reliably than
+   * `beforeRemove` alone when this screen is the stack root (`canGoBack` false).
+   */
+  useFocusEffect(
+    useCallback(() => {
+      if (Platform.OS !== 'android') return undefined;
+      if (!publishFabExitTab) return undefined;
+      const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+        dismissPublishLocationPicker();
+        return true;
+      });
+      return () => sub.remove();
+    }, [publishFabExitTab, dismissPublishLocationPicker])
+  );
 
   const [netOnline, setNetOnline] = useState<boolean | null>(null);
   const offline = netOnline === false;
@@ -407,7 +618,7 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
       const nextFromCoords = field === 'from' ? (coords ?? fallbackFromCoords) : fallbackFromCoords;
       const nextToCoords = field === 'to' ? (coords ?? fallbackToCoords) : fallbackToCoords;
       if (
-        (returnScreen === 'PublishRide' || returnScreen === 'PublishRecentEdit') &&
+        (returnScreen === 'PublishWizard' || returnScreen === 'PublishRecentEdit') &&
         stopsAreSamePlace({
           fromLabel: String(nextFromLabel ?? ''),
           toLabel: String(nextToLabel ?? ''),
@@ -469,43 +680,10 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
           params.destinationLongitude = currentDestLon;
         }
         (params as Record<string, unknown>).clearRouteFare = true;
-        const pLatPe = params.pickupLatitude as number | undefined;
-        const pLonPe = params.pickupLongitude as number | undefined;
-        const dLatPe = params.destinationLatitude as number | undefined;
-        const dLonPe = params.destinationLongitude as number | undefined;
-        const hasNumberPe = (n: unknown): n is number => typeof n === 'number' && !Number.isNaN(n);
-        const hasPickupPe = hasNumberPe(pLatPe) && hasNumberPe(pLonPe) && (pLatPe !== 0 || pLonPe !== 0);
-        const hasDestinationPe = hasNumberPe(dLatPe) && hasNumberPe(dLonPe) && (dLatPe !== 0 || dLonPe !== 0);
-        const hadBothStopsBeforePe =
-          hasNumberPe(currentPickupLat) &&
-          hasNumberPe(currentPickupLon) &&
-          (currentPickupLat !== 0 || currentPickupLon !== 0) &&
-          hasNumberPe(currentDestLat) &&
-          hasNumberPe(currentDestLon) &&
-          (currentDestLat !== 0 || currentDestLon !== 0);
-        const coordsProvided =
-          coords != null &&
-          typeof coords.latitude === 'number' &&
-          typeof coords.longitude === 'number' &&
-          !Number.isNaN(coords.latitude) &&
-          !Number.isNaN(coords.longitude);
-        const shouldOpenRoutePreview =
-          hasPickupPe &&
-          hasDestinationPe &&
-          (!hadBothStopsBeforePe || coordsProvided);
-        if (shouldOpenRoutePreview) {
-          replaceCurrentWithPublishRoutePreview(navigation, {
-            selectedFrom: params.selectedFrom,
-            selectedTo: params.selectedTo,
-            pickupLatitude: pLatPe,
-            pickupLongitude: pLonPe,
-            destinationLatitude: dLatPe,
-            destinationLongitude: dLonPe,
-            publishRestoreKey,
-            ...(publishRecentEditEntry ? { publishRecentEditEntry } : {}),
-          });
-          return;
-        }
+        /**
+         * Edit & republish (`PublishRecentEdit`) is its own form: picking stops should only update that
+         * screen and pop the picker — not launch the FAB publish wizard (`PublishRoutePreview` → date → …).
+         */
         const statePe = navigation.getState();
         const previousPe = statePe.routes[statePe.index - 1];
         if (previousPe?.key) {
@@ -516,10 +694,10 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
           navigation.goBack();
           return;
         }
-        navigation.goBack();
+        dispatchResetPublishStackToWizardRoot(navigation);
         return;
       }
-      if (returnScreen === 'PublishRide') {
+      if (returnScreen === 'PublishWizard') {
         if (coords) {
           if (field === 'from') {
             params.pickupLatitude = coords.latitude;
@@ -551,7 +729,7 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
         const hasPickup = hasNumber(pLat) && hasNumber(pLon) && (pLat !== 0 || pLon !== 0);
         const hasDestination = hasNumber(dLat) && hasNumber(dLon) && (dLat !== 0 || dLon !== 0);
 
-        /** Opening the picker already had both coords → user is editing one stop; stay on PublishRide. */
+        /** Opening the picker already had both coords → user is editing one stop; merge and pop picker. */
         const hadBothStopsBefore =
           hasNumber(currentPickupLat) &&
           hasNumber(currentPickupLon) &&
@@ -565,15 +743,53 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
          * If both were already set before this picker opened, merge and go back so date/time/fare are not reset.
          */
         if (hasPickup && hasDestination && !hadBothStopsBefore) {
-          replaceCurrentWithPublishRoutePreview(navigation, {
-            selectedFrom: params.selectedFrom,
-            selectedTo: params.selectedTo,
-            pickupLatitude: pLat,
-            pickupLongitude: pLon,
-            destinationLatitude: dLat,
-            destinationLongitude: dLon,
-            publishRestoreKey,
-          });
+          goToPublishRoutePreview(
+            navigation,
+            {
+              selectedFrom: params.selectedFrom,
+              selectedTo: params.selectedTo,
+              pickupLatitude: pLat,
+              pickupLongitude: pLon,
+              destinationLatitude: dLat,
+              destinationLongitude: dLon,
+              publishRestoreKey,
+              ...(publishWizardReview ? { publishWizardReview: true } : {}),
+              ...(publishFabExitTab ? { publishFabExitTab } : {}),
+            },
+            publishWizardReview
+          );
+          return;
+        }
+
+        /**
+         * FAB “New ride” wizard: first confirm pickup only → open destination picker next (not the full
+         * pickup wizard).
+         */
+        if (publishWizardReview && field === 'from' && hasPickup && !hasDestination) {
+          const stateW = navigation.getState();
+          const previousW = stateW.routes[stateW.index - 1];
+          if (previousW?.key) {
+            navigation.dispatch({
+              ...CommonActions.setParams(params),
+              source: previousW.key,
+            });
+          }
+          /** Must `push` — `navigate` to the same route name reuses index 0, so back has no stack and Android exits. */
+          navigation.dispatch(
+            StackActions.push('LocationPicker', {
+              field: 'to',
+              currentFrom: String(params.selectedFrom ?? ''),
+              currentTo: String(params.selectedTo ?? ''),
+              currentPickupLatitude: pLat,
+              currentPickupLongitude: pLon,
+              currentDestinationLatitude: 0,
+              currentDestinationLongitude: 0,
+              returnScreen: 'PublishWizard',
+              ...(publishRestoreKey ? { publishRestoreKey } : {}),
+              publishWizardReview: true,
+              ...(publishFabExitTab ? { publishFabExitTab } : {}),
+            } as never)
+          );
           return;
         }
 
@@ -588,12 +804,7 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
           navigation.goBack();
           return;
         }
-        navigation.dispatch(
-          CommonActions.reset({
-            index: 0,
-            routes: [{ name: 'PublishRide' as const, params }],
-          })
-        );
+        dispatchResetPublishStackToWizardRoot(navigation);
         return;
       }
       (navigation as any).navigate(returnScreen, params);
@@ -616,6 +827,8 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
       returnScreen,
       publishRestoreKey,
       publishRecentEditEntry,
+      publishWizardReview,
+      publishFabExitTab,
     ]
   );
 
@@ -1296,15 +1509,15 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
           pointerEvents="box-none"
         >
           <TouchableOpacity
-            onPress={() => navigation.goBack()}
+            onPress={dismissPublishLocationPicker}
             style={styles.publishTopIconBtn}
             hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
           >
             <Ionicons name="chevron-back" size={22} color={COLORS.text} />
           </TouchableOpacity>
           <View style={styles.publishTopTitleBlock}>
-            <Text style={styles.publishTopFieldTag}>
-              {field === 'from' ? 'PICKUP' : 'DROP-OFF'}
+            <Text style={styles.publishTopMainTitle} numberOfLines={1}>
+              {field === 'from' ? 'Add pickup' : 'Add destination'}
             </Text>
           </View>
           <TouchableOpacity
@@ -1320,13 +1533,17 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
       {isPublishFlow && !publishImmersiveMap ? (
         <View style={styles.header}>
           <TouchableOpacity
-            onPress={() => navigation.goBack()}
+            onPress={dismissPublishLocationPicker}
             style={styles.headerBackBtn}
             hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
           >
             <Ionicons name="chevron-back" size={24} color={COLORS.text} />
           </TouchableOpacity>
-          <View style={styles.headerTitleSpacer} />
+          <View style={styles.headerTitleCenter}>
+            <Text style={styles.headerPublishFlowTitle} numberOfLines={1}>
+              {field === 'from' ? 'Add pickup' : 'Add destination'}
+            </Text>
+          </View>
           <TouchableOpacity onPress={handleDone} style={styles.doneBtn} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
             <Text style={styles.doneText}>Done</Text>
           </TouchableOpacity>
@@ -1688,11 +1905,12 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: 8,
   },
-  publishTopFieldTag: {
-    fontSize: 12,
+  publishTopMainTitle: {
+    fontSize: 17,
     fontWeight: '800',
-    letterSpacing: 1.2,
-    color: COLORS.textMuted,
+    letterSpacing: -0.35,
+    color: COLORS.text,
+    textAlign: 'center',
   },
   publishTopDonePill: {
     paddingVertical: 8,
@@ -1836,8 +2054,18 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     paddingHorizontal: 8,
   },
-  headerTitleSpacer: {
+  headerTitleCenter: {
     flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 6,
+  },
+  headerPublishFlowTitle: {
+    fontSize: 17,
+    fontWeight: '800',
+    letterSpacing: -0.35,
+    color: COLORS.text,
+    textAlign: 'center',
   },
   doneBtn: {
     paddingVertical: 8,

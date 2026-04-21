@@ -46,6 +46,40 @@ export function bookingIsAcceptedLike(status: string | undefined | null): boolea
   return s === 'accepted' || s === 'confirmed' || s === 'booked' || s === 'approved';
 }
 
+/** Booking-level completion (distinct from ride.status). */
+function bookingStatusCompletedLike(status: string | undefined | null): boolean {
+  const s = (status ?? '').trim().toLowerCase();
+  return s === 'completed' || s === 'complete';
+}
+
+export type BookingPostRideOwnerRatingFlags = {
+  isAcceptedPassenger?: boolean;
+  isPendingRequest?: boolean;
+  /** Server-owned row role on owner passenger lists (`pending_request` | `active_passenger` | …). */
+  ownerListRole?: string;
+};
+
+/**
+ * After a ride is completed, the owner may rate only passengers who actually participated
+ * (confirmed/accepted/completed booking — not pending requests or historical-only rows).
+ */
+export function bookingIsEligibleForPostRideOwnerRating(
+  status: string | undefined | null,
+  flags?: BookingPostRideOwnerRatingFlags
+): boolean {
+  if (bookingIsCancelled(status)) return false;
+  const role = (flags?.ownerListRole ?? '').trim().toLowerCase();
+  if (role === 'pending_request' || role === 'historical_cancelled') return false;
+  if (flags?.isPendingRequest === true) return false;
+  if (flags?.isAcceptedPassenger === false) return false;
+  if (role === 'active_passenger') return true;
+  if (flags?.isAcceptedPassenger === true) return true;
+  const s = (status ?? '').trim().toLowerCase();
+  if (bookingIsPendingLike(status) || s === 'rejected') return false;
+  if (bookingIsAcceptedLike(status)) return true;
+  return bookingStatusCompletedLike(status);
+}
+
 /**
  * Seats that still count toward “booked” on ride cards / capacity (confirmed/accepted,
  * or partial owner-remove row that still holds seats with cancelled_by_owner).

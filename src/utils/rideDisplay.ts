@@ -143,6 +143,16 @@ export function isRidePast(ride: RideListItem): boolean {
   return at.getTime() < Date.now();
 }
 
+/**
+ * True once the listed departure date+time is **now or earlier** (`now >= scheduled pickup`).
+ * Use to lock **owner** cancel/edit — distinct from {@link isRidePastArrivalWindow} (end of trip + grace).
+ */
+export function isRideScheduledDepartureReached(ride: RideListItem): boolean {
+  const at = getRideScheduledAt(ride);
+  if (!at) return false;
+  return Date.now() >= at.getTime();
+}
+
 /** Grace after estimated arrival before a ride is treated as “past / completed” (30 minutes). */
 export const PAST_GRACE_MS_AFTER_ARRIVAL = 30 * 60 * 1000;
 

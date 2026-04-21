@@ -661,8 +661,8 @@ export default function ChatScreen(): React.JSX.Element {
         <View style={styles.main}>
           {/* Header: when input focused, show short route in header */}
           <View style={styles.header}>
-          <TouchableOpacity onPress={() => navigation.goBack()} style={styles.headerBack} hitSlop={12}>
-            <Ionicons name="arrow-back" size={24} color={COLORS.primary} />
+          <TouchableOpacity onPress={() => navigation.goBack()} style={styles.headerBack} hitSlop={10}>
+            <Ionicons name="chevron-back" size={22} color={COLORS.primary} />
           </TouchableOpacity>
           <View style={styles.headerCenter}>
             <UserAvatar
@@ -763,13 +763,14 @@ export default function ChatScreen(): React.JSX.Element {
           ) : null}
         </View>
 
-        {/* Warnings */}
-        <View style={styles.warnings}>
+        <View style={styles.warningsPanel}>
           <Text style={styles.moderationText}>
             We may moderate messages. You can also report inappropriate ones from our guidelines page.
           </Text>
           <View style={styles.scamRow}>
-            <Ionicons name="warning" size={18} color={COLORS.error} />
+            <View style={styles.scamIconWrap}>
+              <Ionicons name="warning" size={16} color={COLORS.error} />
+            </View>
             <Text style={styles.scamText}>
               To avoid scams, never visit links sent by members to pay or transfer money.{' '}
               <Text style={styles.linkText}>Learn more</Text>
@@ -827,6 +828,7 @@ const styles = StyleSheet.create({
   },
   main: {
     flex: 1,
+    backgroundColor: COLORS.background,
   },
   chatErrorWrap: {
     flex: 1,
@@ -845,14 +847,19 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: COLORS.surface,
+    borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: COLORS.border,
-    backgroundColor: COLORS.background,
   },
   headerBack: {
-    padding: 4,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: COLORS.backgroundSecondary,
+    alignItems: 'center',
+    justifyContent: 'center',
     marginRight: 8,
   },
   headerCenter: {
@@ -875,37 +882,45 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontWeight: '700',
     color: COLORS.text,
+    letterSpacing: -0.25,
   },
   rideBar: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    minHeight: 56,
+    minHeight: 52,
     paddingHorizontal: 16,
-    paddingVertical: 12,
-    backgroundColor: COLORS.backgroundSecondary,
-    borderBottomWidth: 1,
+    paddingVertical: 10,
+    backgroundColor: COLORS.surface,
+    borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: COLORS.border,
   },
   rideBarCollapsed: {
     minHeight: 0,
     maxHeight: 0,
+    marginTop: 0,
+    marginBottom: 0,
+    marginHorizontal: 0,
     paddingVertical: 0,
+    paddingHorizontal: 0,
     overflow: 'hidden',
-    borderBottomWidth: 0,
+    opacity: 0,
+    borderWidth: 0,
+    elevation: 0,
   },
   rideBarContent: {
     flex: 1,
   },
   rideRoute: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '700',
     color: COLORS.text,
+    letterSpacing: -0.15,
   },
   rideMeta: {
     fontSize: 13,
-    color: COLORS.textMuted,
-    marginTop: 2,
+    color: COLORS.textSecondary,
+    marginTop: 3,
   },
   rideStatus: {
     color: COLORS.primary,
@@ -919,21 +934,23 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: COLORS.textMuted,
     marginTop: 4,
-    fontWeight: '500',
+    fontWeight: '600',
+    letterSpacing: 0.15,
   },
   chatEndedBanner: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 10,
     paddingHorizontal: 16,
     paddingVertical: 10,
     backgroundColor: COLORS.backgroundSecondary,
-    borderBottomWidth: 1,
+    borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: COLORS.border,
   },
   chatEndedBannerText: {
     flex: 1,
     fontSize: 13,
+    fontWeight: '600',
     color: COLORS.textSecondary,
     lineHeight: 18,
   },
@@ -955,19 +972,22 @@ const styles = StyleSheet.create({
     padding: 16,
   },
   chatListContent: {
-    paddingHorizontal: 16,
-    paddingTop: 8,
-    paddingBottom: 16,
+    paddingHorizontal: 14,
+    paddingTop: 10,
+    paddingBottom: 12,
     flexGrow: 1,
   },
   emptyChatHint: {
-    fontSize: 15,
+    fontSize: 14,
+    fontWeight: '500',
     color: COLORS.textMuted,
     textAlign: 'center',
+    lineHeight: 22,
+    paddingHorizontal: 32,
   },
   bubbleRow: {
     flexDirection: 'row',
-    marginVertical: 4,
+    marginVertical: 3,
   },
   bubbleRowMe: {
     justifyContent: 'flex-end',
@@ -976,8 +996,8 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-start',
   },
   bubble: {
-    maxWidth: '80%',
-    paddingHorizontal: 14,
+    maxWidth: '78%',
+    paddingHorizontal: 13,
     paddingVertical: 10,
     borderRadius: 18,
     borderBottomRightRadius: 4,
@@ -988,7 +1008,9 @@ const styles = StyleSheet.create({
     borderBottomLeftRadius: 18,
   },
   bubbleThem: {
-    backgroundColor: COLORS.backgroundSecondary,
+    backgroundColor: COLORS.surface,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: COLORS.border,
     borderBottomRightRadius: 18,
     borderBottomLeftRadius: 4,
   },
@@ -1022,15 +1044,6 @@ const styles = StyleSheet.create({
     color: 'rgba(255,255,255,0.92)',
     textDecorationLine: 'underline',
   },
-  chatClosedBanner: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 8,
-    backgroundColor: COLORS.backgroundSecondary,
-    padding: 12,
-    borderRadius: 10,
-    marginBottom: 10,
-  },
   chatClosedText: {
     flex: 1,
     fontSize: 13,
@@ -1038,33 +1051,46 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   chatClosedRow: {
-    paddingHorizontal: 16,
+    paddingHorizontal: 20,
     paddingTop: 14,
-    paddingBottom: 20,
-    backgroundColor: COLORS.background,
-    borderTopWidth: 1,
+    paddingBottom: 18,
+    backgroundColor: COLORS.surface,
+    borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: COLORS.border,
   },
-  warnings: {
+  warningsPanel: {
     paddingHorizontal: 16,
-    paddingTop: 12,
-    paddingBottom: 8,
-    backgroundColor: COLORS.background,
+    paddingTop: 10,
+    paddingBottom: 10,
+    backgroundColor: COLORS.backgroundSecondary,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: COLORS.border,
   },
   moderationText: {
-    fontSize: 12,
+    fontSize: 11,
+    fontWeight: '500',
     color: COLORS.textMuted,
-    lineHeight: 18,
+    lineHeight: 16,
     marginBottom: 8,
   },
   scamRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    gap: 8,
+    gap: 10,
+  },
+  scamIconWrap: {
+    width: 28,
+    height: 28,
+    borderRadius: 10,
+    backgroundColor: 'rgba(220, 38, 38, 0.1)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 1,
   },
   scamText: {
     flex: 1,
     fontSize: 12,
+    fontWeight: '600',
     color: COLORS.error,
     lineHeight: 18,
   },
@@ -1075,11 +1101,11 @@ const styles = StyleSheet.create({
   inputRow: {
     flexDirection: 'row',
     alignItems: 'flex-end',
-    paddingHorizontal: 16,
-    paddingTop: 12,
-    paddingBottom: 20,
-    backgroundColor: COLORS.background,
-    borderTopWidth: 1,
+    paddingHorizontal: 14,
+    paddingTop: 10,
+    paddingBottom: 18,
+    backgroundColor: COLORS.surface,
+    borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: COLORS.border,
     gap: 10,
   },
@@ -1090,13 +1116,14 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: 44,
     maxHeight: 100,
-    backgroundColor: COLORS.backgroundSecondary,
+    backgroundColor: COLORS.background,
     borderRadius: 22,
-    borderWidth: 1,
-    borderColor: COLORS.primary,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: COLORS.border,
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingVertical: 10,
     fontSize: 15,
+    fontWeight: '400',
     color: COLORS.text,
   },
   inputDisabled: {

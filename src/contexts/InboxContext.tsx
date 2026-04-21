@@ -34,6 +34,7 @@ import {
   pruneStaleTerminalChatThreads,
   shouldPruneInboxChatForRide,
 } from '../utils/inboxChatRetention';
+import { shouldHideOrSkipEmptyChatThread } from '../utils/rideChat';
 import { normalizeChatStatus, type ChatDeliveryStatus } from '../utils/chatMessageStatus';
 import { chatWSManager } from '../services/chatWebSocketManager';
 import { setInboxRefreshCallback } from '../navigation/handleNotificationNavigation';
@@ -302,6 +303,13 @@ function buildConversationsForUser(
     const unreadCount = viewerIds.reduce((m, vid) => Math.max(m, t.unreadFor?.[vid] ?? 0), 0);
     const hasAnyMessage =
       (t.messages ?? []).length > 0 || String(t.lastMessage ?? '').trim().length > 0;
+    /** No messages + chat closed (completed/cancelled/API lock/deactivated) → omit from inbox. */
+    if (
+      !hasAnyMessage &&
+      shouldHideOrSkipEmptyChatThread(t.ride, viewerUserIdForRetention, peerDeactivated)
+    ) {
+      continue;
+    }
     /** Chats tab: only threads with at least one message (or unread), not empty “placeholder” threads. */
     if (!hasAnyMessage && unreadCount === 0) continue;
 
@@ -346,6 +354,10 @@ function mergeServerConversationsIntoThreads(
       c.otherUserAccountActive === false || c.other_user_account_active === false;
     const peerDeactivated =
       serverPeerInactive || ridePeerDeactivated(c.ride, (c.otherUserId ?? '').trim());
+    const hasServerMessage = String(c.lastMessage ?? '').trim().length > 0;
+    if (!hasServerMessage && shouldHideOrSkipEmptyChatThread(c.ride, currentUserId, peerDeactivated)) {
+      continue;
+    }
     const displayOtherName = peerDeactivated
       ? DEACTIVATED_ACCOUNT_LABEL
       : (c.otherUserName ?? 'User').trim();
@@ -731,9 +743,16 @@ export function InboxProvider({ children }: { children: React.ReactNode }): Reac
               return { ...stripped, [key]: { ...t, messages: merged } };
             }
             if (!ride) return prev;
+            const rideNorm = { ...ride, id: rid };
+            const peerDe = ridePeerDeactivated(rideNorm, otherId);
+            if (
+              merged.length === 0 &&
+              shouldHideOrSkipEmptyChatThread(rideNorm, currentUserId.trim(), peerDe)
+            ) {
+              return prev;
+            }
             const ids = [currentUserId, otherId].sort() as [string, string];
             const stripped = stripAliasThreads(prev, key, rid, currentUserId, otherUserId ?? '', otherUserName ?? '');
-            const rideNorm = { ...ride, id: rid };
             return {
               ...stripped,
               [key]: {
@@ -870,6 +889,14 @@ export function InboxProvider({ children }: { children: React.ReactNode }): Reac
       const incomingAvatar = (opts?.otherUserAvatarUrl ?? '').trim();
       setThreadsByKey((prev) => {
         const existing = prev[key];
+        const peerDeactivated = ridePeerDeactivated(rideNorm, otherId);
+        if (
+          !existing &&
+          update == null &&
+          shouldHideOrSkipEmptyChatThread(rideNorm, currentUserId.trim(), peerDeactivated)
+        ) {
+          return prev;
+        }
         const base: StoredThread = existing ?? {
           ride: rideNorm,
           participantIds: [currentUserId, otherId].sort() as [string, string],

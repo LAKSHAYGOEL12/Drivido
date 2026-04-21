@@ -7,7 +7,8 @@ import type { ViewStyle } from 'react-native';
  */
 export const TAB_BAR_EXTRA_BOTTOM_INSET = 6;
 export const TAB_ROW_MIN = 48;
-export const FAB_VISUAL_RISE = 20;
+/** Slight lift so the publish FAB clears the pill and is less likely to feel “in the swipe path”. */
+export const FAB_VISUAL_RISE = 26;
 
 /**
  * Extra space beyond {@link mainTabBarSlotHeight} for scrollable content on main-tab “home” screens,
@@ -28,6 +29,9 @@ export function mainTabBarSlotHeight(safeAreaBottom: number): number {
 export function mainTabScrollBottomInset(safeAreaBottom: number): number {
   return mainTabBarSlotHeight(safeAreaBottom) + MAIN_TAB_SCROLL_CLEARANCE;
 }
+
+/** Extra scroll padding when a screen pins a primary CTA above the tab bar (e.g. Publish). */
+export const MAIN_TAB_STICKY_PRIMARY_CTA_EXTRA = 58;
 
 /**
  * Default overlay region for the custom tab bar (matches `BottomTabs` `screenOptions.tabBarStyle`).

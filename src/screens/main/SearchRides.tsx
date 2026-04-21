@@ -69,8 +69,15 @@ function dateValueToLabel(value: string | null): string {
 function formatRecentSubline(dateStr: string, passengersStr: string): string {
   const label = dateValueToLabel(dateStr);
   const n = Math.min(6, Math.max(1, parseInt(passengersStr, 10) || 1));
-  const pax = n === 1 ? '1 pax' : `${n} pax`;
-  return `${label} • ${pax}`;
+  const pax = n === 1 ? '1 passenger' : `${n} passengers`;
+  return `${label} · ${pax}`;
+}
+
+function firstNameFromDisplay(full: string): string {
+  const t = full.trim();
+  if (!t) return '';
+  const parts = t.split(/\s+/).filter(Boolean);
+  return parts[0] ?? t;
 }
 
 function isSamePickupAndDestination(args: {
@@ -179,6 +186,7 @@ export default function SearchRides(): React.JSX.Element {
   const recentUserKey = (user?.id ?? user?.phone ?? '').trim();
   const welcomeName =
     user?.name?.trim() || user?.phone?.trim() || user?.email?.trim() || '';
+  const welcomeShort = firstNameFromDisplay(welcomeName);
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const [fromLat, setFromLat] = useState<number | undefined>(undefined);
@@ -438,113 +446,150 @@ export default function SearchRides(): React.JSX.Element {
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        {sessionReady ? (
-          <Text style={styles.welcomeLine}>
-            {welcomeName ? (
-              <>
-                Welcome,{' '}
-                <Text style={styles.welcomeName}>{welcomeName}</Text>
-              </>
-            ) : (
-              'Welcome'
-            )}
-          </Text>
-        ) : null}
-        <Text style={styles.heroTitle}>Find a ride</Text>
-        <Text style={styles.heroSubtitle}>Choose pickup, destination, and travel date.</Text>
-
-        <View style={styles.card}>
-          <View style={styles.row}>
-            <View style={styles.iconCol}>
-              <View style={styles.greenDot} />
-              <View style={styles.dottedLine} />
-            </View>
-            <TouchableOpacity
-              style={styles.inputWrap}
-              onPress={() => handleOpenLocationPicker('from')}
-              activeOpacity={0.7}
-            >
-              <Text style={[styles.pickupText, !from && styles.placeholder]} numberOfLines={1}>
-                {from || 'Select pickup'}
+        <View style={styles.heroBlock}>
+          {sessionReady ? (
+            <View style={styles.greetingChip}>
+              <Text style={styles.greetingChipText}>
+                {welcomeShort ? (
+                  <>
+                    Hi, <Text style={styles.greetingChipName}>{welcomeShort}</Text>
+                  </>
+                ) : (
+                  'Hi there'
+                )}
               </Text>
-              <Text style={styles.label}>Pickup</Text>
-            </TouchableOpacity>
+            </View>
+          ) : null}
+          <Text style={styles.heroEyebrow}>Search</Text>
+          <Text style={styles.heroTitle}>Find a ride</Text>
+          <Text style={styles.heroSubtitle}>Where are you heading?</Text>
+        </View>
+
+        <View style={styles.mainCard}>
+          <View style={styles.routeSection}>
+            <Text style={[styles.cardSectionLabel, styles.cardSectionLabelRoute]}>Your route</Text>
+
+            <View style={styles.locationCard}>
+              <View style={[styles.locationRail, styles.locationRailCompact]}>
+                <View style={[styles.greenDot, styles.greenDotCompact]} />
+                <View style={[styles.locationRailLine, styles.locationRailLineCompact]} />
+                <View style={[styles.redPin, styles.redPinCompact]} />
+              </View>
+              <View style={[styles.locationFields, styles.locationFieldsCompact]}>
+                <View style={styles.routeFieldsRow}>
+                  <View style={styles.routeFieldsStack}>
+                    <TouchableOpacity
+                      style={[
+                        styles.fieldCell,
+                        styles.fieldCellPickup,
+                        styles.fieldCellCompact,
+                        styles.fieldCellPickupCompact,
+                      ]}
+                      onPress={() => handleOpenLocationPicker('from')}
+                      activeOpacity={0.65}
+                    >
+                      <Text style={[styles.fieldCaption, styles.fieldCaptionCompact]}>Pickup</Text>
+                      <Text
+                        style={[
+                          styles.fieldValue,
+                          styles.fieldValueCompact,
+                          !from.trim() && styles.fieldPlaceholder,
+                        ]}
+                        numberOfLines={2}
+                      >
+                        {from.trim() ? from : 'City or address'}
+                      </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.fieldCell, styles.fieldCellCompact]}
+                      onPress={() => handleOpenLocationPicker('to')}
+                      activeOpacity={0.65}
+                    >
+                      <Text style={[styles.fieldCaption, styles.fieldCaptionCompact]}>Destination</Text>
+                      <Text
+                        style={[
+                          styles.fieldValue,
+                          styles.fieldValueCompact,
+                          !to.trim() && styles.fieldPlaceholder,
+                        ]}
+                        numberOfLines={2}
+                      >
+                        {to.trim() ? to : 'City or address'}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                  <View style={[styles.swapRailColumn, styles.swapRailColumnCompact]}>
+                    <TouchableOpacity
+                      style={[styles.swapCompact, styles.swapCompactTight]}
+                      onPress={handleSwapFromTo}
+                      hitSlop={{ top: 12, bottom: 12, left: 8, right: 8 }}
+                      activeOpacity={0.7}
+                      accessibilityLabel="Swap pickup and destination"
+                    >
+                      <Ionicons name="swap-vertical" size={19} color={COLORS.primary} />
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              </View>
+            </View>
+          </View>
+
+          <Text style={[styles.cardSectionLabel, styles.cardSectionLabelSecond]}>When & who</Text>
+          <View style={styles.metaPanel}>
             <TouchableOpacity
-              style={styles.swapButton}
-              onPress={handleSwapFromTo}
-              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-              activeOpacity={0.7}
+              style={styles.metaRow}
+              onPress={() => setShowDatePicker(true)}
+              activeOpacity={0.65}
             >
-              <Ionicons name="swap-vertical" size={22} color={COLORS.primary} />
+              <View style={styles.metaIconWrap}>
+                <Ionicons name="calendar-outline" size={20} color={COLORS.primary} />
+              </View>
+              <View style={styles.metaTextCol}>
+                <Text style={styles.metaPrimary} numberOfLines={1}>
+                  {date ? dateValueToLabel(date) : 'Pick a date'}
+                </Text>
+                <Text style={styles.metaHint}>Travel day</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
+            </TouchableOpacity>
+            <View style={styles.metaDivider} />
+            <TouchableOpacity
+              style={styles.metaRow}
+              onPress={() => setShowPassengersModal(true)}
+              activeOpacity={0.65}
+            >
+              <View style={styles.metaIconWrap}>
+                <Ionicons name="people-outline" size={20} color={COLORS.primary} />
+              </View>
+              <View style={styles.metaTextCol}>
+                <Text style={styles.metaPrimary} numberOfLines={1}>
+                  {passengersLabel}
+                </Text>
+                <Text style={styles.metaHint}>Seats</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
             </TouchableOpacity>
           </View>
 
-          <TouchableOpacity
-            style={styles.row}
-            onPress={() => handleOpenLocationPicker('to')}
-            activeOpacity={0.7}
-          >
-            <View style={styles.iconCol}>
-              <View style={styles.redPin} />
-            </View>
-            <View style={styles.inputWrap}>
-              <Text style={[styles.pickupText, !to && styles.placeholder]} numberOfLines={1}>
-                {to || 'Select destination'}
-              </Text>
-              <Text style={styles.label}>Destination</Text>
-            </View>
-          </TouchableOpacity>
-
-          <View style={styles.cardDivider} />
-
-          <TouchableOpacity
-            style={styles.row}
-            onPress={() => setShowDatePicker(true)}
-            activeOpacity={0.7}
-          >
-            <View style={styles.iconCol}>
-              <Ionicons name="calendar-outline" size={22} color={COLORS.textSecondary} />
-            </View>
-            <View style={styles.inputWrap}>
-              <Text style={[styles.pickupText, !date && styles.placeholder]} numberOfLines={1}>
-                {dateValueToLabel(date)}
-              </Text>
-              <Text style={styles.label}>Date</Text>
-            </View>
-            <Ionicons name="chevron-forward" size={20} color={COLORS.textMuted} />
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.row}
-            onPress={() => setShowPassengersModal(true)}
-            activeOpacity={0.7}
-          >
-            <View style={styles.iconCol}>
-              <Ionicons name="people-outline" size={22} color={COLORS.textSecondary} />
-            </View>
-            <View style={styles.inputWrap}>
-              <Text style={styles.pickupText} numberOfLines={1}>
-                {passengersLabel}
-              </Text>
-              <Text style={styles.label}>Passengers</Text>
-            </View>
-            <Ionicons name="chevron-forward" size={20} color={COLORS.textMuted} />
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.searchButton}
-            onPress={handleSearch}
-            activeOpacity={0.85}
-          >
-            <Text style={styles.searchButtonText}>Search rides</Text>
+          <TouchableOpacity style={styles.searchCta} onPress={handleSearch} activeOpacity={0.88}>
+            <Ionicons name="search" size={22} color={COLORS.white} style={styles.searchCtaIcon} />
+            <Text style={styles.searchCtaText}>Search rides</Text>
           </TouchableOpacity>
         </View>
 
         {sessionReady && recents.length > 0 ? (
           <View style={styles.recentsSection}>
             <View style={styles.recentsHeader}>
-              <Text style={styles.recentsTitle}>Recent searches</Text>
-              <TouchableOpacity onPress={() => void onClearRecents()} hitSlop={8}>
+              <View>
+                <Text style={styles.recentsOverline}>History</Text>
+                <Text style={styles.recentsTitle}>Recent searches</Text>
+              </View>
+              <TouchableOpacity
+                style={styles.clearBtn}
+                onPress={() => void onClearRecents()}
+                hitSlop={8}
+                activeOpacity={0.7}
+              >
                 <Text style={styles.clearAll}>Clear</Text>
               </TouchableOpacity>
             </View>
@@ -553,34 +598,31 @@ export default function SearchRides(): React.JSX.Element {
                 <TouchableOpacity
                   style={styles.recentItemMain}
                   onPress={() => applyRecentSearch(item)}
-                  activeOpacity={0.72}
+                  activeOpacity={0.65}
                 >
+                  <View style={styles.recentAccent} />
                   <View style={styles.recentIconCircle}>
-                    <Ionicons name="time-outline" size={14} color={COLORS.textSecondary} />
+                    <Ionicons name="navigate-outline" size={16} color={COLORS.primary} />
                   </View>
                   <View style={styles.recentTextCol}>
                     <View style={styles.recentRouteStack}>
-                      <View style={styles.recentRouteLineRow}>
-                        <View style={styles.recentLineIcon}>
-                          <Ionicons name="ellipse" size={6} color={COLORS.primary} />
-                        </View>
-                        <Text style={styles.recentRouteTitle} numberOfLines={1} ellipsizeMode="tail">
-                          {briefRouteListLabel(item.from)}
-                        </Text>
+                      <Text style={styles.recentRouteTitle} numberOfLines={1} ellipsizeMode="tail">
+                        {briefRouteListLabel(item.from)}
+                      </Text>
+                      <View style={styles.recentArrowRow}>
+                        <View style={styles.recentArrowLine} />
+                        <Ionicons name="arrow-down" size={12} color={COLORS.textMuted} />
+                        <View style={styles.recentArrowLine} />
                       </View>
-                      <View style={[styles.recentRouteLineRow, styles.recentRouteLineRowSecond]}>
-                        <View style={styles.recentLineIcon}>
-                          <Ionicons name="location-outline" size={14} color={COLORS.textMuted} />
-                        </View>
-                        <Text style={styles.recentRouteSubtitle} numberOfLines={1} ellipsizeMode="tail">
-                          {briefRouteListLabel(item.to)}
-                        </Text>
-                      </View>
+                      <Text style={styles.recentRouteSubtitle} numberOfLines={1} ellipsizeMode="tail">
+                        {briefRouteListLabel(item.to)}
+                      </Text>
                     </View>
                     <Text style={styles.recentMeta} numberOfLines={1}>
                       {formatRecentSubline(item.date, item.passengers)}
                     </Text>
                   </View>
+                  <Ionicons name="chevron-forward" size={18} color={COLORS.border} style={styles.recentChevron} />
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={styles.recentClose}
@@ -588,7 +630,7 @@ export default function SearchRides(): React.JSX.Element {
                   hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
                   accessibilityLabel="Remove from recent searches"
                 >
-                  <Ionicons name="close" size={17} color={COLORS.textMuted} />
+                  <Ionicons name="close-circle-outline" size={22} color={COLORS.textMuted} />
                 </TouchableOpacity>
               </View>
             ))}
@@ -617,179 +659,382 @@ export default function SearchRides(): React.JSX.Element {
 const styles = StyleSheet.create({
   safe: {
     flex: 1,
-    backgroundColor: COLORS.white,
+    backgroundColor: COLORS.backgroundSecondary,
   },
   scroll: {
     flex: 1,
-    backgroundColor: COLORS.white,
+    backgroundColor: COLORS.backgroundSecondary,
   },
   scrollContent: {
-    paddingHorizontal: 16,
-    paddingTop: 24,
+    paddingHorizontal: 20,
+    paddingTop: 20,
   },
-  welcomeLine: {
-    fontSize: 20,
-    fontWeight: '500',
-    color: COLORS.textSecondary,
-    marginBottom: 8,
+  heroBlock: {
+    marginBottom: 22,
   },
-  welcomeName: {
-    fontSize: 20,
-    fontWeight: '800',
-    color: COLORS.text,
+  greetingChip: {
+    alignSelf: 'flex-start',
+    backgroundColor: COLORS.primaryMuted22,
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: 999,
+    marginBottom: 14,
   },
-  heroTitle: {
-    fontSize: 30,
-    fontWeight: '800',
-    color: COLORS.text,
-    letterSpacing: -0.6,
-    marginBottom: 6,
-  },
-  heroSubtitle: {
-    fontSize: 17,
+  greetingChipText: {
+    fontSize: 14,
     fontWeight: '600',
     color: COLORS.textSecondary,
-    marginBottom: 20,
+  },
+  greetingChipName: {
+    fontWeight: '800',
+    color: COLORS.text,
+  },
+  heroEyebrow: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 1.4,
+    color: COLORS.primary,
+    textTransform: 'uppercase',
+    marginBottom: 6,
+  },
+  heroTitle: {
+    fontSize: 32,
+    fontWeight: '800',
+    color: COLORS.text,
+    letterSpacing: -0.8,
+    lineHeight: 38,
+  },
+  heroSubtitle: {
+    fontSize: 16,
+    fontWeight: '500',
+    color: COLORS.textSecondary,
+    marginTop: 6,
     lineHeight: 22,
   },
-  card: {
-    backgroundColor: '#fff',
-    borderRadius: 18,
-    paddingVertical: 16,
+  mainCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 24,
+    padding: 22,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(15, 23, 42, 0.06)',
+    shadowColor: '#0f172a',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.08,
+    shadowRadius: 24,
+    elevation: 4,
+  },
+  cardSectionLabel: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.8,
+    color: COLORS.textMuted,
+    textTransform: 'uppercase',
+    marginBottom: 14,
+  },
+  cardSectionLabelSecond: {
+    marginTop: 18,
+    marginBottom: 12,
+  },
+  locationCard: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+  },
+  locationRail: {
+    width: 22,
+    alignItems: 'center',
+    paddingTop: 6,
+    paddingBottom: 4,
+  },
+  greenDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: COLORS.primary,
+    backgroundColor: COLORS.white,
+  },
+  locationRailLine: {
+    flex: 1,
+    width: 2,
+    marginVertical: 6,
+    backgroundColor: COLORS.border,
+    borderRadius: 1,
+    minHeight: 28,
+  },
+  redPin: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: COLORS.error,
+    borderWidth: 2,
+    borderColor: COLORS.white,
+    shadowColor: COLORS.error,
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.35,
+    shadowRadius: 2,
+    elevation: 1,
+  },
+  locationFields: {
+    flex: 1,
+    marginLeft: 14,
+    minWidth: 0,
+  },
+  routeFieldsRow: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+  },
+  routeFieldsStack: {
+    flex: 1,
+    minWidth: 0,
+  },
+  fieldCellPickup: {
+    marginBottom: 8,
+  },
+  /** Tighter “Your route” block only — date / passengers / CTA unchanged. */
+  routeSection: {
+    marginBottom: 0,
+  },
+  cardSectionLabelRoute: {
+    marginBottom: 10,
+    fontSize: 10,
+    letterSpacing: 0.65,
+  },
+  locationRailCompact: {
+    width: 18,
+    paddingTop: 4,
+    paddingBottom: 2,
+  },
+  greenDotCompact: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    borderWidth: 1.5,
+  },
+  locationRailLineCompact: {
+    marginVertical: 4,
+    minHeight: 22,
+  },
+  redPinCompact: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    borderWidth: 1.5,
+  },
+  locationFieldsCompact: {
+    marginLeft: 10,
+  },
+  fieldCellCompact: {
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 14,
+  },
+  fieldCellPickupCompact: {
+    marginBottom: 6,
+  },
+  fieldCaptionCompact: {
+    fontSize: 10,
+    marginBottom: 2,
+    letterSpacing: 0.35,
+  },
+  fieldValueCompact: {
+    fontSize: 14,
+    lineHeight: 19,
+    letterSpacing: -0.15,
+  },
+  swapRailColumnCompact: {
+    width: 38,
+    paddingLeft: 4,
+  },
+  swapCompactTight: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+  },
+  swapRailColumn: {
+    justifyContent: 'center',
+    paddingLeft: 6,
+    width: 44,
+  },
+  swapCompact: {
+    alignSelf: 'center',
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: COLORS.primaryRipple,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  fieldCell: {
+    backgroundColor: COLORS.backgroundSecondary,
+    borderRadius: 16,
+    paddingVertical: 14,
     paddingHorizontal: 16,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: COLORS.borderLight,
-    shadowColor: '#0f172a',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.06,
-    shadowRadius: 16,
-    elevation: 2,
   },
-  cardDivider: {
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: COLORS.border,
-    marginVertical: 10,
-    marginLeft: 46,
+  fieldCaption: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.4,
+    color: COLORS.textMuted,
+    textTransform: 'uppercase',
+    marginBottom: 4,
   },
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    minHeight: 52,
-  },
-  swapButton: {
-    width: 36,
-    height: 36,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginLeft: 4,
-  },
-  iconCol: {
-    width: 32,
-    alignItems: 'center',
-    justifyContent: 'flex-start',
-  },
-  greenDot: {
-    width: 14,
-    height: 14,
-    borderRadius: 7,
-    borderWidth: 2,
-    borderColor: COLORS.primary,
-    backgroundColor: '#fff',
-  },
-  dottedLine: {
-    width: 2,
-    flex: 1,
-    minHeight: 22,
-    marginVertical: 4,
-    borderLeftWidth: 2,
-    borderLeftColor: COLORS.border,
-    borderStyle: 'dashed',
-  },
-  redPin: {
-    width: 12,
-    height: 16,
-    backgroundColor: COLORS.error,
-    borderRadius: 6,
-  },
-  inputWrap: {
-    flex: 1,
-    marginLeft: 14,
-  },
-  pickupText: {
+  fieldValue: {
     fontSize: 16,
+    fontWeight: '700',
     color: COLORS.text,
+    letterSpacing: -0.2,
+    lineHeight: 22,
+  },
+  fieldPlaceholder: {
+    color: COLORS.textMuted,
     fontWeight: '600',
   },
-  label: {
-    fontSize: 12,
-    color: COLORS.textSecondary,
-    marginTop: 3,
-    fontWeight: '500',
+  metaPanel: {
+    backgroundColor: COLORS.backgroundSecondary,
+    borderRadius: 18,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: COLORS.borderLight,
+    overflow: 'hidden',
   },
-  placeholder: {
-    color: COLORS.textMuted,
-    fontWeight: '500',
+  metaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    minHeight: 56,
   },
-  searchButton: {
-    marginTop: 18,
-    backgroundColor: COLORS.primary,
-    paddingVertical: 16,
-    borderRadius: 14,
+  metaIconWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: COLORS.primaryRipple,
     alignItems: 'center',
     justifyContent: 'center',
+    marginRight: 12,
   },
-  searchButtonText: {
-    fontSize: 18,
+  metaTextCol: {
+    flex: 1,
+    minWidth: 0,
+  },
+  metaPrimary: {
+    fontSize: 16,
     fontWeight: '700',
+    color: COLORS.text,
+    letterSpacing: -0.2,
+  },
+  metaHint: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: COLORS.textMuted,
+    marginTop: 2,
+  },
+  metaDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: COLORS.border,
+    marginLeft: 66,
+  },
+  searchCta: {
+    marginTop: 22,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    backgroundColor: COLORS.primary,
+    paddingVertical: 16,
+    borderRadius: 16,
+    shadowColor: COLORS.primaryDark,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.35,
+    shadowRadius: 16,
+    elevation: 6,
+  },
+  searchCtaIcon: {
+    marginRight: 2,
+  },
+  searchCtaText: {
+    fontSize: 17,
+    fontWeight: '800',
     color: COLORS.white,
+    letterSpacing: -0.2,
   },
   recentsSection: {
-    marginTop: 24,
+    marginTop: 28,
   },
   recentsHeader: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-end',
     justifyContent: 'space-between',
-    marginBottom: 10,
+    marginBottom: 14,
+  },
+  recentsOverline: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 1,
+    color: COLORS.textMuted,
+    textTransform: 'uppercase',
+    marginBottom: 4,
   },
   recentsTitle: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: COLORS.textSecondary,
-    letterSpacing: 0.2,
+    fontSize: 18,
+    fontWeight: '800',
+    color: COLORS.text,
+    letterSpacing: -0.4,
+  },
+  clearBtn: {
+    paddingVertical: 4,
+    paddingHorizontal: 4,
   },
   clearAll: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: COLORS.primary,
+    fontSize: 14,
+    fontWeight: '700',
+    color: COLORS.textMuted,
   },
   recentItem: {
     flexDirection: 'row',
     alignItems: 'stretch',
-    backgroundColor: COLORS.backgroundSecondary,
-    borderRadius: 12,
+    backgroundColor: COLORS.white,
+    borderRadius: 18,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: COLORS.border,
-    marginBottom: 9,
+    borderColor: 'rgba(15, 23, 42, 0.06)',
+    marginBottom: 12,
     overflow: 'hidden',
+    shadowColor: '#0f172a',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.05,
+    shadowRadius: 12,
+    elevation: 2,
   },
   recentItemMain: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 12,
-    paddingLeft: 12,
-    paddingRight: 5,
-    minHeight: 48,
+    paddingVertical: 14,
+    paddingLeft: 0,
+    paddingRight: 6,
+    minHeight: 52,
+    position: 'relative',
+  },
+  recentAccent: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: 4,
+    backgroundColor: COLORS.primary,
+    borderTopLeftRadius: 18,
+    borderBottomLeftRadius: 18,
   },
   recentIconCircle: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: COLORS.white,
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    backgroundColor: COLORS.backgroundSecondary,
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 10,
+    marginLeft: 16,
+    marginRight: 12,
   },
   recentTextCol: {
     flex: 1,
@@ -799,44 +1044,42 @@ const styles = StyleSheet.create({
   recentRouteStack: {
     marginBottom: 2,
   },
-  recentRouteLineRow: {
+  recentRouteTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: COLORS.text,
+    letterSpacing: -0.3,
+  },
+  recentArrowRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    minHeight: 20,
+    marginVertical: 4,
+    paddingRight: 24,
   },
-  recentRouteLineRowSecond: {
-    marginTop: 4,
-  },
-  recentLineIcon: {
-    width: 22,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  recentRouteTitle: {
+  recentArrowLine: {
     flex: 1,
-    minWidth: 0,
-    fontSize: 15,
-    fontWeight: '600',
-    color: COLORS.text,
-    letterSpacing: -0.2,
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: COLORS.border,
   },
   recentRouteSubtitle: {
-    flex: 1,
-    minWidth: 0,
     fontSize: 14,
-    fontWeight: '500',
+    fontWeight: '600',
     color: COLORS.textSecondary,
-    letterSpacing: -0.1,
+    letterSpacing: -0.15,
   },
   recentMeta: {
     fontSize: 12,
+    fontWeight: '600',
     color: COLORS.textMuted,
-    marginTop: 6,
-    fontWeight: '500',
+    marginTop: 8,
+  },
+  recentChevron: {
+    marginRight: 4,
   },
   recentClose: {
-    paddingHorizontal: 8,
-    paddingVertical: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
     justifyContent: 'center',
+    alignSelf: 'center',
   },
 });

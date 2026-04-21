@@ -18,7 +18,7 @@ import {
   DeviceEventEmitter,
 } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Alert } from '../../utils/themedAlert';
 import { useFocusEffect, useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -73,6 +73,7 @@ import {
 import {
   bookingIsCancelled,
   bookingIsCancelledByOwner,
+  bookingIsEligibleForPostRideOwnerRating,
   bookingIsPendingLike,
   pickPreferredBookingStatus,
 } from '../../utils/bookingStatus';
@@ -104,6 +105,23 @@ import type { RecentPublishedEntry } from '../../services/recent-published-stora
 import { loadYourRidesListCache, saveYourRidesListCache } from '../../services/yourRidesListCache';
 
 type FilterTab = YourRidesFilterTab;
+
+/** Owner post-ride rating: confirmed passengers only (excludes pending requests / non-participant rows). */
+function rideBookingsEligibleForOwnerPostRideRating(
+  ride: RideListItem,
+  currentUserId: string
+): RideBookingRow[] {
+  const uid = currentUserId.trim();
+  return (ride.bookings ?? []).filter((b) => {
+    const rowUid = (b.userId ?? '').trim();
+    if (!rowUid || rowUid === uid) return false;
+    return bookingIsEligibleForPostRideOwnerRating(b.status, {
+      isAcceptedPassenger: b.isAcceptedPassenger,
+      isPendingRequest: b.isPendingRequest,
+      ownerListRole: b.ownerListRole,
+    });
+  });
+}
 
 /** Normalize API ride item: use rideDate/rideTime or scheduledDate/scheduledTime; derive from scheduledAt if needed. Never use createdAt for "when". */
 function normalizeRideItem(raw: Record<string, unknown>): RideListItem {
@@ -588,10 +606,9 @@ function YourRidesRideCard({
     !isRideCancelledByOwner(item) &&
     (() => {
       if (!isOwnerView) return !ratedRideIds.has(item.id);
-      const activePassengerIds = (item.bookings ?? [])
-        .filter((b) => !bookingIsCancelled(b.status))
-        .map((b) => (b.userId ?? '').trim())
-        .filter((uid) => uid && uid !== currentUserId);
+      const activePassengerIds = rideBookingsEligibleForOwnerPostRideRating(item, currentUserId).map((b) =>
+        (b.userId ?? '').trim()
+      );
       if (activePassengerIds.length === 0) return false;
       const ratedSet = new Set(ratedTargetsByRide[item.id] ?? []);
       return activePassengerIds.some((uid) => !ratedSet.has(uid));
@@ -604,10 +621,9 @@ function YourRidesRideCard({
     !isRideCancelledByOwner(item) &&
     (() => {
       if (!isOwnerView) return ratedRideIds.has(item.id);
-      const activePassengerIds = (item.bookings ?? [])
-        .filter((b) => !bookingIsCancelled(b.status))
-        .map((b) => (b.userId ?? '').trim())
-        .filter((uid) => uid && uid !== currentUserId);
+      const activePassengerIds = rideBookingsEligibleForOwnerPostRideRating(item, currentUserId).map((b) =>
+        (b.userId ?? '').trim()
+      );
       if (activePassengerIds.length === 0) return false;
       const ratedSet = new Set(ratedTargetsByRide[item.id] ?? []);
       return activePassengerIds.every((uid) => ratedSet.has(uid));
@@ -637,7 +653,7 @@ function YourRidesRideCard({
   }
 
   return (
-    <View>
+    <View style={styles.rideListItemWrap}>
       <RideListCard
         ride={item}
         currentUserId={currentUserId}
@@ -880,10 +896,9 @@ export default function YourRides(): React.JSX.Element {
         const isOwner = isViewerRideOwner(ride, currentUserId);
 
         if (isOwner) {
-          const activePassengerIds = (ride.bookings ?? [])
-            .filter((b) => !bookingIsCancelled(b.status))
-            .map((b) => (b.userId ?? '').trim())
-            .filter((uid) => uid && uid !== currentUserId);
+          const activePassengerIds = rideBookingsEligibleForOwnerPostRideRating(ride, currentUserId).map((b) =>
+            (b.userId ?? '').trim()
+          );
           for (const uid of activePassengerIds) {
             if (cancelled) break;
             if ((ratedTargetsByRide[ride.id] ?? []).includes(uid)) continue;
@@ -1529,9 +1544,7 @@ export default function YourRides(): React.JSX.Element {
         return;
       }
       const isOwner = isViewerRideOwner(ride, currentUserId);
-      const activePassengers = (ride.bookings ?? []).filter(
-        (b) => !bookingIsCancelled(b.status) && (b.userId ?? '').trim() && (b.userId ?? '').trim() !== currentUserId
-      );
+      const activePassengers = rideBookingsEligibleForOwnerPostRideRating(ride, currentUserId);
       const rideOwnerId = (ride.userId ?? '').trim();
       if (!isOwner && rideOwnerId) {
         try {
@@ -1553,6 +1566,15 @@ export default function YourRides(): React.JSX.Element {
         } catch {
           // Non-blocking fallback: allow opening; backend duplicate guard still protects POST.
         }
+      }
+
+      if (isOwner && activePassengers.length === 0) {
+        showToast({
+          title: 'Nothing to rate',
+          message: 'Only confirmed passengers can be rated for this ride.',
+          variant: 'info',
+        });
+        return;
       }
 
       if (isOwner && activePassengers.length > 0) {
@@ -1594,17 +1616,11 @@ export default function YourRides(): React.JSX.Element {
 
     const rideOwnerId = (ratingRide.userId ?? '').trim();
     const isOwner = isViewerRideOwner(ratingRide, currentUserId);
-    const activePassenger = (ratingRide.bookings ?? []).find(
-      (b) => !bookingIsCancelled(b.status) && (b.userId ?? '').trim() && (b.userId ?? '').trim() !== currentUserId
-    );
-    const ownerCandidatesCount = isOwner
-      ? (ratingRide.bookings ?? []).filter(
-          (b) =>
-            !bookingIsCancelled(b.status) &&
-            (b.userId ?? '').trim() &&
-            (b.userId ?? '').trim() !== currentUserId
-        ).length
-      : 0;
+    const ownerEligibleBookings = rideBookingsEligibleForOwnerPostRideRating(ratingRide, currentUserId);
+    const activePassenger =
+      ownerEligibleBookings.find((b) => (b.userId ?? '').trim() === selectedRateTargetUserId) ??
+      ownerEligibleBookings[0];
+    const ownerCandidatesCount = isOwner ? ownerEligibleBookings.length : 0;
     const toUserId = isOwner
       ? (selectedRateTargetUserId || (activePassenger?.userId ?? '').trim())
       : rideOwnerId;
@@ -1764,6 +1780,8 @@ export default function YourRides(): React.JSX.Element {
     ratingSubmitting,
     ratingStars,
     ratingReview,
+    selectedRateTargetUserId,
+    selectedRateTargetName,
     closeRatingSheet,
     ratedTargetsByRide,
   ]);
@@ -1779,9 +1797,7 @@ export default function YourRides(): React.JSX.Element {
   const ownerRateCandidates = useMemo(() => {
     if (!ratingRide || !currentUserId) return [];
     if (!isViewerRideOwner(ratingRide, currentUserId)) return [];
-    return (ratingRide.bookings ?? []).filter(
-      (b) => !bookingIsCancelled(b.status) && (b.userId ?? '').trim() && (b.userId ?? '').trim() !== currentUserId
-    );
+    return rideBookingsEligibleForOwnerPostRideRating(ratingRide, currentUserId);
   }, [ratingRide, currentUserId]);
   const isOwnerRatingFlow = Boolean(
     ratingRide && currentUserId && isViewerRideOwner(ratingRide, currentUserId)
@@ -1834,13 +1850,17 @@ export default function YourRides(): React.JSX.Element {
 
   const staleTripsBanner =
     rides.length > 0 && (netConnected === false || showingStaleFromCache) ? (
-      <View
-        style={styles.staleTripsBanner}
-        accessibilityRole="alert"
-        accessibilityLabel={OFFLINE_A11Y_CACHED_LIST}
-      >
-        <Ionicons name="cloud-offline-outline" size={16} color={COLORS.textSecondary} />
-        <Text style={styles.staleTripsBannerText}>{OFFLINE_HEADLINE}</Text>
+      <View style={styles.staleTripsBannerWrap}>
+        <View
+          style={styles.staleTripsBanner}
+          accessibilityRole="alert"
+          accessibilityLabel={OFFLINE_A11Y_CACHED_LIST}
+        >
+          <View style={styles.staleTripsBannerIconWrap}>
+            <Ionicons name="cloud-offline-outline" size={18} color={COLORS.textSecondary} />
+          </View>
+          <Text style={styles.staleTripsBannerText}>{OFFLINE_HEADLINE}</Text>
+        </View>
       </View>
     ) : null;
 
@@ -1920,11 +1940,15 @@ export default function YourRides(): React.JSX.Element {
     return (
       <View style={styles.tripsEmptyRoot}>
         <View style={styles.tripsEmptyCard}>
-          <View style={styles.tripsEmptyMark} accessibilityRole="image" accessibilityLabel={isPast ? 'No past trips' : 'No upcoming trips'}>
+          <View
+            style={[styles.tripsEmptyMark, isPast ? styles.tripsEmptyMarkPast : styles.tripsEmptyMarkUpcoming]}
+            accessibilityRole="image"
+            accessibilityLabel={isPast ? 'No past trips' : 'No upcoming trips'}
+          >
             <MaterialCommunityIcons
-              name={isPast ? 'history' : 'car-off'}
-              size={isPast ? 34 : 38}
-              color={COLORS.error}
+              name={isPast ? 'history' : 'car-outline'}
+              size={isPast ? 28 : 30}
+              color={isPast ? COLORS.textSecondary : COLORS.primary}
             />
           </View>
           <Text style={styles.tripsEmptyTitle}>{isPast ? 'No past trips' : 'No upcoming trips'}</Text>
@@ -1939,150 +1963,217 @@ export default function YourRides(): React.JSX.Element {
   }, []);
 
   return (
-    <View style={styles.wrapper}>
-      <View style={styles.filterRow}>
-      <View style={styles.filterTabsInner}>
-        <TouchableOpacity
-          style={[styles.filterTab, filter === 'myRides' && styles.filterTabActive]}
-          onPress={() => setFilter('myRides')}
-          activeOpacity={0.8}
-        >
-          <Text style={[styles.filterTabText, filter === 'myRides' && styles.filterTabTextActive]}>
-            My rides{tabCounts.myRides > 0 ? ` (${tabCounts.myRides})` : ''}
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.filterTab, filter === 'allRides' && styles.filterTabActive]}
-          onPress={() => {
-            if (filter === 'allRides') {
-              void fetchRides(ridesRef.current.length > 0);
-              return;
-            }
-            setFilter('allRides');
-          }}
-          activeOpacity={0.8}
-        >
-          <Text style={[styles.filterTabText, filter === 'allRides' && styles.filterTabTextActive]}>
-            All rides{allRidesTabLabelCount > 0 ? ` (${allRidesTabLabelCount})` : ''}
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.filterTab, filter === 'pastRides' && styles.filterTabActive]}
-          onPress={() => setFilter('pastRides')}
-          activeOpacity={0.8}
-        >
-          <Text style={[styles.filterTabText, filter === 'pastRides' && styles.filterTabTextActive]}>
-            Past rides{tabCounts.pastRides > 0 ? ` (${tabCounts.pastRides})` : ''}
-          </Text>
-        </TouchableOpacity>
-      </View>
-      </View>
-      {staleTripsBanner}
-      {initialLoadBlock ?? initialOfflineBlock ?? initialErrorBlock ?? blockingRefreshBlock ?? (
-        filter === 'allRides' ? (
-          <FlatList
-            data={allRidesFlat}
-            keyExtractor={(item) => item.id}
-            contentContainerStyle={
-              allRidesFlat.length === 0
-                ? [styles.emptyList, { paddingBottom: listContentBottomPad }]
-                : [styles.list, { paddingBottom: listContentBottomPad }]
-            }
-            refreshControl={
-              <RefreshControl
-                refreshing={loading}
-                onRefresh={() => {
-                  clearRideDetailCache();
-                  void fetchRides(false);
-                }}
-                colors={[COLORS.primary]}
-              />
-            }
-            ListEmptyComponent={
-              backgroundRefreshing ? (
-                <LoadingSpinner inline size="md" label="Loading trips…" style={{ paddingVertical: 28 }} />
-              ) : showOfflineInTabEmpty ? (
-                <View style={[styles.empty, styles.emptyOffline]}>
-                  <Ionicons name="cloud-offline-outline" size={40} color={COLORS.textMuted} />
-                  <Text style={styles.emptyTitle}>{OFFLINE_HEADLINE}</Text>
-                  <Text style={styles.emptySubtitle}>{OFFLINE_SUBTITLE_REFRESH}</Text>
-                </View>
-              ) : (
-                renderTripsEmptyCard('upcoming')
-              )
-            }
-            renderItem={({ item }) => (
-              <YourRidesRideCard
-                item={item}
-                filter={filter}
-                currentUserId={currentUserId}
-                currentUserName={currentUserName}
-                viewerAvatarUrl={viewerAvatarUrl}
-                bookedRideIds={bookedRideIds}
-                ratedRideIds={ratedRideIds}
-                ratedTargetsByRide={ratedTargetsByRide}
-                onNavigateDetail={goRideDetail}
-                onRateRide={openRateSheet}
-                showRepublishAction={false}
-                onRepublishPress={republishFromPastRide}
-              />
-            )}
-          />
-        ) : (
-          <SectionList
-            sections={filter === 'myRides' ? myRidesSections : pastRidesSections}
-            keyExtractor={(item) => item.id}
-            renderSectionHeader={({ section }) => (
-              <Text style={styles.sectionHeader}>{section.title}</Text>
-            )}
-            stickySectionHeadersEnabled={false}
-            contentContainerStyle={
-              (filter === 'myRides' ? myRidesSections : pastRidesSections).length === 0
-                ? [styles.emptyList, { paddingBottom: listContentBottomPad }]
-                : [styles.list, { paddingBottom: listContentBottomPad }]
-            }
-            refreshControl={
-              <RefreshControl
-                refreshing={loading}
-                onRefresh={() => {
-                  clearRideDetailCache();
-                  void fetchRides(false);
-                }}
-                colors={[COLORS.primary]}
-              />
-            }
-            ListEmptyComponent={
-              backgroundRefreshing ? (
-                <LoadingSpinner inline size="md" label="Loading trips…" style={{ paddingVertical: 28 }} />
-              ) : showOfflineInTabEmpty ? (
-                <View style={[styles.empty, styles.emptyOffline]}>
-                  <Ionicons name="cloud-offline-outline" size={40} color={COLORS.textMuted} />
-                  <Text style={styles.emptyTitle}>{OFFLINE_HEADLINE}</Text>
-                  <Text style={styles.emptySubtitle}>{OFFLINE_SUBTITLE_REFRESH}</Text>
-                </View>
-              ) : (
-                renderTripsEmptyCard(filter === 'pastRides' ? 'past' : 'upcoming')
-              )
-            }
-            renderItem={({ item }) => (
-              <YourRidesRideCard
-                item={item}
-                filter={filter}
-                currentUserId={currentUserId}
-                currentUserName={currentUserName}
-                viewerAvatarUrl={viewerAvatarUrl}
-                bookedRideIds={bookedRideIds}
-                ratedRideIds={ratedRideIds}
-                ratedTargetsByRide={ratedTargetsByRide}
-                onNavigateDetail={goRideDetail}
-                onRateRide={openRateSheet}
-                showRepublishAction={false}
-                onRepublishPress={republishFromPastRide}
-              />
-            )}
-          />
-        )
-      )}
+    <>
+      <SafeAreaView style={styles.wrapper} edges={['top']}>
+        <View style={styles.heroBlock}>
+          <Text style={styles.heroTitle}>Your trips</Text>
+          <Text style={styles.heroSubtitle}>Driving, booked rides, and history.</Text>
+        </View>
+        <View style={styles.segmentSection}>
+          <View style={styles.segmentTrack}>
+            <TouchableOpacity
+              style={[styles.segmentTab, filter === 'myRides' && styles.segmentTabActive]}
+              onPress={() => setFilter('myRides')}
+              activeOpacity={0.85}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: filter === 'myRides' }}
+            >
+              <Text
+                style={[
+                  styles.segmentLabel,
+                  filter === 'myRides' && styles.segmentLabelActive,
+                  filter === 'myRides' ? styles.segmentLabelMyOn : styles.segmentLabelMyOff,
+                ]}
+              >
+                My rides
+                {tabCounts.myRides > 0 ? (
+                  <Text
+                    style={[
+                      styles.segmentCount,
+                      filter === 'myRides' ? styles.segmentCountMyOn : styles.segmentCountMyOff,
+                    ]}
+                  >
+                    {' '}
+                    {tabCounts.myRides}
+                  </Text>
+                ) : null}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.segmentTab, filter === 'allRides' && styles.segmentTabActive]}
+              onPress={() => {
+                if (filter === 'allRides') {
+                  void fetchRides(ridesRef.current.length > 0);
+                  return;
+                }
+                setFilter('allRides');
+              }}
+              activeOpacity={0.85}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: filter === 'allRides' }}
+            >
+              <Text
+                style={[
+                  styles.segmentLabel,
+                  filter === 'allRides' && styles.segmentLabelActive,
+                  filter === 'allRides' ? styles.segmentLabelAllOn : styles.segmentLabelAllOff,
+                ]}
+              >
+                All
+                {allRidesTabLabelCount > 0 ? (
+                  <Text
+                    style={[
+                      styles.segmentCount,
+                      filter === 'allRides' ? styles.segmentCountAllOn : styles.segmentCountAllOff,
+                    ]}
+                  >
+                    {' '}
+                    {allRidesTabLabelCount}
+                  </Text>
+                ) : null}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.segmentTab, filter === 'pastRides' && styles.segmentTabActive]}
+              onPress={() => setFilter('pastRides')}
+              activeOpacity={0.85}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: filter === 'pastRides' }}
+            >
+              <Text
+                style={[
+                  styles.segmentLabel,
+                  filter === 'pastRides' && styles.segmentLabelActive,
+                  filter === 'pastRides' ? styles.segmentLabelPastOn : styles.segmentLabelPastOff,
+                ]}
+              >
+                Past
+                {tabCounts.pastRides > 0 ? (
+                  <Text
+                    style={[
+                      styles.segmentCount,
+                      filter === 'pastRides' ? styles.segmentCountPastOn : styles.segmentCountPastOff,
+                    ]}
+                  >
+                    {' '}
+                    {tabCounts.pastRides}
+                  </Text>
+                ) : null}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+        {staleTripsBanner}
+        {initialLoadBlock ?? initialOfflineBlock ?? initialErrorBlock ?? blockingRefreshBlock ?? (
+          filter === 'allRides' ? (
+            <FlatList
+              data={allRidesFlat}
+              keyExtractor={(item) => item.id}
+              contentContainerStyle={
+                allRidesFlat.length === 0
+                  ? [styles.emptyList, { paddingBottom: listContentBottomPad }]
+                  : [styles.list, { paddingBottom: listContentBottomPad }]
+              }
+              refreshControl={
+                <RefreshControl
+                  refreshing={loading}
+                  onRefresh={() => {
+                    clearRideDetailCache();
+                    void fetchRides(false);
+                  }}
+                  colors={[COLORS.primary]}
+                />
+              }
+              ListEmptyComponent={
+                backgroundRefreshing ? (
+                  <LoadingSpinner inline size="md" label="Loading trips…" style={{ paddingVertical: 28 }} />
+                ) : showOfflineInTabEmpty ? (
+                  <View style={[styles.empty, styles.emptyOffline]}>
+                    <View style={styles.emptyOfflineIconWrap}>
+                      <Ionicons name="cloud-offline-outline" size={34} color={COLORS.primary} />
+                    </View>
+                    <Text style={styles.emptyTitle}>{OFFLINE_HEADLINE}</Text>
+                    <Text style={styles.emptySubtitle}>{OFFLINE_SUBTITLE_REFRESH}</Text>
+                  </View>
+                ) : (
+                  renderTripsEmptyCard('upcoming')
+                )
+              }
+              renderItem={({ item }) => (
+                <YourRidesRideCard
+                  item={item}
+                  filter={filter}
+                  currentUserId={currentUserId}
+                  currentUserName={currentUserName}
+                  viewerAvatarUrl={viewerAvatarUrl}
+                  bookedRideIds={bookedRideIds}
+                  ratedRideIds={ratedRideIds}
+                  ratedTargetsByRide={ratedTargetsByRide}
+                  onNavigateDetail={goRideDetail}
+                  onRateRide={openRateSheet}
+                  showRepublishAction={false}
+                  onRepublishPress={republishFromPastRide}
+                />
+              )}
+            />
+          ) : (
+            <SectionList
+              sections={filter === 'myRides' ? myRidesSections : pastRidesSections}
+              keyExtractor={(item) => item.id}
+              renderSectionHeader={({ section }) => (
+                <Text style={styles.sectionHeader}>{section.title}</Text>
+              )}
+              stickySectionHeadersEnabled={false}
+              contentContainerStyle={
+                (filter === 'myRides' ? myRidesSections : pastRidesSections).length === 0
+                  ? [styles.emptyList, { paddingBottom: listContentBottomPad }]
+                  : [styles.list, { paddingBottom: listContentBottomPad }]
+              }
+              refreshControl={
+                <RefreshControl
+                  refreshing={loading}
+                  onRefresh={() => {
+                    clearRideDetailCache();
+                    void fetchRides(false);
+                  }}
+                  colors={[COLORS.primary]}
+                />
+              }
+              ListEmptyComponent={
+                backgroundRefreshing ? (
+                  <LoadingSpinner inline size="md" label="Loading trips…" style={{ paddingVertical: 28 }} />
+                ) : showOfflineInTabEmpty ? (
+                  <View style={[styles.empty, styles.emptyOffline]}>
+                    <View style={styles.emptyOfflineIconWrap}>
+                      <Ionicons name="cloud-offline-outline" size={34} color={COLORS.primary} />
+                    </View>
+                    <Text style={styles.emptyTitle}>{OFFLINE_HEADLINE}</Text>
+                    <Text style={styles.emptySubtitle}>{OFFLINE_SUBTITLE_REFRESH}</Text>
+                  </View>
+                ) : (
+                  renderTripsEmptyCard(filter === 'pastRides' ? 'past' : 'upcoming')
+                )
+              }
+              renderItem={({ item }) => (
+                <YourRidesRideCard
+                  item={item}
+                  filter={filter}
+                  currentUserId={currentUserId}
+                  currentUserName={currentUserName}
+                  viewerAvatarUrl={viewerAvatarUrl}
+                  bookedRideIds={bookedRideIds}
+                  ratedRideIds={ratedRideIds}
+                  ratedTargetsByRide={ratedTargetsByRide}
+                  onNavigateDetail={goRideDetail}
+                  onRateRide={openRateSheet}
+                  showRepublishAction={false}
+                  onRepublishPress={republishFromPastRide}
+                />
+              )}
+            />
+          )
+        )}
+      </SafeAreaView>
       <Modal visible={showRatingSheet} transparent animationType="slide" onRequestClose={handleRatingModalRequestClose}>
         <View
           style={styles.ratingOverlay}
@@ -2180,7 +2271,7 @@ export default function YourRides(): React.JSX.Element {
                       <Ionicons
                         name={ratingStars >= s ? 'star' : 'star-outline'}
                         size={34}
-                    color={COLORS.warning}
+                        color={COLORS.warning}
                       />
                     </TouchableOpacity>
                   ))}
@@ -2262,27 +2353,28 @@ export default function YourRides(): React.JSX.Element {
           </Animated.View>
         </View>
       </Modal>
-    </View>
+    </>
   );
 }
 
 const styles = StyleSheet.create({
   wrapper: {
     flex: 1,
-    backgroundColor: COLORS.background,
+    backgroundColor: COLORS.backgroundSecondary,
   },
   /** List / loading / error area below filter tabs (tabs stay mounted). */
   listBody: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: COLORS.background,
+    backgroundColor: COLORS.backgroundSecondary,
     padding: 24,
   },
   skeletonListWrap: {
     flex: 1,
-    padding: 16,
-    backgroundColor: COLORS.background,
+    paddingHorizontal: 20,
+    paddingTop: 4,
+    backgroundColor: COLORS.backgroundSecondary,
   },
   skeletonHint: {
     marginTop: 6,
@@ -2292,54 +2384,125 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: COLORS.textSecondary,
   },
-  filterRow: {
-    backgroundColor: COLORS.background,
+  heroBlock: {
+    paddingHorizontal: 20,
+    paddingTop: 4,
+    paddingBottom: 20,
   },
-  filterTabsInner: {
+  heroTitle: {
+    fontSize: 28,
+    fontWeight: '800',
+    color: COLORS.primaryDark,
+    letterSpacing: -0.7,
+    lineHeight: 34,
+  },
+  heroSubtitle: {
+    fontSize: 15,
+    fontWeight: '500',
+    color: COLORS.textSecondary,
+    marginTop: 6,
+    lineHeight: 21,
+    maxWidth: 320,
+  },
+  segmentSection: {
+    paddingHorizontal: 20,
+    paddingBottom: 14,
+  },
+  segmentTrack: {
     flexDirection: 'row',
-    paddingHorizontal: 12,
-    paddingTop: 6,
-    paddingBottom: 8,
-    gap: 6,
+    alignItems: 'center',
+    borderRadius: 16,
+    padding: 4,
+    backgroundColor: 'rgba(15, 23, 42, 0.055)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(15, 23, 42, 0.06)',
+    gap: 2,
   },
-  sectionHeader: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: COLORS.textMuted,
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-    marginTop: 4,
-    marginBottom: 8,
-  },
-  filterTab: {
+  segmentTab: {
     flex: 1,
     paddingVertical: 10,
     paddingHorizontal: 6,
-    borderRadius: 10,
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: COLORS.backgroundSecondary,
-    borderWidth: 1,
-    borderColor: COLORS.border,
+    backgroundColor: 'transparent',
   },
-  filterTabActive: {
-    backgroundColor: COLORS.primary,
-    borderColor: COLORS.primary,
+  segmentTabActive: {
+    backgroundColor: COLORS.white,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#0f172a',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.06,
+        shadowRadius: 10,
+      },
+      android: { elevation: 2 },
+    }),
   },
-  filterTabText: {
+  segmentLabel: {
     fontSize: 13,
     fontWeight: '600',
-    color: COLORS.textSecondary,
     textAlign: 'center',
+    letterSpacing: -0.2,
   },
-  filterTabTextActive: {
-    color: COLORS.white,
+  segmentLabelActive: {
+    fontWeight: '800',
+  },
+  segmentLabelMyOff: {
+    color: 'rgba(22, 156, 70, 0.72)',
+  },
+  segmentLabelMyOn: {
+    color: COLORS.primaryDark,
+  },
+  segmentLabelAllOff: {
+    color: 'rgba(37, 99, 235, 0.65)',
+  },
+  segmentLabelAllOn: {
+    color: COLORS.secondary,
+  },
+  segmentLabelPastOff: {
+    color: COLORS.textMuted,
+  },
+  segmentLabelPastOn: {
+    color: '#475569',
+  },
+  segmentCount: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  segmentCountMyOff: {
+    color: 'rgba(22, 156, 70, 0.55)',
+  },
+  segmentCountMyOn: {
+    color: COLORS.primary,
+  },
+  segmentCountAllOff: {
+    color: 'rgba(37, 99, 235, 0.5)',
+  },
+  segmentCountAllOn: {
+    color: COLORS.secondaryLight,
+  },
+  segmentCountPastOff: {
+    color: COLORS.textMuted,
+  },
+  segmentCountPastOn: {
+    color: '#64748b',
+  },
+  sectionHeader: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: COLORS.textMuted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+    marginTop: 18,
+    marginBottom: 8,
+    paddingHorizontal: 0,
   },
   center: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: COLORS.background,
+    backgroundColor: COLORS.backgroundSecondary,
     padding: 24,
   },
   loaderInner: {
@@ -2360,22 +2523,36 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     lineHeight: 22,
   },
+  staleTripsBannerWrap: {
+    paddingHorizontal: 20,
+    paddingBottom: 10,
+  },
   staleTripsBanner: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'flex-start',
-    gap: 8,
-    paddingVertical: 7,
-    paddingHorizontal: 14,
-    backgroundColor: COLORS.backgroundSecondary,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: COLORS.border,
+    gap: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    backgroundColor: 'rgba(15, 23, 42, 0.04)',
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(15, 23, 42, 0.06)',
+  },
+  staleTripsBannerIconWrap: {
+    width: 32,
+    height: 32,
+    borderRadius: 10,
+    backgroundColor: COLORS.white,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   staleTripsBannerText: {
-    fontSize: 14,
+    flex: 1,
+    fontSize: 13,
     fontWeight: '600',
-    color: COLORS.text,
-    letterSpacing: -0.2,
+    color: COLORS.textSecondary,
+    letterSpacing: -0.15,
+    lineHeight: 18,
   },
   offlineFullBleed: {
     flex: 1,
@@ -2455,7 +2632,16 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   emptyOffline: {
-    paddingVertical: 32,
+    paddingVertical: 28,
+  },
+  emptyOfflineIconWrap: {
+    width: 72,
+    height: 72,
+    borderRadius: 24,
+    backgroundColor: COLORS.primaryMuted22,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 4,
   },
   offlineRetryBtn: {
     marginTop: 18,
@@ -2466,8 +2652,17 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.primary,
     paddingVertical: 14,
     paddingHorizontal: 20,
-    borderRadius: 12,
+    borderRadius: 16,
     gap: 8,
+    ...Platform.select({
+      ios: {
+        shadowColor: COLORS.primaryDark,
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.28,
+        shadowRadius: 8,
+      },
+      android: { elevation: 4 },
+    }),
   },
   offlineRetryText: {
     fontSize: 16,
@@ -2475,93 +2670,104 @@ const styles = StyleSheet.create({
     color: COLORS.white,
   },
   list: {
-    padding: 16,
+    paddingHorizontal: 20,
+    paddingTop: 4,
+    paddingBottom: 8,
   },
   emptyList: {
     flexGrow: 1,
-    paddingHorizontal: 16,
-    paddingTop: 4,
-    paddingBottom: 24,
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    paddingBottom: 32,
     justifyContent: 'center',
   },
   tripsEmptyRoot: {
     width: '100%',
     alignItems: 'center',
+    paddingVertical: 8,
   },
   tripsEmptyCard: {
     width: '100%',
-    maxWidth: 360,
+    maxWidth: 320,
     alignSelf: 'center',
-    backgroundColor: COLORS.background,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: COLORS.borderLight,
-    paddingHorizontal: 18,
-    paddingVertical: 18,
+    backgroundColor: COLORS.white,
+    borderRadius: 20,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(15, 23, 42, 0.07)',
+    paddingHorizontal: 24,
+    paddingVertical: 28,
     alignItems: 'center',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#0f172a',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.06,
-        shadowRadius: 10,
-      },
-      android: { elevation: 2 },
-      default: {},
-    }),
   },
   tripsEmptyMark: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
+    width: 64,
+    height: 64,
+    borderRadius: 20,
     alignSelf: 'center',
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 2,
-    backgroundColor: 'rgba(220, 38, 38, 0.12)',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(220, 38, 38, 0.22)',
+  },
+  tripsEmptyMarkUpcoming: {
+    backgroundColor: COLORS.primaryRipple,
+  },
+  tripsEmptyMarkPast: {
+    backgroundColor: 'rgba(15, 23, 42, 0.05)',
   },
   tripsEmptyTitle: {
-    marginTop: 6,
+    marginTop: 16,
     fontSize: 18,
     fontWeight: '800',
-    letterSpacing: -0.3,
+    letterSpacing: -0.35,
     color: COLORS.text,
     textAlign: 'center',
   },
   tripsEmptyBody: {
-    marginTop: 6,
+    marginTop: 8,
     fontSize: 14,
-    lineHeight: 19,
+    lineHeight: 21,
     fontWeight: '500',
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     textAlign: 'center',
   },
   empty: {
     alignItems: 'center',
-    paddingVertical: 48,
+    paddingVertical: 36,
+    paddingHorizontal: 16,
   },
   emptyTitle: {
-    fontSize: 18,
-    fontWeight: '600',
+    fontSize: 17,
+    fontWeight: '800',
     color: COLORS.text,
-    marginTop: 16,
+    marginTop: 12,
+    letterSpacing: -0.28,
+    textAlign: 'center',
   },
   emptySubtitle: {
     fontSize: 14,
+    fontWeight: '500',
     color: COLORS.textSecondary,
-    marginTop: 4,
+    marginTop: 6,
+    textAlign: 'center',
+    lineHeight: 21,
+    maxWidth: 280,
+  },
+  rideListItemWrap: {
+    marginBottom: 12,
   },
   republishOnlyCard: {
     marginBottom: 10,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    backgroundColor: COLORS.backgroundSecondary,
-    paddingHorizontal: 12,
-    paddingVertical: 12,
+    borderRadius: 18,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(15, 23, 42, 0.06)',
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
     gap: 6,
+    shadowColor: '#0f172a',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.05,
+    shadowRadius: 12,
+    elevation: 2,
   },
   republishOnlyTop: {
     flexDirection: 'row',
@@ -2591,11 +2797,11 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   ratingSheet: {
-    backgroundColor: COLORS.background,
-    borderTopLeftRadius: 18,
-    borderTopRightRadius: 18,
-    padding: 16,
-    borderTopWidth: 1,
+    backgroundColor: COLORS.white,
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    padding: 18,
+    borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: COLORS.borderLight,
     maxHeight: '84%',
   },
@@ -2705,7 +2911,7 @@ const styles = StyleSheet.create({
     borderRadius: 13,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: COLORS.background,
+    backgroundColor: COLORS.surface,
     borderWidth: 1,
     borderColor: COLORS.borderLight,
   },
@@ -2764,9 +2970,18 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 14,
-    paddingVertical: 12,
-    borderRadius: 12,
+    paddingVertical: 14,
+    borderRadius: 16,
     backgroundColor: COLORS.primary,
+    ...Platform.select({
+      ios: {
+        shadowColor: COLORS.primaryDark,
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.28,
+        shadowRadius: 8,
+      },
+      android: { elevation: 3 },
+    }),
   },
   ratingSubmitBtnDisabled: {
     backgroundColor: 'rgba(34,197,94,0.45)',

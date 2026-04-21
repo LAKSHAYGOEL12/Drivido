@@ -3,6 +3,7 @@ import { Platform } from 'react-native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import type { RootStackParamList } from './types';
 import BottomTabs from './BottomTabs';
+import PublishStack from './PublishStack';
 import Login from '../screens/auth/Login';
 import Register from '../screens/auth/Register';
 import LegalAgreementScreen from '../screens/auth/LegalAgreementScreen';
@@ -28,6 +29,14 @@ export default function RootStack(): React.JSX.Element {
       }}
     >
       <Stack.Screen name="Main" component={BottomTabs} options={{ animation: 'none' }} />
+      <Stack.Screen
+        name="PublishStack"
+        component={PublishStack}
+        options={{
+          presentation: 'card',
+          animation: 'slide_from_right',
+        }}
+      />
       <Stack.Screen
         name="Login"
         component={Login}

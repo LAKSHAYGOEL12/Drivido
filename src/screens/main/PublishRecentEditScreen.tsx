@@ -1,7 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  BackHandler,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -17,7 +19,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Ionicons } from '@expo/vector-icons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { CommonActions, useFocusEffect, useRoute } from '@react-navigation/native';
-import type { PublishStackParamList } from '../../navigation/types';
+import type { PublishAfterRouteParams, PublishStackParamList, RidesStackParamList } from '../../navigation/types';
 import { findMainTabNavigator, findMainTabNavigatorWithOptions } from '../../navigation/findMainTabNavigator';
 import { resetPublishTabAndFocusYourRidesInMainTabs } from '../../navigation/resetPublishStackToRideRoot';
 import { COLORS } from '../../constants/colors';
@@ -66,6 +68,8 @@ import {
 } from '../../utils/ridePublisherCoords';
 import { formatPublishStyleDateLabel } from '../../utils/rideDisplay';
 import { showToast } from '../../utils/toast';
+import { rootNavigationRef } from '../../navigation/rootNavigationRef';
+import { navigateToPublishRoutePreview } from '../../navigation/navigateToPublishRoutePreview';
 
 const MIN_LEAD_MINUTES = 30;
 const CLOCK_SIZE = 232;
@@ -74,7 +78,10 @@ const HOUR_OUTER_RADIUS = 90;
 const HOUR_INNER_RADIUS = 60;
 const MINUTE_OPTIONS = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55] as const;
 
-type Props = NativeStackScreenProps<PublishStackParamList, 'PublishRecentEdit'>;
+type Props = NativeStackScreenProps<
+  PublishStackParamList | RidesStackParamList,
+  'PublishRecentEdit'
+>;
 
 function formatTimeLabel(hour: number, minute: number): string {
   return `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
@@ -194,6 +201,9 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
   const [netOnline, setNetOnline] = useState<boolean | null>(null);
   const offline = netOnline === false;
 
+  /** Same route as the source ride — pickup and destination are not editable on this screen. */
+  const routeEndpointsLocked = true;
+
   useEffect(() => {
     const unsub = NetInfo.addEventListener((s) => {
       setNetOnline(s.isConnected === true && s.isInternetReachable !== false);
@@ -234,13 +244,34 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
       }, 280);
       return;
     }
-    navigation.goBack();
+    if (navigation.canGoBack()) {
+      navigation.goBack();
+      handlingBackRef.current = false;
+      return;
+    }
+    navigation.dispatch(
+      CommonActions.reset({
+        index: 0,
+        routes: [{ name: 'PublishRecentsPicker' as const }],
+      }) as never
+    );
     handlingBackRef.current = false;
   }, [navigation, returnToRide]);
 
   const dateValueDisplay = useMemo(
     () => formatPublishStyleDateLabel(selectedDate),
     [selectedDate]
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      if (Platform.OS !== 'android') return undefined;
+      const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+        goBackFromRepublish();
+        return true;
+      });
+      return () => sub.remove();
+    }, [goBackFromRepublish])
   );
 
   useEffect(() => {
@@ -486,6 +517,14 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
       showOfflineHint();
       return;
     }
+    if (routeEndpointsLocked) {
+      showToast({
+        title: 'Route is fixed',
+        message: 'Pickup and destination cannot be changed when editing and publishing this ride.',
+        variant: 'info',
+      });
+      return;
+    }
     navigation.navigate('LocationPicker', {
       field,
       currentFrom: pickup,
@@ -517,7 +556,7 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
       alertRouteRequiredBeforePrice();
       return;
     }
-    navigation.navigate('PublishRoutePreview', {
+    navigateToPublishRoutePreview(navigation, {
       selectedFrom: pickup.trim(),
       selectedTo: destination.trim(),
       pickupLatitude,
@@ -1000,9 +1039,14 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
           ) : null}
           <View style={styles.pickRow}>
             <TouchableOpacity
-              style={[styles.pickRowMain, offline && styles.pickRowOfflineMuted]}
+              style={[
+                styles.pickRowMain,
+                offline && styles.pickRowOfflineMuted,
+                routeEndpointsLocked && styles.pickRowEndpointLocked,
+              ]}
               onPress={() => openLocationPicker('from')}
-              activeOpacity={0.75}
+              activeOpacity={routeEndpointsLocked ? 1 : 0.75}
+              disabled={routeEndpointsLocked}
             >
               <View style={styles.pickIconCol}>
                 <View style={styles.greenDot} />
@@ -1014,17 +1058,31 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
                 </Text>
                 <Text style={styles.pickSubText}>PICKUP</Text>
               </View>
-              <Ionicons name="chevron-forward" size={20} color={COLORS.textMuted} />
+              {routeEndpointsLocked ? (
+                <Ionicons name="lock-closed-outline" size={18} color={COLORS.textMuted} />
+              ) : (
+                <Ionicons name="chevron-forward" size={20} color={COLORS.textMuted} />
+              )}
             </TouchableOpacity>
-            <TouchableOpacity onPress={swapStops} style={styles.swapBtn} hitSlop={10} accessibilityLabel="Swap pickup and destination">
+            <TouchableOpacity
+              onPress={swapStops}
+              style={styles.swapBtn}
+              hitSlop={10}
+              accessibilityLabel="Swap pickup and destination"
+            >
               <Ionicons name="swap-vertical" size={20} color={COLORS.primary} />
             </TouchableOpacity>
           </View>
 
           <TouchableOpacity
-            style={[styles.pickRow, offline && styles.pickRowOfflineMuted]}
+            style={[
+              styles.pickRow,
+              offline && styles.pickRowOfflineMuted,
+              routeEndpointsLocked && styles.pickRowEndpointLocked,
+            ]}
             onPress={() => openLocationPicker('to')}
-            activeOpacity={0.75}
+            activeOpacity={routeEndpointsLocked ? 1 : 0.75}
+            disabled={routeEndpointsLocked}
           >
             <View style={styles.pickIconCol}>
               <View style={styles.redPin} />
@@ -1035,7 +1093,11 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
               </Text>
               <Text style={styles.pickSubText}>DESTINATION</Text>
             </View>
-            <Ionicons name="chevron-forward" size={20} color={COLORS.textMuted} />
+            {routeEndpointsLocked ? (
+              <Ionicons name="lock-closed-outline" size={18} color={COLORS.textMuted} />
+            ) : (
+              <Ionicons name="chevron-forward" size={20} color={COLORS.textMuted} />
+            )}
           </TouchableOpacity>
 
           {canSetFare ? (
@@ -1150,22 +1212,34 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
           </TouchableOpacity>
         </View>
 
-        <View style={styles.card}>
-          <View style={styles.sectionHeaderRow}>
-            <Text style={styles.sectionTitle}>Booking</Text>
-          </View>
-          <Text style={styles.sectionHint}>Choose how passengers confirm their seat.</Text>
-          <View style={styles.bookingToggleRow}>
+        <View style={styles.bookingSection}>
+          <Text style={styles.bookingSectionLabel}>Booking</Text>
+          <View style={[styles.instantBookingCard, instantBooking && styles.instantBookingCardOn]}>
+            <View style={[styles.instantBookingIconCircle, instantBooking && styles.instantBookingIconCircleOn]}>
+              <Ionicons
+                name="flash"
+                size={20}
+                color={instantBooking ? COLORS.primaryDark : '#64748B'}
+              />
+            </View>
             <View style={styles.bookingToggleText}>
               <Text style={styles.bookingToggleTitle}>Instant booking</Text>
-              <Text style={styles.bookingToggleDesc}>Confirm bookings without approving each request</Text>
+              <Text style={styles.bookingToggleDesc}>
+                Bookings are confirmed without you approving each one.
+              </Text>
             </View>
-            <Switch
-              value={instantBooking}
-              onValueChange={setInstantBooking}
-              trackColor={{ false: COLORS.border, true: COLORS.primaryLight }}
-              thumbColor={instantBooking ? COLORS.primary : COLORS.background}
-            />
+            <View style={styles.instantBookingSwitchZone}>
+              <View style={styles.instantBookingCardRightRule} />
+              <View style={styles.instantBookingSwitchWrap}>
+                <Switch
+                  value={instantBooking}
+                  onValueChange={setInstantBooking}
+                  trackColor={{ false: '#e5e7eb', true: COLORS.primaryLight }}
+                  thumbColor={instantBooking ? COLORS.primary : COLORS.white}
+                  style={Platform.OS === 'android' ? styles.instantBookingSwitchAndroid : undefined}
+                />
+              </View>
+            </View>
           </View>
         </View>
 
@@ -1556,15 +1630,90 @@ const styles = StyleSheet.create({
   fareValue: {
     color: '#6366f1',
   },
-  bookingToggleRow: {
+  bookingSection: {
+    marginBottom: 12,
+  },
+  bookingSectionLabel: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#94a3b8',
+    marginBottom: 8,
+    marginLeft: 2,
+    letterSpacing: -0.2,
+  },
+  instantBookingCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginTop: 4,
     gap: 12,
+    backgroundColor: '#f4f6f8',
+    borderRadius: 18,
+    paddingVertical: 12,
+    paddingLeft: 14,
+    paddingRight: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#e8ecf1',
+    ...Platform.select({
+      ios: {
+        shadowColor: '#0f172a',
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.05,
+        shadowRadius: 4,
+      },
+      android: { elevation: 1 },
+    }),
   },
-  bookingToggleText: { flex: 1, minWidth: 0 },
-  bookingToggleTitle: { fontSize: 16, fontWeight: '700', color: COLORS.text },
-  bookingToggleDesc: { fontSize: 13, color: COLORS.textSecondary, marginTop: 4 },
+  instantBookingCardOn: {
+    backgroundColor: COLORS.instantBookingOnSurface,
+    borderColor: COLORS.instantBookingOnSurface,
+    paddingVertical: 12,
+    paddingLeft: 14,
+    paddingRight: 12,
+  },
+  instantBookingIconCircle: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#e8ecf1',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  instantBookingIconCircleOn: {
+    backgroundColor: COLORS.primaryMuted22,
+  },
+  bookingToggleText: { flex: 1, minWidth: 0, paddingRight: 2 },
+  bookingToggleTitle: { fontSize: 16, fontWeight: '700', color: '#1e293b' },
+  bookingToggleDesc: {
+    fontSize: 12,
+    fontWeight: '400',
+    color: '#94a3b8',
+    marginTop: 4,
+    lineHeight: 17,
+  },
+  instantBookingSwitchZone: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flexShrink: 0,
+    width: 64,
+    justifyContent: 'flex-end',
+  },
+  instantBookingSwitchWrap: {
+    width: 52,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  instantBookingSwitchAndroid: {
+    marginVertical: -4,
+    marginHorizontal: -3,
+  },
+  instantBookingCardRightRule: {
+    width: StyleSheet.hairlineWidth,
+    height: 36,
+    borderRadius: StyleSheet.hairlineWidth,
+    backgroundColor: 'rgba(148, 163, 184, 0.32)',
+  },
   rideDescriptionInput: {
     minHeight: 112,
     borderWidth: 1,
@@ -1796,6 +1945,9 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: COLORS.text,
     letterSpacing: -0.2,
+  },
+  pickRowEndpointLocked: {
+    opacity: 0.92,
   },
   pickRowOfflineMuted: {
     opacity: 0.55,

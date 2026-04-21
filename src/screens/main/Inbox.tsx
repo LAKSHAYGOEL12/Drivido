@@ -6,7 +6,6 @@ import {
   TextInput,
   TouchableOpacity,
   FlatList,
-  ActivityIndicator,
 } from 'react-native';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -88,17 +87,17 @@ export default function Inbox(): React.JSX.Element {
   };
 
   const renderItem = ({ item }: { item: InboxConversation }) => (
-    <View style={styles.row}>
-      <TouchableOpacity
-        style={styles.rowMain}
-        onPress={() => openChat(item)}
-        activeOpacity={0.7}
-      >
+    <TouchableOpacity
+      style={[styles.convRow, item.unreadCount > 0 && styles.convRowUnread]}
+      onPress={() => openChat(item)}
+      activeOpacity={0.7}
+    >
+      <View style={styles.convRowInner}>
         <View style={styles.avatarWrap}>
           <UserAvatar
             uri={item.otherUserAvatarUrl}
             name={item.otherUserName}
-            size={52}
+            size={50}
             backgroundColor={COLORS.primary}
             fallbackTextColor={COLORS.white}
           />
@@ -119,23 +118,29 @@ export default function Inbox(): React.JSX.Element {
           </Text>
           {item.unreadCount > 0 ? (
             <View style={styles.unreadBadge}>
-              <Text style={styles.unreadCount}>{item.unreadCount}</Text>
+              <Text style={styles.unreadCount}>{item.unreadCount > 99 ? '99+' : item.unreadCount}</Text>
             </View>
           ) : null}
         </View>
-      </TouchableOpacity>
-    </View>
+      </View>
+    </TouchableOpacity>
   );
+
+  const convSeparator = () => <View style={styles.rowSeparator} />;
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
       <View style={styles.container}>
-        <View style={styles.header}>
-          <Text style={styles.title}>Messages</Text>
+        <View style={styles.heroBlock}>
+          <Text style={styles.heroEyebrow}>Chats</Text>
+          <Text style={styles.heroTitle}>Messages</Text>
+          <Text style={styles.heroSubtitle}>People you have talked with about rides.</Text>
         </View>
 
-        <View style={styles.searchWrap}>
-          <Ionicons name="search" size={20} color={COLORS.textMuted} />
+        <View style={styles.searchCard}>
+          <View style={styles.searchIconWrap}>
+            <Ionicons name="search" size={18} color={COLORS.primary} />
+          </View>
           <TextInput
             style={styles.searchInput}
             placeholder="Search by name or message"
@@ -145,37 +150,49 @@ export default function Inbox(): React.JSX.Element {
           />
         </View>
 
-        <View style={styles.sectionHead}>
-          <Text style={styles.sectionTitle}>Recent conversations</Text>
-        </View>
-
-        {loading && filtered.length === 0 ? (
-          <View style={styles.skeletonWrap}>
-            {Array.from({ length: 6 }).map((_, idx) => (
-              <View key={`chat-skeleton-${idx}`} style={styles.skeletonRow}>
-                <SkeletonBlock width={52} height={52} borderRadius={26} />
-                <View style={styles.skeletonTextCol}>
-                  <SkeletonBlock width="45%" height={14} borderRadius={7} />
-                  <SkeletonBlock width="80%" height={12} borderRadius={6} />
+        <View style={styles.chatsListWrap}>
+          {loading && filtered.length === 0 ? (
+            <View style={styles.skeletonBlock}>
+              {Array.from({ length: 6 }).map((_, idx) => (
+                <View key={`chat-skeleton-${idx}`}>
+                  {idx > 0 ? <View style={styles.rowSeparator} /> : null}
+                  <View style={styles.skeletonRow}>
+                    <SkeletonBlock width={50} height={50} borderRadius={25} />
+                    <View style={styles.skeletonTextCol}>
+                      <SkeletonBlock width="45%" height={14} borderRadius={7} />
+                      <SkeletonBlock width="80%" height={12} borderRadius={6} />
+                    </View>
+                  </View>
                 </View>
-              </View>
-            ))}
-          </View>
-        ) : (
-          <FlatList
-            data={filtered}
-            renderItem={renderItem}
-            keyExtractor={(item) => item.id}
-            contentContainerStyle={[styles.listContent, { paddingBottom: mainTabScrollBottomPad }]}
-            showsVerticalScrollIndicator={false}
-            ItemSeparatorComponent={() => <View style={styles.separator} />}
-            ListEmptyComponent={
-              <View style={styles.empty}>
-                <Text style={styles.emptyText}>No conversations yet</Text>
-              </View>
-            }
-          />
-        )}
+              ))}
+            </View>
+          ) : (
+            <FlatList
+              data={filtered}
+              renderItem={renderItem}
+              keyExtractor={(item) => item.id}
+              ItemSeparatorComponent={convSeparator}
+              style={styles.chatsList}
+              contentContainerStyle={[
+                styles.chatsListContent,
+                ...(filtered.length === 0 ? [styles.chatsListContentEmpty] : []),
+                { paddingBottom: mainTabScrollBottomPad },
+              ]}
+              showsVerticalScrollIndicator={false}
+              ListEmptyComponent={
+                <View style={styles.empty}>
+                  <View style={styles.emptyIconWrap}>
+                    <Ionicons name="chatbubbles-outline" size={36} color={COLORS.primary} />
+                  </View>
+                  <Text style={styles.emptyTitle}>No conversations yet</Text>
+                  <Text style={styles.emptySubtitle}>
+                    When you message someone about a ride, it will show up here.
+                  </Text>
+                </View>
+              }
+            />
+          )}
+        </View>
       </View>
     </SafeAreaView>
   );
@@ -190,59 +207,93 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: COLORS.background,
   },
-  header: {
+  heroBlock: {
     paddingHorizontal: 20,
-    paddingTop: 8,
-    paddingBottom: 16,
+    paddingTop: 10,
+    paddingBottom: 18,
   },
-  title: {
-    fontSize: 28,
-    fontWeight: '700',
+  heroEyebrow: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 1.4,
+    color: COLORS.primary,
+    textTransform: 'uppercase',
+    marginBottom: 6,
+  },
+  heroTitle: {
+    fontSize: 32,
+    fontWeight: '800',
     color: COLORS.text,
+    letterSpacing: -0.8,
+    lineHeight: 38,
   },
-  searchWrap: {
+  heroSubtitle: {
+    fontSize: 15,
+    fontWeight: '500',
+    color: COLORS.textSecondary,
+    marginTop: 8,
+    lineHeight: 21,
+    maxWidth: 340,
+  },
+  searchCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: COLORS.backgroundSecondary,
-    borderRadius: 12,
     marginHorizontal: 20,
     marginBottom: 12,
-    paddingHorizontal: 14,
-    gap: 10,
+    paddingHorizontal: 12,
     minHeight: 44,
+    backgroundColor: COLORS.backgroundSecondary,
+    borderRadius: 10,
+    borderWidth: 0,
+  },
+  searchIconWrap: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 8,
+  },
+  chatsListWrap: {
+    flex: 1,
+    backgroundColor: COLORS.background,
   },
   searchInput: {
     flex: 1,
     fontSize: 16,
     color: COLORS.text,
-    paddingVertical: 10,
-  },
-  sectionHead: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'flex-start',
-    paddingHorizontal: 20,
-    marginBottom: 12,
-  },
-  sectionTitle: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: COLORS.textSecondary,
-    letterSpacing: 0.2,
-  },
-  listContent: {
-    paddingHorizontal: 20,
-  },
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
     paddingVertical: 12,
+    fontWeight: '500',
   },
-  rowMain: {
+  chatsList: {
     flex: 1,
+    backgroundColor: COLORS.background,
+  },
+  chatsListContent: {
+    flexGrow: 1,
+    paddingBottom: 8,
+  },
+  chatsListContentEmpty: {
+    justifyContent: 'center',
+    minHeight: 280,
+  },
+  convRow: {
+    backgroundColor: COLORS.background,
+  },
+  convRowUnread: {
+    backgroundColor: 'rgba(29, 185, 84, 0.06)',
+  },
+  convRowInner: {
     flexDirection: 'row',
     alignItems: 'center',
     minWidth: 0,
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+  },
+  rowSeparator: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: COLORS.border,
+    marginLeft: 20 + 50 + 14,
   },
   avatarWrap: {
     marginRight: 14,
@@ -261,29 +312,11 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
     color: COLORS.text,
+    letterSpacing: -0.2,
   },
   nameUnread: {
     fontWeight: '800',
-  },
-  tag: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: COLORS.backgroundSecondary,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 10,
-    gap: 4,
-  },
-  tagSupport: {
-    backgroundColor: '#dbeafe',
-  },
-  tagText: {
-    fontSize: 10,
-    fontWeight: '600',
-    color: COLORS.textMuted,
-  },
-  tagTextSupport: {
-    color: COLORS.info,
+    color: COLORS.text,
   },
   lastMessage: {
     fontSize: 14,
@@ -309,6 +342,7 @@ const styles = StyleSheet.create({
   unreadBadge: {
     minWidth: 22,
     height: 22,
+    paddingHorizontal: 6,
     borderRadius: 11,
     backgroundColor: COLORS.primary,
     alignItems: 'center',
@@ -316,39 +350,48 @@ const styles = StyleSheet.create({
   },
   unreadCount: {
     fontSize: 12,
-    fontWeight: '700',
+    fontWeight: '800',
     color: COLORS.white,
   },
-  separator: {
-    height: 1,
-    backgroundColor: COLORS.border,
-  },
   empty: {
-    paddingVertical: 48,
+    paddingVertical: 40,
+    paddingHorizontal: 24,
     alignItems: 'center',
   },
-  emptyText: {
-    fontSize: 15,
-    color: COLORS.textMuted,
-  },
-  loadingWrap: {
+  emptyIconWrap: {
+    width: 72,
+    height: 72,
+    borderRadius: 24,
+    backgroundColor: COLORS.primaryMuted22,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingTop: 28,
-    gap: 8,
+    marginBottom: 16,
   },
-  loadingText: {
-    fontSize: 13,
-    color: COLORS.textMuted,
+  emptyTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: COLORS.text,
+    letterSpacing: -0.3,
+    marginBottom: 8,
+    textAlign: 'center',
   },
-  skeletonWrap: {
-    paddingHorizontal: 20,
-    paddingTop: 8,
-    gap: 14,
+  emptySubtitle: {
+    fontSize: 15,
+    fontWeight: '500',
+    color: COLORS.textSecondary,
+    lineHeight: 22,
+    textAlign: 'center',
+    maxWidth: 300,
+  },
+  skeletonBlock: {
+    backgroundColor: COLORS.background,
+    paddingBottom: 12,
   },
   skeletonRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 20,
   },
   skeletonTextCol: {
     flex: 1,

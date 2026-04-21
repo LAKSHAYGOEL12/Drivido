@@ -9,6 +9,7 @@ import PublishedRideRouteMapScreen from '../screens/main/PublishedRideRouteMapSc
 import LocationPickerScreen from '../screens/main/LocationPickerScreen';
 import EditRideScreen from '../screens/main/EditRideScreen';
 import PublishRecentEditScreen from '../screens/main/PublishRecentEditScreen';
+import PublishRoutePreviewScreen from '../screens/main/PublishRoutePreviewScreen';
 import BookPassengerDetailScreen from '../screens/main/BookPassengerDetailScreen';
 import ChatScreen from '../screens/main/ChatScreen';
 import OwnerProfileModal from '../screens/main/OwnerProfileModal';
@@ -34,7 +35,7 @@ export default function RidesStack(): React.JSX.Element {
       <Stack.Screen
         name="YourRidesList"
         component={YourRides}
-        options={{ title: 'Your Rides' }}
+        options={{ headerShown: false }}
       />
       <Stack.Screen
         name="RideDetail"
@@ -65,6 +66,15 @@ export default function RidesStack(): React.JSX.Element {
         name="PublishRecentEdit"
         component={PublishRecentEditScreen}
         options={{ headerShown: false }}
+      />
+      <Stack.Screen
+        name="PublishRoutePreview"
+        component={PublishRoutePreviewScreen}
+        options={{
+          headerShown: false,
+          gestureEnabled: true,
+          fullScreenGestureEnabled: true,
+        }}
       />
       <Stack.Screen
         name="BookPassengerDetail"

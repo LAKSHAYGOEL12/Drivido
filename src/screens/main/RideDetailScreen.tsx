@@ -48,12 +48,14 @@ import {
   getRidePickupTime,
   getRideScheduledAt,
   isRidePastArrivalWindow,
+  isRideScheduledDepartureReached,
   isRideCancelledByOwner,
   getRideTotalBookingCount,
   isViewerOwnerStrict,
   isViewerRidePublisher,
   pickPublisherPhoneFromRide,
 } from '../../utils/rideDisplay';
+import { rideOwnerMutationUserMessage } from '../../utils/rideOwnerMutationError';
 import { mergeVehicleFieldsIntoRide, normalizeVehicleFieldsFromApiRecord } from '../../utils/rideVehicleFields';
 import { vehicleIdString, vehiclesFromUser } from '../../utils/userVehicle';
 import {
@@ -65,6 +67,7 @@ import {
   bookingIsCancelled,
   bookingIsCancelledByOwner,
   bookingHistoryTreatAsCancelledByOwner,
+  bookingIsEligibleForPostRideOwnerRating,
   bookingRowHoldsOccupiedSeats,
   effectiveOccupiedSeatsFromBookingRow,
   pickPreferredBookingForUser,
@@ -124,17 +127,6 @@ type RideDetailRouteProp =
   | RouteProp<InboxStackParamList, 'RideDetail'>;
 
 type BookingItem = NonNullable<RideListItem['bookings']>[number];
-
-/** Owner cannot remove passengers when departure is less than 1 hour away. */
-const OWNER_REMOVE_MIN_LEAD_MS = 60 * 60 * 1000;
-
-function isTooCloseForOwnerRemovePassenger(ride: RideListItem): boolean {
-  const at = getRideScheduledAt(ride);
-  if (!at || Number.isNaN(at.getTime())) return false;
-  const msUntil = at.getTime() - Date.now();
-  if (msUntil <= 0) return false;
-  return msUntil < OWNER_REMOVE_MIN_LEAD_MS;
-}
 
 /**
  * Owner “remove passenger” sheet — keep title + body separate.
@@ -1819,7 +1811,10 @@ export default function RideDetailScreen(): React.JSX.Element {
   const isRequestBookingModeRef = useRef(isRequestBookingMode);
   isOwnerRef.current = isOwner;
   isRequestBookingModeRef.current = isRequestBookingMode;
-  const showOwnerFixedActions = isOwnerStrict && !isPastRide && !isOwnerRideCancelled;
+  /** Cancel/edit only before listed departure; after start, owner uses support/backend if something is wrong. */
+  const ownerCancelEditLockedBySchedule = isRideScheduledDepartureReached(ride);
+  const showOwnerFixedActions =
+    isOwnerStrict && !isPastRide && !isOwnerRideCancelled && !ownerCancelEditLockedBySchedule;
   const showPassengerCancelFixedAction =
     !isOwner && isBookedByMe && !isPastRide && !rideCancelledByOwner;
   const showPassengerPendingFixedAction =
@@ -2429,7 +2424,16 @@ export default function RideDetailScreen(): React.JSX.Element {
   const ratingTargetUserId = (() => {
     if (!currentUserId) return '';
     if (isOwner) {
-      const firstOther = passengers.find((b) => (b.userId ?? '').trim() && (b.userId ?? '').trim() !== currentUserId);
+      const firstOther = passengers.find((b) => {
+        const uid = (b.userId ?? '').trim();
+        if (!uid || uid === currentUserId) return false;
+        const roleRow = b as BookingItem & { ownerListRole?: string };
+        return bookingIsEligibleForPostRideOwnerRating(b.status, {
+          isAcceptedPassenger: bookingFlag(b, 'isAcceptedPassenger'),
+          isPendingRequest: bookingFlag(b, 'isPendingRequest'),
+          ownerListRole: roleRow.ownerListRole,
+        });
+      });
       return (firstOther?.userId ?? '').trim();
     }
     return (ride.userId ?? '').trim();
@@ -3182,6 +3186,13 @@ export default function RideDetailScreen(): React.JSX.Element {
       Alert.alert('Not allowed', 'Only the driver can edit this ride.');
       return;
     }
+    if (isRideScheduledDepartureReached(ride)) {
+      Alert.alert(
+        'Ride started',
+        'The departure time for this ride has passed. You can no longer edit it from the app.'
+      );
+      return;
+    }
     const normalizedDescription = (
       ride.description ??
       ride.rideDescription ??
@@ -3697,10 +3708,10 @@ export default function RideDetailScreen(): React.JSX.Element {
       } else if (bookingIsCancelled(booking.status)) {
         return;
       }
-      if (isTooCloseForOwnerRemovePassenger(ride)) {
+      if (isRideScheduledDepartureReached(ride)) {
         Alert.alert(
-          'Too close to departure',
-          'Passengers can’t be removed within 1 hour of the ride’s start time.'
+          'Ride started',
+          'The departure time for this ride has passed. You can no longer remove passengers from the app.'
         );
         return;
       }
@@ -3720,6 +3731,13 @@ export default function RideDetailScreen(): React.JSX.Element {
 
   const runOwnerCancelRide = useCallback(async () => {
     setCancelRideConfirmVisible(false);
+    if (isRideScheduledDepartureReached(ride)) {
+      Alert.alert(
+        'Ride started',
+        'The departure time for this ride has passed. You can no longer cancel it from the app.'
+      );
+      return;
+    }
     setCancelling(true);
     try {
       await api.delete(API.endpoints.rides.detail(ride.id));
@@ -3746,11 +3764,13 @@ export default function RideDetailScreen(): React.JSX.Element {
       });
       await navigateBackAfterCancel();
     } catch (e: unknown) {
+      const conflict = rideOwnerMutationUserMessage(e);
       const message =
-        e && typeof e === 'object' && 'message' in e
+        conflict ??
+        (e && typeof e === 'object' && 'message' in e
           ? String((e as { message: unknown }).message)
-          : 'Failed to cancel ride.';
-      Alert.alert('Error', message);
+          : 'Failed to cancel ride.');
+      Alert.alert(conflict ? 'Can’t cancel ride' : 'Error', message);
     } finally {
       setCancelling(false);
     }
@@ -3759,6 +3779,13 @@ export default function RideDetailScreen(): React.JSX.Element {
   const handleCancelRide = () => {
     if (!isOwnerStrict) {
       Alert.alert('Not allowed', 'Only the driver can cancel this ride.');
+      return;
+    }
+    if (isRideScheduledDepartureReached(ride)) {
+      Alert.alert(
+        'Ride started',
+        'The departure time for this ride has passed. You can no longer cancel it from the app.'
+      );
       return;
     }
     setCancelRideConfirmVisible(true);

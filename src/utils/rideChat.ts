@@ -48,3 +48,28 @@ export function canSendRideChatByLocalPolicy(ride: RideListItem, viewerUserId: s
   if (Number.isNaN(completedAtMs)) return true;
   return Date.now() <= completedAtMs + GRACE_MS;
 }
+
+type RideChatFlags = RideListItem & {
+  canSendChat?: unknown;
+  can_send_chat?: unknown;
+  chatClosed?: unknown;
+  chat_closed?: unknown;
+};
+
+/**
+ * Inbox / local thread policy: no reason to show or create an **empty** thread when chat is closed
+ * (backend flags, local cancel/completed policy, or deactivated peer).
+ */
+export function shouldHideOrSkipEmptyChatThread(
+  ride: RideListItem,
+  viewerUserId: string,
+  peerDeactivated: boolean
+): boolean {
+  if (peerDeactivated) return true;
+  const r = ride as RideChatFlags;
+  const rawCan = r.canSendChat ?? r.can_send_chat;
+  if (typeof rawCan === 'boolean' && rawCan === false) return true;
+  const rawClosed = r.chatClosed ?? r.chat_closed;
+  if (typeof rawClosed === 'boolean' && rawClosed === true) return true;
+  return !canSendRideChatByLocalPolicy(ride, viewerUserId);
+}

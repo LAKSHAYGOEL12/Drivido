@@ -23,7 +23,9 @@ const NAV_THEME: Theme = {
   ...DefaultTheme,
   colors: {
     ...DefaultTheme.colors,
+    /** Screen canvas — soft gray (see `COLORS.background`). */
     background: COLORS.background,
+    /** Stack “cards” match canvas; screens use `surface` where a white sheet is intended. */
     card: COLORS.background,
   },
 };
@@ -78,7 +80,7 @@ export default function RootNavigator(): React.JSX.Element | null {
   const LOGOUT_FADE_OUT_MS = 320;
   const shouldSkipPostLoginSearchReset = (): boolean => {
     if (!rootNavigationRef.isReady()) return false;
-    const current = rootNavigationRef.getCurrentRoute()?.name;
+    const current = rootNavigationRef.getCurrentRoute()?.name as string | undefined;
     // Guest -> login from Ride Detail should remain on Ride Detail so confirm alert can continue.
     return current === 'RideDetail' || current === 'RideDetailScreen';
   };
@@ -396,7 +398,7 @@ const styles = StyleSheet.create({
   },
   logoutOverlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(248, 250, 252, 0.97)',
+    backgroundColor: 'rgba(252, 252, 253, 0.97)',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -406,7 +408,7 @@ const styles = StyleSheet.create({
     paddingVertical: 32,
     paddingHorizontal: 36,
     borderRadius: 20,
-    backgroundColor: COLORS.background,
+    backgroundColor: COLORS.surface,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: COLORS.border,
     shadowColor: '#0f172a',

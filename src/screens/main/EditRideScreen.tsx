@@ -26,10 +26,15 @@ import DatePickerModal from '../../components/common/DatePickerModal';
 import PassengersPickerModal from '../../components/common/PassengersPickerModal';
 import { showToast } from '../../utils/toast';
 import { bookingIsCancelled } from '../../utils/bookingStatus';
-import { formatPublishStyleDateLabel, isPublishedRideLiveNow } from '../../utils/rideDisplay';
+import {
+  formatPublishStyleDateLabel,
+  isPublishedRideLiveNow,
+  isRideScheduledDepartureReached,
+} from '../../utils/rideDisplay';
 import { findMainTabNavigatorWithOptions } from '../../navigation/findMainTabNavigator';
 import PublishFareBottomSheet from '../../components/publish/PublishFareBottomSheet';
 import { allowedPublishFareRange, straightLineKmBetweenStops } from '../../utils/publishFare';
+import { rideOwnerMutationUserMessage } from '../../utils/rideOwnerMutationError';
 
 const MIN_LEAD_MINUTES = 30;
 const CLOCK_SIZE = 232;
@@ -86,6 +91,8 @@ export default function EditRideScreen(): React.JSX.Element {
         : 0;
     return activeFromArray > 0 || activeFromBookedSeats > 0;
   }, [ride.bookings, ride.bookedSeats]);
+
+  const departReached = useMemo(() => isRideScheduledDepartureReached(ride), [ride]);
 
   /**
    * Same “live” notion as Your Rides: published, not cancelled/completed, not past the arrival window.
@@ -285,6 +292,13 @@ export default function EditRideScreen(): React.JSX.Element {
   }, []);
 
   const handleUpdateRide = async () => {
+    if (isRideScheduledDepartureReached(ride)) {
+      Alert.alert(
+        'Ride started',
+        'The departure time for this ride has passed. You can no longer update it from the app.'
+      );
+      return;
+    }
     const pickupResolved = routeEndpointsLocked
       ? (ride.pickupLocationName ?? ride.from ?? '').trim()
       : pickupLocation.trim();
@@ -385,15 +399,42 @@ export default function EditRideScreen(): React.JSX.Element {
       });
       navigation.goBack();
     } catch (e: unknown) {
+      const conflict = rideOwnerMutationUserMessage(e);
       const message =
-        e && typeof e === 'object' && 'message' in e
+        conflict ??
+        (e && typeof e === 'object' && 'message' in e
           ? String((e as { message: unknown }).message)
-          : 'Failed to update ride.';
-      Alert.alert('Error', message);
+          : 'Failed to update ride.');
+      Alert.alert(conflict ? 'Can’t update ride' : 'Error', message);
     } finally {
       setSaving(false);
     }
   };
+
+  if (departReached) {
+    return (
+      <SafeAreaView style={styles.safe} edges={['top']}>
+        <View style={styles.header}>
+          <TouchableOpacity onPress={() => navigation.goBack()} style={styles.headerBack} hitSlop={12}>
+            <Ionicons name="arrow-back" size={24} color={COLORS.primary} />
+          </TouchableOpacity>
+          <View style={styles.headerCenter}>
+            <Text style={styles.headerTitle}>Edit ride</Text>
+            <Text style={styles.headerSubtitle}>Unavailable</Text>
+          </View>
+          <View style={styles.headerRightSpacer} />
+        </View>
+        <View style={styles.departReachedBody}>
+          <Ionicons name="time-outline" size={44} color={COLORS.textMuted} />
+          <Text style={styles.departReachedTitle}>This ride has started</Text>
+          <Text style={styles.departReachedSubtitle}>
+            The scheduled departure time has passed, so this listing can’t be edited. If you need help, contact
+            support.
+          </Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
@@ -796,6 +837,27 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: COLORS.textSecondary,
     fontWeight: '700',
+  },
+  headerRightSpacer: { width: 40 },
+  departReachedBody: {
+    flex: 1,
+    paddingHorizontal: 24,
+    paddingTop: 36,
+    alignItems: 'center',
+  },
+  departReachedTitle: {
+    marginTop: 16,
+    fontSize: 18,
+    fontWeight: '700',
+    color: COLORS.text,
+    textAlign: 'center',
+  },
+  departReachedSubtitle: {
+    marginTop: 10,
+    fontSize: 14,
+    color: COLORS.textSecondary,
+    textAlign: 'center',
+    lineHeight: 20,
   },
   scroll: { flex: 1 },
   content: { padding: 16, paddingBottom: 28 },

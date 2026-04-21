@@ -13,6 +13,7 @@ import {
   Roboto_800ExtraBold,
   Roboto_900Black,
 } from '@expo-google-fonts/roboto';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { AuthProvider } from './src/contexts/AuthContext';
 import { NotificationPreferencesProvider } from './src/contexts/NotificationPreferencesContext';
@@ -124,7 +125,7 @@ export default function App(): React.JSX.Element | null {
   const showBootSplashOverlay = !appCoreReady;
 
   return (
-    <View style={styles.appRoot}>
+    <GestureHandlerRootView style={styles.appRoot}>
       {appCoreReady ? (
         <SafeAreaProvider style={styles.appRoot}>
           <AppErrorBoundary>
@@ -154,7 +155,7 @@ export default function App(): React.JSX.Element | null {
           <BootSplash onContentReady={onJsSplashContentReady} />
         </View>
       ) : null}
-    </View>
+    </GestureHandlerRootView>
   );
 }
 

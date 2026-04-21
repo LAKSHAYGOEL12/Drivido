@@ -120,10 +120,27 @@ export default function EditProfileScreen(): React.JSX.Element {
   /** Lifts the save bar above the keyboard; reset to 0 on hide avoids stuck gap from KeyboardAvoidingView. */
   const [keyboardBottomInset, setKeyboardBottomInset] = useState(0);
   const scrollRef = useRef<ScrollView>(null);
+  const scrollContentRef = useRef<View>(null);
+  const vehicleCardRefs = useRef<Record<string, View | null>>({});
   const [phoneFocused, setPhoneFocused] = useState(false);
   const [occupationFocused, setOccupationFocused] = useState(false);
-  /** Y of each vehicle card top inside scroll content (from onLayout). */
+  /** Y of each vehicle card top inside scroll content (measureLayout vs scroll body). */
   const vehicleCardY = useRef<Record<string, number>>({});
+
+  const updateVehicleCardScrollY = useCallback((key: string) => {
+    const card = vehicleCardRefs.current[key];
+    const content = scrollContentRef.current;
+    if (!card || !content) return;
+    requestAnimationFrame(() => {
+      card.measureLayout(
+        content,
+        (_left, top) => {
+          vehicleCardY.current[key] = top;
+        },
+        () => {}
+      );
+    });
+  }, []);
 
   const scrollFieldIntoView = useCallback((vehicleKey: string, field: 'model' | 'plate' | 'color') => {
     const cardTop = vehicleCardY.current[vehicleKey];
@@ -362,20 +379,20 @@ export default function EditProfileScreen(): React.JSX.Element {
 
   return (
     <View style={styles.root}>
-      <StatusBar barStyle="dark-content" backgroundColor={COLORS.white} />
+      <StatusBar barStyle="dark-content" backgroundColor={COLORS.surface} />
       <View style={[styles.statusBarFill, { height: insets.top }]} />
       <View style={styles.header}>
         <Pressable
-          style={styles.headerBtn}
+          style={({ pressed }) => [styles.headerBack, pressed && styles.headerBackPressed]}
           onPress={() => navigation.goBack()}
           accessibilityRole="button"
           accessibilityLabel="Go back"
           hitSlop={8}
         >
-          <Ionicons name="arrow-back" size={22} color={COLORS.text} />
+          <Ionicons name="chevron-back" size={24} color={COLORS.text} />
         </Pressable>
         <Text style={styles.headerTitle}>Edit profile</Text>
-        <View style={styles.headerBtn} />
+        <View style={styles.headerBackPlaceholder} />
       </View>
 
       <View style={styles.body}>
@@ -395,200 +412,202 @@ export default function EditProfileScreen(): React.JSX.Element {
             keyboardDismissMode="on-drag"
             showsVerticalScrollIndicator={false}
           >
-        <Text style={styles.sectionGroupEyebrow}>Public profile</Text>
-        <Text style={styles.sectionLabel}>About you</Text>
-        <Text style={styles.fieldHelp}>Optional. Shown on your profile.</Text>
-        <TextInput
-          style={styles.bioInput}
-          value={profileBio}
-          onChangeText={(t) => {
-            setProfileBio(t);
-            setBioError(undefined);
-          }}
-          placeholder="A short line about you — driving style, interests, or how you use EcoPickO."
-          placeholder="Write a short bio."
-          placeholderTextColor={COLORS.textMuted}
-          multiline
-          textAlignVertical="top"
-          maxLength={300}
-          editable={!saving}
-        />
-        <Text style={styles.charCount}>{profileBio.length}/300</Text>
-        {bioError ? <Text style={styles.errorText}>{bioError}</Text> : null}
+            <View ref={scrollContentRef} style={styles.scrollInner} collapsable={false}>
+            <View style={styles.panel}>
+              <Text style={styles.panelOverline}>Profile</Text>
+              <Text style={styles.panelLead}>About you</Text>
+              <Text style={styles.fieldHelp}>Optional — shown on your public profile.</Text>
+              <TextInput
+                style={styles.bioInput}
+                value={profileBio}
+                onChangeText={(t) => {
+                  setProfileBio(t);
+                  setBioError(undefined);
+                }}
+                placeholder="Short line about you, driving style, or interests."
+                placeholderTextColor={COLORS.textMuted}
+                multiline
+                textAlignVertical="top"
+                maxLength={300}
+                editable={!saving}
+              />
+              <Text style={styles.charCount}>{profileBio.length}/300</Text>
+              {bioError ? <Text style={styles.errorText}>{bioError}</Text> : null}
 
-        <Text style={[styles.sectionLabel, styles.sectionLabelSpaced]}>Occupation</Text>
-        <Text style={styles.fieldHelp}>Optional. Visible to other users on your profile.</Text>
-        <View style={styles.occupationChipWrap}>
-          {OCCUPATION_OPTIONS.map((opt) => {
-            const active = occupation.trim().toLowerCase() === opt.toLowerCase();
-            return (
-              <Pressable
-                key={opt}
-                onPress={() => setOccupation(opt)}
-                disabled={saving}
-                style={({ pressed }) => [
-                  styles.occupationChip,
-                  active && styles.occupationChipOn,
-                  pressed && !saving && styles.occupationChipPressed,
-                ]}
-                accessibilityRole="button"
-                accessibilityLabel={`Select occupation ${opt}`}
-              >
-                <Text style={[styles.occupationChipLabel, active && styles.occupationChipLabelOn]}>
-                  {opt}
-                </Text>
-              </Pressable>
-            );
-          })}
-        </View>
-        <TextInput
-          style={styles.fieldInput}
-          value={occupation}
-          onChangeText={setOccupation}
-          onFocus={() => {
-            setOccupationFocused(true);
-            scrollOccupationIntoView();
-          }}
-          onBlur={() => setOccupationFocused(false)}
-          placeholder="e.g. Software Engineer"
-          placeholderTextColor={COLORS.textMuted}
-          maxLength={80}
-          editable={!saving}
-        />
-        <Text style={styles.charCount}>{occupation.length}/80</Text>
-
-        <Text style={[styles.sectionLabel, styles.sectionLabelSpaced]}>Ride preferences</Text>
-        <Text style={styles.fieldHelp}>Optional tags shown on your profile.</Text>
-        <View style={styles.prefChipWrap}>
-          {RIDE_PREFERENCE_OPTIONS.map((o) => {
-            const on = ridePrefs.includes(o.id);
-            return (
-              <Pressable
-                key={o.id}
-                onPress={() => toggleRidePreference(o.id)}
-                disabled={saving}
-                style={({ pressed }) => [
-                  styles.prefChip,
-                  on && styles.prefChipOn,
-                  pressed && !saving && styles.prefChipPressed,
-                ]}
-                accessibilityRole="checkbox"
-                accessibilityState={{ checked: on }}
-                accessibilityLabel={o.label}
-              >
-                <Ionicons
-                  name={o.icon}
-                  size={16}
-                  color={on ? COLORS.white : COLORS.primary}
-                />
-                <Text style={[styles.prefChipLabel, on && styles.prefChipLabelOn]}>{o.label}</Text>
-              </Pressable>
-            );
-          })}
-        </View>
-
-        <View style={styles.sectionDivider} />
-
-        <Text style={styles.sectionGroupEyebrow}>Vehicles</Text>
-        <Text style={[styles.fieldHelp, styles.fieldHelpAfterEyebrow]}>
-          Vehicles used when you publish rides (up to two).
-        </Text>
-        {rows.map((r, index) => (
-          <View
-            key={r.key}
-            style={styles.vehicleCard}
-            onLayout={(e) => {
-              vehicleCardY.current[r.key] = e.nativeEvent.layout.y;
-            }}
-          >
-            <View style={styles.editVehicleHeader}>
-              <View style={styles.editVehicleHeaderLeft}>
-                <View style={styles.editVehicleIcon}>
-                  <Ionicons name="car-sport-outline" size={16} color={COLORS.primary} />
-                </View>
-                <Text style={styles.editVehicleTitle}>
-                  {rows.length > 1 ? `Vehicle ${index + 1}` : 'Vehicle'}
-                </Text>
+              <Text style={[styles.panelLead, styles.panelLeadSpaced]}>Occupation</Text>
+              <Text style={styles.fieldHelp}>Optional — visible to other members.</Text>
+              <View style={styles.occupationChipWrap}>
+                {OCCUPATION_OPTIONS.map((opt) => {
+                  const active = occupation.trim().toLowerCase() === opt.toLowerCase();
+                  return (
+                    <Pressable
+                      key={opt}
+                      onPress={() => setOccupation(opt)}
+                      disabled={saving}
+                      style={({ pressed }) => [
+                        styles.occupationChip,
+                        active && styles.occupationChipOn,
+                        pressed && !saving && styles.occupationChipPressed,
+                      ]}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Select occupation ${opt}`}
+                    >
+                      <Text style={[styles.occupationChipLabel, active && styles.occupationChipLabelOn]}>
+                        {opt}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
               </View>
-              {canShowVehicleDelete(r, rows) ? (
-                <Pressable
-                  style={({ pressed }) => [styles.vehicleDeleteBtn, pressed && styles.vehicleDeleteBtnPressed]}
-                  onPress={() => handleDeleteVehicle(r)}
-                  disabled={saving}
-                  accessibilityRole="button"
-                  accessibilityLabel="Remove vehicle"
-                  hitSlop={8}
+              <TextInput
+                style={styles.fieldInput}
+                value={occupation}
+                onChangeText={setOccupation}
+                onFocus={() => {
+                  setOccupationFocused(true);
+                  scrollOccupationIntoView();
+                }}
+                onBlur={() => setOccupationFocused(false)}
+                placeholder="Or type your own"
+                placeholderTextColor={COLORS.textMuted}
+                maxLength={80}
+                editable={!saving}
+              />
+              <Text style={styles.charCount}>{occupation.length}/80</Text>
+
+              <Text style={[styles.panelLead, styles.panelLeadSpaced]}>Ride preferences</Text>
+              <Text style={styles.fieldHelp}>Optional tags on your profile.</Text>
+              <View style={styles.prefChipWrap}>
+                {RIDE_PREFERENCE_OPTIONS.map((o) => {
+                  const on = ridePrefs.includes(o.id);
+                  return (
+                    <Pressable
+                      key={o.id}
+                      onPress={() => toggleRidePreference(o.id)}
+                      disabled={saving}
+                      style={({ pressed }) => [
+                        styles.prefChip,
+                        on && styles.prefChipOn,
+                        pressed && !saving && styles.prefChipPressed,
+                      ]}
+                      accessibilityRole="checkbox"
+                      accessibilityState={{ checked: on }}
+                      accessibilityLabel={o.label}
+                    >
+                      <Ionicons name={o.icon} size={15} color={on ? COLORS.white : COLORS.primaryDark} />
+                      <Text style={[styles.prefChipLabel, on && styles.prefChipLabelOn]}>{o.label}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </View>
+
+            <View style={styles.panel}>
+              <Text style={styles.panelOverline}>Vehicles</Text>
+              <Text style={styles.fieldHelpTight}>
+                Used when you publish rides. You can add up to two.
+              </Text>
+              {rows.map((r, index) => (
+                <View
+                  key={r.key}
+                  ref={(el) => {
+                    vehicleCardRefs.current[r.key] = el;
+                  }}
+                  style={styles.vehicleCard}
+                  onLayout={() => updateVehicleCardScrollY(r.key)}
                 >
-                  <Ionicons name="trash-outline" size={20} color={COLORS.error} />
-                </Pressable>
-              ) : null}
+                  <View style={styles.editVehicleHeader}>
+                    <View style={styles.editVehicleHeaderLeft}>
+                      <View style={styles.editVehicleIcon}>
+                        <Ionicons name="car-sport-outline" size={17} color={COLORS.primaryDark} />
+                      </View>
+                      <Text style={styles.editVehicleTitle}>
+                        {rows.length > 1 ? `Vehicle ${index + 1}` : 'Your vehicle'}
+                      </Text>
+                    </View>
+                    {canShowVehicleDelete(r, rows) ? (
+                      <Pressable
+                        style={({ pressed }) => [styles.vehicleDeleteBtn, pressed && styles.vehicleDeleteBtnPressed]}
+                        onPress={() => handleDeleteVehicle(r)}
+                        disabled={saving}
+                        accessibilityRole="button"
+                        accessibilityLabel="Remove vehicle"
+                        hitSlop={8}
+                      >
+                        <Ionicons name="trash-outline" size={18} color={COLORS.error} />
+                      </Pressable>
+                    ) : null}
+                  </View>
+                  <Text style={styles.fieldLabel}>Model</Text>
+                  <TextInput
+                    style={styles.fieldInput}
+                    value={r.vehicleModel}
+                    onChangeText={(t) => updateRow(r.key, { vehicleModel: t })}
+                    onFocus={() => scrollFieldIntoView(r.key, 'model')}
+                    placeholder="Make & model"
+                    placeholderTextColor={COLORS.textMuted}
+                    editable={!saving}
+                  />
+                  <View style={styles.editVehicleRow}>
+                    <View style={styles.editVehicleCol}>
+                      <Text style={styles.fieldLabel}>Plate</Text>
+                      <TextInput
+                        style={styles.fieldInput}
+                        value={r.licensePlate}
+                        onChangeText={(t) => updateRow(r.key, { licensePlate: t })}
+                        onFocus={() => scrollFieldIntoView(r.key, 'plate')}
+                        placeholder="License plate"
+                        placeholderTextColor={COLORS.textMuted}
+                        autoCapitalize="characters"
+                        editable={!saving}
+                      />
+                    </View>
+                    <View style={styles.editVehicleCol}>
+                      <Text style={styles.fieldLabel}>Color</Text>
+                      <TextInput
+                        style={styles.fieldInput}
+                        value={r.vehicleColor}
+                        onChangeText={(t) => updateRow(r.key, { vehicleColor: t })}
+                        onFocus={() => scrollFieldIntoView(r.key, 'color')}
+                        placeholder="Optional"
+                        placeholderTextColor={COLORS.textMuted}
+                        editable={!saving}
+                      />
+                    </View>
+                  </View>
+                </View>
+              ))}
             </View>
-            <Text style={styles.fieldLabel}>Model</Text>
-            <TextInput
-              style={styles.fieldInput}
-              value={r.vehicleModel}
-              onChangeText={(t) => updateRow(r.key, { vehicleModel: t })}
-              onFocus={() => scrollFieldIntoView(r.key, 'model')}
-              placeholder="Vehicle model"
-              placeholderTextColor={COLORS.textMuted}
-              editable={!saving}
-            />
-            <View style={styles.editVehicleRow}>
-              <View style={styles.editVehicleCol}>
-                <Text style={styles.fieldLabel}>Plate</Text>
+
+            <View style={[styles.panel, styles.panelLast]}>
+              <Text style={styles.panelOverline}>Account</Text>
+              <Text style={styles.panelLead}>Phone</Text>
+              <Text style={styles.fieldHelp}>For booking updates and verification.</Text>
+              <View style={styles.inputWrap}>
+                <Text style={styles.dial}>+91</Text>
                 <TextInput
-                  style={styles.fieldInput}
-                  value={r.licensePlate}
-                  onChangeText={(t) => updateRow(r.key, { licensePlate: t })}
-                  onFocus={() => scrollFieldIntoView(r.key, 'plate')}
-                  placeholder="License plate"
+                  style={styles.input}
+                  value={phoneNational}
+                  onChangeText={(t) => {
+                    setPhoneNational(clampPhoneNationalInput(t));
+                    setPhoneError(undefined);
+                  }}
+                  placeholder="10-digit number"
                   placeholderTextColor={COLORS.textMuted}
-                  autoCapitalize="characters"
+                  keyboardType="phone-pad"
+                  maxLength={10}
                   editable={!saving}
+                  onPressIn={scrollPhoneIntoView}
+                  onFocus={() => {
+                    setPhoneFocused(true);
+                    scrollPhoneIntoView();
+                  }}
+                  onBlur={() => setPhoneFocused(false)}
                 />
               </View>
-              <View style={styles.editVehicleCol}>
-                <Text style={styles.fieldLabel}>Color</Text>
-                <TextInput
-                  style={styles.fieldInput}
-                  value={r.vehicleColor}
-                  onChangeText={(t) => updateRow(r.key, { vehicleColor: t })}
-                  onFocus={() => scrollFieldIntoView(r.key, 'color')}
-                  placeholder="Optional"
-                  placeholderTextColor={COLORS.textMuted}
-                  editable={!saving}
-                />
-              </View>
+              {phoneError ? <Text style={styles.errorText}>{phoneError}</Text> : null}
             </View>
-          </View>
-        ))}
-
-        <View style={styles.sectionDivider} />
-
-        <Text style={styles.sectionGroupEyebrow}>Account</Text>
-        <Text style={[styles.sectionLabel, styles.sectionLabelTight]}>Phone</Text>
-        <Text style={styles.fieldHelp}>Used for booking updates and verification.</Text>
-        <View style={styles.inputWrap}>
-          <Text style={styles.dial}>+91</Text>
-          <TextInput
-            style={styles.input}
-            value={phoneNational}
-            onChangeText={(t) => {
-              setPhoneNational(clampPhoneNationalInput(t));
-              setPhoneError(undefined);
-            }}
-            placeholder="10-digit phone number"
-            placeholderTextColor={COLORS.textMuted}
-            keyboardType="phone-pad"
-            maxLength={10}
-            editable={!saving}
-            onPressIn={scrollPhoneIntoView}
-            onFocus={scrollPhoneIntoView}
-            onFocusCapture={() => setPhoneFocused(true)}
-            onBlur={() => setPhoneFocused(false)}
-          />
-        </View>
-        {phoneError ? <Text style={styles.errorText}>{phoneError}</Text> : null}
+            </View>
           </ScrollView>
         </KeyboardAvoidingView>
 
@@ -602,7 +621,7 @@ export default function EditProfileScreen(): React.JSX.Element {
           ]}
         >
           <Pressable
-            style={[styles.saveBtn, saving && styles.saveBtnDisabled]}
+            style={({ pressed }) => [styles.saveBtn, saving && styles.saveBtnDisabled, pressed && !saving && styles.saveBtnPressed]}
             onPress={() => void onSave()}
             disabled={saving}
             accessibilityRole="button"
@@ -622,31 +641,40 @@ export default function EditProfileScreen(): React.JSX.Element {
 const styles = StyleSheet.create({
   root: {
     flex: 1,
-    backgroundColor: COLORS.white,
+    backgroundColor: COLORS.background,
   },
   statusBarFill: {
-    backgroundColor: COLORS.white,
+    backgroundColor: COLORS.surface,
   },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 8,
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.borderLight,
-    backgroundColor: COLORS.white,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: COLORS.border,
+    backgroundColor: COLORS.surface,
   },
-  headerBtn: {
-    width: 44,
-    height: 44,
+  headerBack: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
   },
+  headerBackPressed: {
+    backgroundColor: COLORS.tabBarSelectedWell,
+  },
+  headerBackPlaceholder: {
+    width: 40,
+    height: 40,
+  },
   headerTitle: {
-    fontSize: 17,
-    fontWeight: '700',
+    fontSize: 18,
+    fontWeight: '800',
     color: COLORS.text,
+    letterSpacing: -0.35,
   },
   body: {
     flex: 1,
@@ -659,101 +687,100 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   scrollContent: {
-    paddingHorizontal: 16,
-    paddingTop: 16,
+    paddingHorizontal: 20,
+    paddingTop: 14,
   },
-  saveFooter: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    paddingHorizontal: 16,
-    paddingTop: 12,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: COLORS.borderLight,
-    backgroundColor: COLORS.white,
+  scrollInner: {
+    paddingBottom: 4,
   },
-  hint: {
-    fontSize: 14,
-    lineHeight: 20,
-    color: COLORS.textSecondary,
-    marginBottom: 20,
+  panel: {
+    backgroundColor: COLORS.surface,
+    borderRadius: 20,
+    paddingHorizontal: 18,
+    paddingVertical: 18,
+    marginBottom: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: COLORS.tabBarPillBorder,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#0f172a',
+        shadowOffset: { width: 0, height: 6 },
+        shadowOpacity: 0.06,
+        shadowRadius: 16,
+      },
+      android: { elevation: 2 },
+    }),
   },
-  sectionGroupEyebrow: {
-    fontSize: 11,
-    fontWeight: '800',
-    color: COLORS.textMuted,
-    letterSpacing: 0.9,
-    textTransform: 'uppercase',
-    marginBottom: 10,
-    marginTop: 2,
-  },
-  sectionDivider: {
-    height: 1,
-    backgroundColor: COLORS.borderLight,
-    marginVertical: 22,
-    marginHorizontal: 2,
-  },
-  sectionLabel: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: COLORS.textSecondary,
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
+  panelLast: {
     marginBottom: 8,
   },
-  sectionLabelSpaced: {
-    marginTop: 4,
+  panelOverline: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: COLORS.textMuted,
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+    marginBottom: 12,
   },
-  /** After a group eyebrow, avoid double gap with uppercase label. */
-  sectionLabelTight: {
-    marginTop: 0,
+  panelLead: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: COLORS.text,
+    letterSpacing: -0.25,
+    marginBottom: 4,
+  },
+  panelLeadSpaced: {
+    marginTop: 18,
   },
   fieldHelp: {
     fontSize: 13,
-    color: COLORS.textMuted,
-    marginTop: -4,
-    marginBottom: 8,
-    lineHeight: 18,
+    fontWeight: '500',
+    color: COLORS.textSecondary,
+    marginBottom: 10,
+    lineHeight: 19,
   },
-  fieldHelpAfterEyebrow: {
-    marginTop: 0,
-    marginBottom: 12,
+  fieldHelpTight: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: COLORS.textSecondary,
+    marginBottom: 14,
+    lineHeight: 19,
   },
   bioInput: {
-    borderWidth: 1,
-    borderColor: COLORS.borderLight,
-    borderRadius: 12,
-    paddingHorizontal: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: COLORS.border,
+    borderRadius: 14,
+    paddingHorizontal: 14,
     paddingVertical: Platform.OS === 'ios' ? 12 : 10,
     fontSize: 15,
     lineHeight: 22,
     color: COLORS.text,
     backgroundColor: COLORS.backgroundSecondary,
-    minHeight: 100,
-    maxHeight: 180,
+    minHeight: 96,
+    maxHeight: 168,
   },
   charCount: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '600',
     color: COLORS.textMuted,
     textAlign: 'right',
-    marginTop: 4,
-    marginBottom: 4,
+    marginTop: 6,
+    marginBottom: 0,
   },
   prefChipWrap: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 8,
-    marginBottom: 4,
+    marginTop: 2,
   },
   prefChip: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    paddingVertical: 9,
+    paddingVertical: 8,
     paddingHorizontal: 12,
-    borderRadius: 22,
-    borderWidth: 1.5,
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: COLORS.border,
     backgroundColor: COLORS.backgroundSecondary,
   },
@@ -762,10 +789,10 @@ const styles = StyleSheet.create({
     borderColor: COLORS.primary,
   },
   prefChipPressed: {
-    opacity: 0.88,
+    opacity: 0.9,
   },
   prefChipLabel: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '600',
     color: COLORS.text,
   },
@@ -779,10 +806,10 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   occupationChip: {
-    paddingVertical: 8,
+    paddingVertical: 7,
     paddingHorizontal: 12,
-    borderRadius: 18,
-    borderWidth: 1,
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: COLORS.border,
     backgroundColor: COLORS.backgroundSecondary,
   },
@@ -791,10 +818,10 @@ const styles = StyleSheet.create({
     borderColor: COLORS.primary,
   },
   occupationChipPressed: {
-    opacity: 0.88,
+    opacity: 0.9,
   },
   occupationChipLabel: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '600',
     color: COLORS.text,
   },
@@ -804,39 +831,41 @@ const styles = StyleSheet.create({
   inputWrap: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderWidth: 1,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: COLORS.border,
-    borderRadius: 12,
+    borderRadius: 14,
     backgroundColor: COLORS.backgroundSecondary,
-    paddingHorizontal: 12,
-    minHeight: 48,
+    paddingHorizontal: 14,
+    minHeight: 50,
   },
   dial: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: COLORS.text,
+    fontSize: 15,
+    fontWeight: '700',
+    color: COLORS.textSecondary,
     marginRight: 8,
   },
   input: {
     flex: 1,
     fontSize: 16,
+    fontWeight: '600',
     color: COLORS.text,
-    paddingVertical: 10,
+    paddingVertical: Platform.OS === 'ios' ? 12 : 10,
   },
   errorText: {
     fontSize: 13,
+    fontWeight: '600',
     color: COLORS.error,
-    marginTop: 6,
+    marginTop: 8,
   },
   vehicleCard: {
-    borderWidth: 1,
-    borderColor: COLORS.borderLight,
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingTop: 10,
-    paddingBottom: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: COLORS.border,
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    paddingTop: 12,
+    paddingBottom: 14,
     marginBottom: 10,
-    backgroundColor: COLORS.white,
+    backgroundColor: COLORS.backgroundSecondary,
   },
   editVehicleHeader: {
     flexDirection: 'row',
@@ -844,43 +873,43 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     gap: 8,
     marginBottom: 10,
-    paddingBottom: 8,
+    paddingBottom: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: COLORS.borderLight,
+    borderBottomColor: COLORS.border,
   },
   editVehicleHeaderLeft: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 10,
     flex: 1,
     minWidth: 0,
   },
   vehicleDeleteBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 10,
+    width: 38,
+    height: 38,
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#fef2f2',
-    borderWidth: 1,
-    borderColor: 'rgba(239, 68, 68, 0.2)',
+    backgroundColor: 'rgba(220, 38, 38, 0.08)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(220, 38, 38, 0.18)',
   },
   vehicleDeleteBtnPressed: {
-    opacity: 0.85,
+    opacity: 0.88,
   },
   editVehicleIcon: {
-    width: 32,
-    height: 32,
-    borderRadius: 8,
-    backgroundColor: 'rgba(34, 197, 94, 0.1)',
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    backgroundColor: COLORS.primaryRipple,
     alignItems: 'center',
     justifyContent: 'center',
   },
   editVehicleTitle: {
-    fontSize: 14,
-    fontWeight: '700',
+    fontSize: 15,
+    fontWeight: '800',
     color: COLORS.text,
-    letterSpacing: -0.2,
+    letterSpacing: -0.25,
   },
   editVehicleRow: {
     flexDirection: 'row',
@@ -892,39 +921,63 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   fieldLabel: {
-    fontSize: 11,
-    fontWeight: '700',
+    fontSize: 10,
+    fontWeight: '800',
     color: COLORS.textMuted,
-    marginBottom: 4,
-    marginTop: 6,
+    marginBottom: 5,
+    marginTop: 8,
     textTransform: 'uppercase',
-    letterSpacing: 0.5,
+    letterSpacing: 0.6,
   },
   fieldInput: {
-    borderWidth: 1,
-    borderColor: COLORS.borderLight,
-    borderRadius: 10,
-    paddingHorizontal: 11,
-    paddingVertical: Platform.OS === 'ios' ? 10 : 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: COLORS.border,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: Platform.OS === 'ios' ? 11 : 9,
     fontSize: 15,
+    fontWeight: '600',
     color: COLORS.text,
-    backgroundColor: COLORS.backgroundSecondary,
-    minHeight: 42,
+    backgroundColor: COLORS.surface,
+    minHeight: 44,
+  },
+  saveFooter: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    paddingHorizontal: 20,
+    paddingTop: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: COLORS.border,
+    backgroundColor: COLORS.surface,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#0f172a',
+        shadowOffset: { width: 0, height: -4 },
+        shadowOpacity: 0.06,
+        shadowRadius: 12,
+      },
+      android: { elevation: 8 },
+    }),
   },
   saveBtn: {
     backgroundColor: COLORS.primary,
-    borderRadius: 12,
-    paddingVertical: 14,
+    borderRadius: 14,
+    paddingVertical: 15,
     alignItems: 'center',
     justifyContent: 'center',
-    minHeight: 50,
+    minHeight: 52,
+  },
+  saveBtnPressed: {
+    backgroundColor: COLORS.primaryDark,
   },
   saveBtnDisabled: {
-    opacity: 0.7,
+    opacity: 0.65,
   },
   saveBtnText: {
     fontSize: 16,
-    fontWeight: '700',
+    fontWeight: '800',
     color: COLORS.white,
+    letterSpacing: -0.2,
   },
 });

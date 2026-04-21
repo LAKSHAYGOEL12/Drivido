@@ -31,11 +31,7 @@ function mainTabRoutesResetToSearchRides(token: number) {
       state: { routes: [{ name: 'YourRidesList' as const }], index: 0 },
     },
     {
-      name: 'PublishStack' as const,
-      state: { routes: [{ name: 'PublishRide' as const }], index: 0 },
-    },
-    {
-      name: 'Chats' as const,
+      name: 'Inbox' as const,
       state: { routes: [{ name: 'InboxList' as const }], index: 0 },
     },
     { name: 'Profile' as const },
@@ -95,10 +91,6 @@ function buildResetToYourRidesAction(afterBookRefreshToken?: number) {
           routes: [{ name: 'YourRidesList', ...(yourRidesListParams ? { params: yourRidesListParams } : {}) }],
           index: 0,
         },
-      },
-      {
-        name: 'PublishStack',
-        state: { routes: [{ name: 'PublishRide' }], index: 0 },
       },
       {
         name: 'Inbox',

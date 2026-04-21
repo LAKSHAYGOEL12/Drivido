@@ -338,7 +338,7 @@ export default function Profile(): React.JSX.Element {
   if (loading) {
     return (
       <View style={styles.rootFill}>
-        <StatusBar barStyle="dark-content" backgroundColor={COLORS.white} />
+        <StatusBar barStyle="dark-content" backgroundColor={COLORS.backgroundSecondary} />
         <View style={[styles.statusBarFill, { height: insets.top }]} />
         <ScrollView
           style={styles.screen}
@@ -356,7 +356,7 @@ export default function Profile(): React.JSX.Element {
             <SkeletonBlock width="30%" height={52} />
             <SkeletonBlock width="30%" height={52} />
           </View>
-          <SkeletonBlock width="100%" height={48} borderRadius={12} />
+          <SkeletonBlock width="100%" height={52} borderRadius={16} />
           <View style={styles.skeletonCard}>
             <SkeletonBlock width="40%" height={14} />
             <SkeletonBlock width="100%" height={16} />
@@ -384,7 +384,7 @@ export default function Profile(): React.JSX.Element {
   return (
     <>
     <View style={styles.rootFill}>
-      <StatusBar barStyle="dark-content" backgroundColor={COLORS.white} />
+      <StatusBar barStyle="dark-content" backgroundColor={COLORS.backgroundSecondary} />
       {/** Fixed white strip under status bar (battery / network) — scroll content stays below so icons stay legible. */}
       <View style={[styles.statusBarFill, { height: insets.top }]} />
       <ScrollView
@@ -409,10 +409,11 @@ export default function Profile(): React.JSX.Element {
               accessibilityRole="button"
               onPress={handleProfileHeaderBack}
             >
-              <Ionicons name="arrow-back" size={18} color={COLORS.primary} />
+              <Ionicons name="chevron-back" size={22} color={COLORS.text} />
             </Pressable>
           )}
           <View style={styles.headerTitleWrap}>
+            <Text style={styles.profileEyebrow}>{isSelf ? 'Your account' : 'Member profile'}</Text>
             <Text style={styles.headerTitle}>Profile</Text>
           </View>
           <View style={styles.headerRightSpacer} />
@@ -493,7 +494,22 @@ export default function Profile(): React.JSX.Element {
             accessibilityHint="Shows completed and cancelled trip counts"
           />
         )}
-        <StatItem label="Rating" value={avgRating > 0 ? avgRating.toFixed(1) : '0'} icon="star-outline" />
+        <StatItem
+          label="Rating"
+          value={avgRating > 0 ? avgRating.toFixed(1) : '0'}
+          icon="star-outline"
+          {...(isSelf
+            ? {
+                onPress: () =>
+                  navigation.navigate('Ratings', {
+                    userId: targetUserId || undefined,
+                    displayName: targetDisplayName,
+                    ...(user?.avatarUrl?.trim() ? { avatarUrl: user.avatarUrl.trim() } : {}),
+                  }),
+                accessibilityHint: 'Opens your ratings',
+              }
+            : {})}
+        />
         <StatItem label="Since" value={memberSinceLabel} icon="calendar-outline" />
       </View>
 
@@ -508,39 +524,42 @@ export default function Profile(): React.JSX.Element {
         </Pressable>
       ) : null}
 
-      <View style={styles.performanceCard}>
-        <Text style={styles.performanceLabel}>PERFORMANCE</Text>
-        <View style={styles.performanceRow}>
-          <View style={styles.performanceLeft}>
-            <View style={styles.ratingRow}>
-              <Ionicons name="star-outline" size={16} color={COLORS.warning} />
-              <Text style={styles.ratingValue}>{avgRating > 0 ? avgRating.toFixed(1) : '0.0'}</Text>
-              <Text style={[styles.ratingText, { color: ratingQualitativeColor(avgRating) }]}>
-                {ratingQualitativeLabel(avgRating)}
+      {!isSelf ? (
+        <View style={styles.performanceCard}>
+          <Text style={styles.cardEyebrow}>Reputation</Text>
+          <View style={styles.performanceRow}>
+            <View style={styles.performanceLeft}>
+              <View style={styles.ratingRow}>
+                <Ionicons name="star-outline" size={16} color={COLORS.warning} />
+                <Text style={styles.ratingValue}>{avgRating > 0 ? avgRating.toFixed(1) : '0.0'}</Text>
+                <Text style={[styles.ratingText, { color: ratingQualitativeColor(avgRating) }]}>
+                  {ratingQualitativeLabel(avgRating)}
+                </Text>
+              </View>
+              <Text style={styles.reviewText}>
+                {totalRatings > 0 ? `Based on ${totalRatings} ratings` : 'No ratings yet'}
               </Text>
             </View>
-            <Text style={styles.reviewText}>
-              {totalRatings > 0 ? `Based on ${totalRatings} ratings` : 'No ratings yet'}
-            </Text>
-          </View>
 
-          <Pressable
-            style={styles.performanceArrow}
-            accessibilityRole="button"
-            onPress={() =>
-              navigation.navigate('Ratings', {
-                userId: targetUserId || undefined,
-                displayName: targetDisplayName,
-                ...(isSelf && user?.avatarUrl?.trim() ? { avatarUrl: user.avatarUrl.trim() } : {}),
-              })
-            }
-          >
-            <Ionicons name="chevron-forward" size={16} color={COLORS.primary} />
-          </Pressable>
+            <Pressable
+              style={styles.performanceArrow}
+              accessibilityRole="button"
+              onPress={() =>
+                navigation.navigate('Ratings', {
+                  userId: targetUserId || undefined,
+                  displayName: targetDisplayName,
+                  ...(isSelf && user?.avatarUrl?.trim() ? { avatarUrl: user.avatarUrl.trim() } : {}),
+                })
+              }
+            >
+              <Ionicons name="chevron-forward" size={18} color={COLORS.primary} />
+            </Pressable>
+          </View>
         </View>
-      </View>
+      ) : null}
 
       <View style={styles.preferencesCard}>
+        <Text style={styles.cardEyebrow}>Ride style</Text>
         <View style={styles.preferencesHeader}>
           <View style={styles.rowIcon}>
             <Ionicons name="options-outline" size={16} color={COLORS.primary} />
@@ -563,7 +582,7 @@ export default function Profile(): React.JSX.Element {
 
       {isSelf ? (
         <>
-          <Section title="Personal Details">
+          <Section eyebrow="Private" title="Personal details">
             <InfoRow icon="person-outline" label="Name" value={user?.name?.trim() || 'Not provided'} />
             <InfoRow icon="mail-outline" label="Email" value={user?.email || 'Not provided'} />
             <InfoRow
@@ -606,9 +625,9 @@ export default function Profile(): React.JSX.Element {
           </Section>
 
           <View style={styles.vehicleInfoCard}>
-            <View style={styles.vehicleInfoHeader}>
-              <Ionicons name="car-outline" size={18} color={COLORS.primary} />
-              <Text style={styles.vehicleInfoTitle}>Vehicle Information</Text>
+            <View style={styles.vehicleInfoTop}>
+              <Text style={styles.cardEyebrow}>Garage</Text>
+              <Text style={styles.vehicleInfoTitle}>Vehicle information</Text>
             </View>
             {mergedVehicles.length === 0 ? (
               <View style={styles.vehicleEmptyCompact}>
@@ -644,7 +663,7 @@ export default function Profile(): React.JSX.Element {
                 <Ionicons name="log-out-outline" size={16} color={COLORS.error} />
               </View>
               <Text style={styles.logoutText}>Log Out</Text>
-              <Ionicons name="chevron-forward" size={16} color={COLORS.primary} />
+              <Ionicons name="chevron-forward" size={16} color={COLORS.textMuted} />
             </Pressable>
           </View>
         </>
@@ -732,14 +751,17 @@ export default function Profile(): React.JSX.Element {
 }
 
 function Section({
+  eyebrow,
   title,
   children,
 }: {
+  eyebrow?: string;
   title: string;
   children: React.ReactNode;
 }): React.JSX.Element {
   return (
     <View style={styles.sectionCard}>
+      {eyebrow ? <Text style={styles.sectionEyebrow}>{eyebrow}</Text> : null}
       <Text style={styles.sectionTitle}>{title}</Text>
       {children}
     </View>
@@ -883,7 +905,7 @@ function MenuRow({
         <Ionicons name={icon} size={16} color={COLORS.primary} />
       </View>
       <Text style={styles.menuText}>{title}</Text>
-      <Ionicons name="chevron-forward" size={16} color={COLORS.primary} />
+      <Ionicons name="chevron-forward" size={16} color={COLORS.textMuted} />
     </>
   );
   if (onPress) {
@@ -903,49 +925,71 @@ function MenuRow({
 const styles = StyleSheet.create({
   rootFill: {
     flex: 1,
-    backgroundColor: COLORS.white,
+    backgroundColor: COLORS.backgroundSecondary,
   },
   rootBelowStatus: {
     flex: 1,
   },
   statusBarFill: {
     width: '100%',
-    backgroundColor: COLORS.white,
+    backgroundColor: COLORS.backgroundSecondary,
   },
   screen: {
     flex: 1,
-    backgroundColor: COLORS.white,
+    backgroundColor: COLORS.backgroundSecondary,
   },
   loaderWrap: {
-    backgroundColor: COLORS.white,
+    backgroundColor: COLORS.backgroundSecondary,
     alignItems: 'center',
     justifyContent: 'center',
   },
   skeletonContent: {
-    paddingHorizontal: 16,
+    paddingHorizontal: 20,
     paddingTop: 16,
-    gap: 12,
+    gap: 14,
   },
   skeletonHeaderCard: {
-    backgroundColor: COLORS.backgroundSecondary,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: COLORS.borderLight,
-    padding: 16,
+    backgroundColor: COLORS.white,
+    borderRadius: 24,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(15, 23, 42, 0.06)',
+    padding: 18,
     alignItems: 'center',
     gap: 10,
+    shadowColor: '#0f172a',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.06,
+    shadowRadius: 20,
+    elevation: 3,
   },
   skeletonStatsRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
+    gap: 8,
+    backgroundColor: COLORS.white,
+    borderRadius: 24,
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(15, 23, 42, 0.06)',
+    shadowColor: '#0f172a',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.05,
+    shadowRadius: 16,
+    elevation: 2,
   },
   skeletonCard: {
     backgroundColor: COLORS.white,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: COLORS.borderLight,
-    padding: 12,
+    borderRadius: 24,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(15, 23, 42, 0.06)',
+    padding: 16,
     gap: 10,
+    shadowColor: '#0f172a',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.05,
+    shadowRadius: 16,
+    elevation: 2,
   },
   skeletonFooterSpacer: {
     height: 24,
@@ -954,9 +998,9 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.backgroundSecondary,
   },
   content: {
-    paddingHorizontal: 16,
-    paddingTop: 8,
-    gap: 10,
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    gap: 14,
   },
   headerTopRow: {
     width: '100%',
@@ -970,77 +1014,87 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   headerRightSpacer: {
-    width: 30,
-    height: 30,
+    width: 40,
+    height: 40,
   },
   headerLeftSpacer: {
-    width: 30,
-    height: 30,
+    width: 40,
+    height: 40,
+  },
+  profileEyebrow: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 1.2,
+    color: COLORS.primary,
+    textTransform: 'uppercase',
+    marginBottom: 4,
   },
   headerTitle: {
-    fontSize: 20,
+    fontSize: 22,
     fontWeight: '800',
     color: COLORS.text,
+    letterSpacing: -0.4,
+  },
+  cardEyebrow: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.8,
+    color: COLORS.textMuted,
+    textTransform: 'uppercase',
+    marginBottom: 10,
   },
   editProfileCta: {
     width: '100%',
     backgroundColor: COLORS.primary,
-    borderRadius: 12,
-    minHeight: 48,
-    paddingVertical: 12,
+    borderRadius: 16,
+    minHeight: 52,
+    paddingVertical: 14,
     alignItems: 'center',
     justifyContent: 'center',
     ...Platform.select({
       ios: {
-        shadowColor: COLORS.primary,
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.22,
-        shadowRadius: 6,
+        shadowColor: COLORS.primaryDark,
+        shadowOffset: { width: 0, height: 8 },
+        shadowOpacity: 0.35,
+        shadowRadius: 16,
       },
-      android: { elevation: 3 },
+      android: { elevation: 6 },
     }),
   },
   editProfileCtaPressed: {
     opacity: 0.92,
   },
   editProfileCtaText: {
-    fontSize: 16,
-    fontWeight: '700',
+    fontSize: 17,
+    fontWeight: '800',
     color: COLORS.white,
-    letterSpacing: 0.2,
+    letterSpacing: -0.2,
   },
   vehicleInfoCard: {
     backgroundColor: COLORS.white,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: COLORS.borderLight,
-    paddingHorizontal: 14,
-    paddingTop: 14,
-    paddingBottom: 14,
-    ...Platform.select({
-      ios: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 1 },
-        shadowOpacity: 0.04,
-        shadowRadius: 3,
-      },
-      android: { elevation: 1 },
-    }),
+    borderRadius: 24,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(15, 23, 42, 0.06)',
+    paddingHorizontal: 18,
+    paddingTop: 18,
+    paddingBottom: 18,
+    shadowColor: '#0f172a',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.06,
+    shadowRadius: 20,
+    elevation: 3,
   },
-  vehicleInfoHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingBottom: 12,
-    marginBottom: 12,
+  vehicleInfoTop: {
+    paddingBottom: 14,
+    marginBottom: 14,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: COLORS.borderLight,
   },
   vehicleInfoTitle: {
-    fontSize: 16,
-    fontWeight: '700',
+    fontSize: 18,
+    fontWeight: '800',
     color: COLORS.text,
-    letterSpacing: -0.2,
+    letterSpacing: -0.4,
   },
   /** One panel per vehicle — same layout repeated for 2nd, 3rd, etc. */
   vehicleInfoBlock: {
@@ -1150,20 +1204,24 @@ const styles = StyleSheet.create({
     color: COLORS.textSecondary,
   },
   headerCard: {
-    backgroundColor: COLORS.backgroundSecondary,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: COLORS.borderLight,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    backgroundColor: COLORS.white,
+    borderRadius: 24,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(15, 23, 42, 0.06)',
+    paddingHorizontal: 18,
+    paddingVertical: 16,
     alignItems: 'center',
+    shadowColor: '#0f172a',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.08,
+    shadowRadius: 24,
+    elevation: 4,
   },
   circleIconButton: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    borderWidth: 1,
-    borderColor: COLORS.border,
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: COLORS.backgroundSecondary,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -1309,9 +1367,11 @@ const styles = StyleSheet.create({
     color: COLORS.textSecondary,
   },
   name: {
-    fontSize: 24,
-    fontWeight: '700',
+    fontSize: 26,
+    fontWeight: '800',
     color: COLORS.text,
+    letterSpacing: -0.5,
+    marginTop: 4,
   },
   occupation: {
     marginTop: 2,
@@ -1335,12 +1395,17 @@ const styles = StyleSheet.create({
   },
   preferencesCard: {
     backgroundColor: COLORS.white,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: COLORS.borderLight,
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-    gap: 8,
+    borderRadius: 24,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(15, 23, 42, 0.06)',
+    paddingHorizontal: 18,
+    paddingVertical: 18,
+    gap: 6,
+    shadowColor: '#0f172a',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.06,
+    shadowRadius: 20,
+    elevation: 3,
   },
   preferencesHeader: {
     flexDirection: 'row',
@@ -1352,9 +1417,10 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   preferencesTitle: {
-    fontSize: 15,
-    fontWeight: '700',
+    fontSize: 16,
+    fontWeight: '800',
     color: COLORS.text,
+    letterSpacing: -0.3,
   },
   preferencesSubtitle: {
     marginTop: 2,
@@ -1381,23 +1447,32 @@ const styles = StyleSheet.create({
   offlineHintRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    marginBottom: 8,
+    gap: 8,
+    marginBottom: 12,
     alignSelf: 'stretch',
     justifyContent: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    backgroundColor: COLORS.backgroundSecondary,
+    borderRadius: 14,
   },
   offlineHintText: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.textSecondary,
-    fontWeight: '500',
+    fontWeight: '600',
   },
   statsCard: {
     backgroundColor: COLORS.white,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: COLORS.borderLight,
+    borderRadius: 24,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(15, 23, 42, 0.06)',
     flexDirection: 'row',
-    paddingVertical: 10,
+    paddingVertical: 14,
+    shadowColor: '#0f172a',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.06,
+    shadowRadius: 20,
+    elevation: 3,
   },
   statItem: {
     flex: 1,
@@ -1415,18 +1490,17 @@ const styles = StyleSheet.create({
     color: COLORS.textSecondary,
   },
   performanceCard: {
-    backgroundColor: 'rgba(34,197,94,0.08)',
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(34,197,94,0.22)',
-    padding: 12,
-    gap: 8,
-  },
-  performanceLabel: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: 'rgba(21,128,61,0.55)',
-    letterSpacing: 0.6,
+    backgroundColor: COLORS.white,
+    borderRadius: 24,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(15, 23, 42, 0.06)',
+    padding: 18,
+    gap: 0,
+    shadowColor: '#0f172a',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.06,
+    shadowRadius: 20,
+    elevation: 3,
   },
   performanceRow: {
     flexDirection: 'row',
@@ -1453,18 +1527,18 @@ const styles = StyleSheet.create({
   },
   reviewText: {
     fontSize: 13,
+    fontWeight: '600',
     color: COLORS.textSecondary,
-    textDecorationLine: 'underline',
   },
   performanceArrow: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: 'rgba(34,197,94,0.14)',
+    width: 40,
+    height: 40,
+    borderRadius: 14,
+    backgroundColor: COLORS.primaryRipple,
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(34,197,94,0.28)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: COLORS.borderLight,
   },
   performanceExpanded: {
     marginTop: 6,
@@ -1554,17 +1628,31 @@ const styles = StyleSheet.create({
   },
   sectionCard: {
     backgroundColor: COLORS.white,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: COLORS.borderLight,
-    padding: 12,
+    borderRadius: 24,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(15, 23, 42, 0.06)',
+    padding: 18,
     gap: 10,
+    shadowColor: '#0f172a',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.06,
+    shadowRadius: 20,
+    elevation: 3,
+  },
+  sectionEyebrow: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.8,
+    color: COLORS.textMuted,
+    textTransform: 'uppercase',
+    marginBottom: 4,
   },
   sectionTitle: {
-    fontSize: 15,
-    fontWeight: '700',
+    fontSize: 17,
+    fontWeight: '800',
     color: COLORS.text,
-    marginBottom: 4,
+    marginBottom: 8,
+    letterSpacing: -0.3,
   },
   infoRow: {
     flexDirection: 'row',
@@ -1573,10 +1661,10 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
   },
   rowIcon: {
-    width: 28,
-    height: 28,
-    borderRadius: 8,
-    backgroundColor: 'rgba(41, 190, 139, 0.12)',
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    backgroundColor: COLORS.primaryRipple,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -1595,18 +1683,25 @@ const styles = StyleSheet.create({
   },
   menuCard: {
     backgroundColor: COLORS.white,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: COLORS.borderLight,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    gap: 2,
+    borderRadius: 24,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(15, 23, 42, 0.06)',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    gap: 0,
+    overflow: 'hidden',
+    shadowColor: '#0f172a',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.06,
+    shadowRadius: 20,
+    elevation: 3,
   },
   menuRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    paddingVertical: 10,
+    gap: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 4,
   },
   menuText: {
     flex: 1,

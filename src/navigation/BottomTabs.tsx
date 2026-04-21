@@ -1,11 +1,17 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
+  Animated,
   AppState,
   type AppStateStatus,
   BackHandler,
+  Dimensions,
+  Easing,
+  Modal,
   Platform,
   Pressable,
   StyleSheet,
+  Text,
+  TouchableOpacity,
   type StyleProp,
   View,
   type ViewStyle,
@@ -20,7 +26,6 @@ import { Ionicons } from '@expo/vector-icons';
 import type { MainTabParamList } from './types';
 import UserAvatar from '../components/common/UserAvatar';
 import SearchStack from './SearchStack';
-import PublishStack from './PublishStack';
 import RidesStack from './RidesStack';
 import InboxStack from './InboxStack';
 import ProfileStack from './ProfileStack';
@@ -43,14 +48,22 @@ import {
   TAB_BAR_EXTRA_BOTTOM_INSET,
   TAB_ROW_MIN,
 } from './tabBarMetrics';
-import { handleMainTabAndroidHardwareBackPress } from './mainTabAndroidHardwareBack';
+import {
+  handleMainTabAndroidHardwareBackPress,
+  publishFabSheetOpenRef,
+} from './mainTabAndroidHardwareBack';
+import { MAIN_TAB_BAR_DISPLAY_ORDER, type MainTabName } from './mainTabOrder';
+import { navigatePublishStackToNewRideWizard } from './navigatePublishStackNewRideWizard';
+
+const PUBLISH_FAB_SHEET_OFF_Y = Math.min(520, Math.round(Dimensions.get('window').height * 0.5));
 
 const Tab = createMaterialTopTabNavigator<MainTabParamList>();
 
 /** Horizontal inset so the pill “floats” off the screen edges. */
 const TAB_PILL_SIDE_INSET = 20;
-function mainTabIconSize(focused: boolean): number {
-  return focused ? 27 : 22;
+/** Same geometry for every tab; focus uses tint + ring (no filled-vs-outline mismatch). */
+function mainTabIconSize(_focused: boolean): number {
+  return 24;
 }
 
 type NavStateLite = {
@@ -94,14 +107,30 @@ function getTopFocusedRouteName(state: NavStateLite | undefined): string | undef
 function computeHideMainTabBar(state: MaterialTopTabBarProps['state'] | undefined): boolean {
   if (!state?.routes?.length || state.index == null || state.index < 0) return false;
   const tabRoute = state.routes[state.index] as { name?: string; state?: NavStateLite };
-  const tabName = tabRoute.name as MainTabScreenName | undefined;
+  const rawTabName = tabRoute.name;
+  /**
+   * Product rule: Publish flow (`LocationPicker`, preview, review, recents, edit) never shows bottom tabs.
+   * Visible tabs are only allowed on Search / Your Rides / Inbox / Profile roots.
+   */
+  const tabName = rawTabName as MainTabScreenName | undefined;
   if (!tabName || !(tabName in MAIN_TAB_PRIMARY_NESTED_ROUTE)) return false;
   const focusedNested = getTopFocusedRouteName(tabRoute.state);
   return !shouldShowMainTabBar(tabName, focusedNested);
 }
 
+/** Tab bar already receives full material-tab `state`; sync pager swipe from that (not nested `navigation.getState()`). */
+function TabBarWithPagerSwipeSync(
+  props: MaterialTopTabBarProps & { onPagerSwipeChange: (enabled: boolean) => void }
+): React.JSX.Element {
+  const { onPagerSwipeChange, ...barProps } = props;
+  useLayoutEffect(() => {
+    onPagerSwipeChange(!computeHideMainTabBar(barProps.state));
+  }, [barProps.state, onPagerSwipeChange]);
+  return <MainBottomTabBar {...barProps} />;
+}
+
 /**
- * Tab bar visibility: **only** the five “home” nested routes in `MAIN_TAB_PRIMARY_NESTED_ROUTE`
+ * Tab bar visibility: only the root nested routes in `MAIN_TAB_PRIMARY_NESTED_ROUTE`
  * show the bar. Uses tab `state` from props plus **top-level** nested route names (see
  * {@link getTopFocusedRouteName}).
  */
@@ -120,21 +149,120 @@ function MainBottomTabBar(props: MaterialTopTabBarProps): React.JSX.Element {
   }
 
   const bottomPad = insets.bottom + TAB_BAR_EXTRA_BOTTOM_INSET;
-  const publishFocused = state.routes[state.index]?.name === 'PublishStack';
+  const publishFocused = false;
+  const [publishFabSheetOpen, setPublishFabSheetOpen] = useState(false);
+  const publishFabSheetTranslateY = useRef(new Animated.Value(PUBLISH_FAB_SHEET_OFF_Y)).current;
+  const publishFabBackdropOpacity = useRef(new Animated.Value(0)).current;
+  const publishFabCloseBusyRef = useRef(false);
+
+  const closePublishFabSheet = useCallback((afterClose?: () => void) => {
+    if (publishFabCloseBusyRef.current) return;
+    if (!publishFabSheetOpen) {
+      afterClose?.();
+      return;
+    }
+    publishFabCloseBusyRef.current = true;
+    Animated.parallel([
+      Animated.timing(publishFabSheetTranslateY, {
+        toValue: PUBLISH_FAB_SHEET_OFF_Y,
+        duration: 280,
+        easing: Easing.in(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      Animated.timing(publishFabBackdropOpacity, {
+        toValue: 0,
+        duration: 240,
+        easing: Easing.in(Easing.quad),
+        useNativeDriver: true,
+      }),
+    ]).start(({ finished }) => {
+      publishFabCloseBusyRef.current = false;
+      if (!finished) return;
+      setPublishFabSheetOpen(false);
+      afterClose?.();
+    });
+  }, [publishFabSheetOpen, publishFabSheetTranslateY, publishFabBackdropOpacity]);
+
+  useLayoutEffect(() => {
+    if (!publishFabSheetOpen) return;
+    publishFabSheetTranslateY.setValue(PUBLISH_FAB_SHEET_OFF_Y);
+    publishFabBackdropOpacity.setValue(0);
+    const t = requestAnimationFrame(() => {
+      Animated.parallel([
+        Animated.timing(publishFabSheetTranslateY, {
+          toValue: 0,
+          duration: 340,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }),
+        Animated.timing(publishFabBackdropOpacity, {
+          toValue: 1,
+          duration: 280,
+          easing: Easing.out(Easing.quad),
+          useNativeDriver: true,
+        }),
+      ]).start();
+    });
+    return () => cancelAnimationFrame(t);
+  }, [publishFabSheetOpen, publishFabSheetTranslateY, publishFabBackdropOpacity]);
+
+  useEffect(() => {
+    publishFabSheetOpenRef.current = publishFabSheetOpen;
+    return () => {
+      publishFabSheetOpenRef.current = false;
+    };
+  }, [publishFabSheetOpen]);
+
+  useEffect(() => {
+    if (!publishFabSheetOpen) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      closePublishFabSheet();
+      return true;
+    });
+    return () => sub.remove();
+  }, [publishFabSheetOpen, closePublishFabSheet]);
+
+  const navigatePublishReuseRecents = useCallback(() => {
+    (navigation as { navigate: (config: Record<string, unknown>) => void }).navigate({
+      name: 'PublishStack',
+      merge: false,
+      params: {
+        state: {
+          routes: [{ name: 'PublishRecentsPicker' as const }],
+          index: 0,
+        },
+      },
+    });
+  }, [navigation]);
 
   const onPublishFabPress = (): void => {
     if (!sessionReady) {
       navigateToGuestLogin(navigation as unknown as NavigationProp<ParamListBase>, { reason: 'tab' });
       return;
     }
-    (navigation as { navigate: (config: Record<string, unknown>) => void }).navigate({
-      name: 'PublishStack',
-      params: {
-        screen: 'PublishRide',
-        params: { _publishTabResetToken: Date.now() },
-      },
-      merge: false,
+    setPublishFabSheetOpen(true);
+  };
+
+  const runAfterFabSheetClose = useCallback((action: () => void): void => {
+    requestAnimationFrame(() => {
+      action();
     });
+  }, []);
+
+  const onPublishFabNewRide = (): void => {
+    const raw = state.routes[state.index]?.name;
+    const exitToTab = (typeof raw === 'string' ? raw : 'SearchStack') as MainTabName;
+    closePublishFabSheet(() =>
+      runAfterFabSheetClose(() =>
+        navigatePublishStackToNewRideWizard(navigation as { dispatch: (action: unknown) => void }, {
+          exitToTab,
+        })
+      )
+    );
+  };
+
+  const onPublishFabReuseRecent = (): void => {
+    closePublishFabSheet(() => runAfterFabSheetClose(() => navigatePublishReuseRecents()));
   };
 
   const iconTint = (focused: boolean): string =>
@@ -169,10 +297,34 @@ function MainBottomTabBar(props: MaterialTopTabBarProps): React.JSX.Element {
         <View style={styles.floatingPillShadow}>
           <View style={styles.floatingPill}>
             <View style={styles.tabBarRow}>
-              {state.routes.map((route, index) => {
-                if (route.name === 'PublishStack') {
-                  return <View key={route.key} style={styles.publishFabSlot} />;
+              {MAIN_TAB_BAR_DISPLAY_ORDER.map((tabName) => {
+                if (tabName === 'PublishStack') {
+                  return (
+                    <View key="publish-fab-slot" style={styles.publishFabSlot} pointerEvents="box-none">
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel="Publish"
+                        accessibilityHint="Opens new ride and reuse recent options"
+                        accessibilityState={{ selected: publishFocused }}
+                        onPress={onPublishFabPress}
+                        style={({ pressed }) => [
+                          styles.publishFabHitColumn,
+                          pressed && styles.publishFabHitColumnPressed,
+                        ]}
+                      >
+                        <View style={[styles.fab, publishFocused && styles.fabSelected]}>
+                          <Ionicons name="add" size={26} color={COLORS.white} />
+                        </View>
+                        <Text style={styles.publishFabLabel} numberOfLines={1}>
+                          Publish
+                        </Text>
+                      </Pressable>
+                    </View>
+                  );
                 }
+                const route = state.routes.find((r) => r.name === tabName);
+                if (!route) return null;
+                const index = state.routes.indexOf(route);
                 const focused = state.index === index;
                 const { options } = descriptors[route.key];
                 const tint = iconTint(focused);
@@ -191,14 +343,14 @@ function MainBottomTabBar(props: MaterialTopTabBarProps): React.JSX.Element {
                 const label =
                   typeof labelFromOptions === 'string'
                     ? labelFromOptions
-                    : route.name === 'SearchStack'
+                    : tabName === 'SearchStack'
                       ? 'Find'
-                      : route.name === 'YourRides'
+                      : tabName === 'YourRides'
                         ? 'My Trips'
-                      : route.name === 'Inbox'
+                      : tabName === 'Inbox'
                         ? 'Messages'
                         : 'Profile';
-                const showInboxBadge = route.name === 'Inbox' && hasUnread;
+                const showInboxBadge = tabName === 'Inbox' && hasUnread;
 
                 return (
                   <View key={route.key} style={styles.tabSlot}>
@@ -232,24 +384,95 @@ function MainBottomTabBar(props: MaterialTopTabBarProps): React.JSX.Element {
         </View>
       </View>
 
-      <View
-        style={[styles.fabAnchor, { bottom: bottomPad + TAB_ROW_MIN / 2 - FAB_VISUAL_RISE }]}
-        pointerEvents="box-none"
+      <Modal
+        visible={publishFabSheetOpen}
+        transparent
+        animationType="none"
+        onRequestClose={() => closePublishFabSheet()}
       >
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Offer a ride"
-          accessibilityState={{ selected: publishFocused }}
-          onPress={onPublishFabPress}
-          style={({ pressed }) => [
-            styles.fab,
-            publishFocused && styles.fabSelected,
-            pressed && styles.fabPressed,
-          ]}
-        >
-          <Ionicons name="add" size={32} color={COLORS.white} />
-        </Pressable>
-      </View>
+        <View style={styles.publishFabSheetRoot}>
+          <Animated.View
+            style={[styles.publishFabSheetBackdrop, { opacity: publishFabBackdropOpacity }]}
+            pointerEvents="box-none"
+          >
+            <Pressable style={StyleSheet.absoluteFillObject} onPress={() => closePublishFabSheet()} />
+          </Animated.View>
+          <Animated.View
+            style={[
+              styles.publishFabSheetCard,
+              { paddingBottom: Math.max(insets.bottom, 10) + 6 },
+              { transform: [{ translateY: publishFabSheetTranslateY }] },
+            ]}
+          >
+            <View style={styles.publishFabSheetHandle} />
+            <View style={styles.publishFabSheetHeader}>
+              <View style={styles.publishFabSheetHeaderAccentRow}>
+                <View style={styles.publishFabSheetHeaderAccentBar} />
+                <View style={styles.publishFabSheetHeaderTextBlock}>
+                  <Text style={styles.publishFabSheetTitle}>Publish</Text>
+                  <Text style={styles.publishFabSheetCaption}>
+                    Start a new ride or reuse a route you have published before.
+                  </Text>
+                </View>
+              </View>
+            </View>
+
+            <View style={styles.publishFabSheetActions}>
+              <Pressable
+                style={({ pressed }) => [
+                  styles.publishFabSheetRow,
+                  styles.publishFabSheetRowNew,
+                  pressed && styles.publishFabSheetRowPressedNew,
+                ]}
+                onPress={onPublishFabNewRide}
+                accessibilityRole="button"
+                accessibilityLabel="New ride"
+                android_ripple={{ color: COLORS.primaryRipple }}
+              >
+                <View style={[styles.publishFabSheetRowIcon, styles.publishFabSheetRowIconPrimary]}>
+                  <Ionicons name="navigate-circle-outline" size={24} color={COLORS.primaryDark} />
+                </View>
+                <View style={styles.publishFabSheetRowText}>
+                  <Text style={styles.publishFabSheetRowTitle}>New ride</Text>
+                  <Text style={styles.publishFabSheetRowSub}>Pickup, destination, time, and fare</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={20} color={COLORS.primaryDark} />
+              </Pressable>
+              <View style={styles.publishFabSheetRowSeparator} />
+              <Pressable
+                style={({ pressed }) => [
+                  styles.publishFabSheetRow,
+                  styles.publishFabSheetRowReuse,
+                  pressed && styles.publishFabSheetRowPressedReuse,
+                ]}
+                onPress={onPublishFabReuseRecent}
+                accessibilityRole="button"
+                accessibilityLabel="Reuse a recent ride"
+                android_ripple={{ color: 'rgba(37, 99, 235, 0.12)' }}
+              >
+                <View style={[styles.publishFabSheetRowIcon, styles.publishFabSheetRowIconSecondary]}>
+                  <Ionicons name="albums-outline" size={22} color={COLORS.secondary} />
+                </View>
+                <View style={styles.publishFabSheetRowText}>
+                  <Text style={styles.publishFabSheetRowTitle}>Reuse recent</Text>
+                  <Text style={styles.publishFabSheetRowSub}>Copy details from a past listing</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={20} color={COLORS.secondaryLight} />
+              </Pressable>
+            </View>
+
+            <Pressable
+              style={({ pressed }) => [styles.publishFabSheetCancel, pressed && styles.publishFabSheetCancelPressed]}
+              onPress={() => closePublishFabSheet()}
+              accessibilityRole="button"
+              accessibilityLabel="Cancel"
+              android_ripple={{ color: 'rgba(15, 23, 42, 0.06)', borderless: true }}
+            >
+              <Text style={styles.publishFabSheetCancelText}>Cancel</Text>
+            </Pressable>
+          </Animated.View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -395,7 +618,7 @@ function RidesTabIconWithDot({
 }): React.JSX.Element {
   return (
     <View style={styles.ridesTabIconWrap}>
-      <Ionicons name={focused ? 'car' : 'car-outline'} size={size} color={color} />
+      <Ionicons name="car-outline" size={size} color={color} />
       {showNotificationDot ? <View style={styles.ridesTabNotificationDot} /> : null}
     </View>
   );
@@ -409,6 +632,14 @@ export default function BottomTabs(): React.JSX.Element {
   const sessionReady = isAuthenticated && !needsProfileCompletion;
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
   const prevSignedInUserIdRef = useRef<string | undefined>(undefined);
+  /**
+   * Swipe between tabs only on each tab’s root screen (same rule as tab bar visibility).
+   * Start false until the tab bar sync runs so the pager never briefly steals horizontal gestures.
+   */
+  const [mainTabPagerSwipeEnabled, setMainTabPagerSwipeEnabled] = useState(false);
+  const onPagerSwipeChange = useCallback((enabled: boolean) => {
+    setMainTabPagerSwipeEnabled((prev) => (prev === enabled ? prev : enabled));
+  }, []);
 
   /** New session or account switch — refresh driver/passenger list so “My rides” isn’t stale. */
   useEffect(() => {
@@ -453,13 +684,13 @@ export default function BottomTabs(): React.JSX.Element {
       backBehavior="none"
       initialRouteName="SearchStack"
       tabBarPosition="bottom"
-      tabBar={(props) => <MainBottomTabBar {...props} />}
+      tabBar={(props) => <TabBarWithPagerSwipeSync {...props} onPagerSwipeChange={onPagerSwipeChange} />}
       screenOptions={{
         tabBarActiveTintColor: COLORS.text,
         tabBarInactiveTintColor: COLORS.textSecondary,
         tabBarStyle: mainTabBarChromeLayoutStyle(tabBarLayoutHeight),
         lazy: true,
-        swipeEnabled: true,
+        swipeEnabled: mainTabPagerSwipeEnabled,
         /**
          * `false`: tab bar taps jump directly (no pager “scroll” through other tabs). Swipes still animate
          * on release — see `PanResponderAdapter` (`jumpToIndex(nextIndex, true)` in finishGesture).
@@ -490,11 +721,7 @@ export default function BottomTabs(): React.JSX.Element {
             title: 'Find',
             tabBarLabel: 'Find',
             tabBarIcon: ({ focused, color }) => (
-              <Ionicons
-                name={focused ? 'search' : 'search-outline'}
-                size={mainTabIconSize(focused)}
-                color={color}
-              />
+              <Ionicons name="search-outline" size={mainTabIconSize(focused)} color={color} />
             ),
         })}
       />
@@ -552,33 +779,6 @@ export default function BottomTabs(): React.JSX.Element {
         })}
       />
       <Tab.Screen
-        name="PublishStack"
-        component={PublishStack}
-        listeners={({ navigation }) => ({
-          tabPress: (e) => {
-            if (!sessionReady) {
-              e.preventDefault();
-              navigateToGuestLogin(navigation, { reason: 'tab' });
-              return;
-            }
-            e.preventDefault();
-            (navigation as { navigate: (config: Record<string, unknown>) => void }).navigate({
-              name: 'PublishStack',
-              params: {
-                screen: 'PublishRide',
-                params: { _publishTabResetToken: Date.now() },
-              },
-              merge: false,
-            });
-          },
-        })}
-        options={() => ({
-          title: 'Publish a Ride',
-          tabBarLabel: '',
-          tabBarIcon: () => <View style={styles.publishTabBarIconPlaceholder} />,
-        })}
-      />
-      <Tab.Screen
         name="Inbox"
         component={InboxStack}
         listeners={({ navigation }) => ({
@@ -623,11 +823,7 @@ export default function BottomTabs(): React.JSX.Element {
             title: 'Messages',
             tabBarLabel: 'Messages',
             tabBarIcon: ({ focused, color }) => (
-              <Ionicons
-                name={focused ? 'chatbubbles' : 'chatbubbles-outline'}
-                size={mainTabIconSize(focused)}
-                color={color}
-              />
+              <Ionicons name="chatbubbles-outline" size={mainTabIconSize(focused)} color={color} />
             ),
         })}
       />
@@ -726,15 +922,29 @@ const styles = StyleSheet.create({
     minHeight: TAB_ROW_MIN,
   },
   publishFabSlot: {
-    width: 64,
-    minWidth: 64,
+    width: 68,
+    minWidth: 68,
     alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 2,
+    elevation: 4,
+    /** FAB sits in the reserved column (not screen-center) so it does not cover Messages. */
+    marginTop: -FAB_VISUAL_RISE,
   },
-  /** Material top `tabBarIcon` must return an element; slot is visually empty (FAB overlays center). */
-  publishTabBarIconPlaceholder: {
-    width: 1,
-    height: 1,
-    opacity: 0,
+  publishFabHitColumn: {
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    paddingBottom: 2,
+  },
+  publishFabHitColumnPressed: {
+    opacity: 0.92,
+  },
+  publishFabLabel: {
+    marginTop: 3,
+    fontSize: 10,
+    fontWeight: '700',
+    color: COLORS.tabBarIconInactive,
+    letterSpacing: -0.15,
   },
   tabSlot: {
     flex: 1,
@@ -782,16 +992,10 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: COLORS.surface,
   },
-  fabAnchor: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    alignItems: 'center',
-  },
   fab: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
+    width: 54,
+    height: 54,
+    borderRadius: 27,
     backgroundColor: COLORS.primary,
     alignItems: 'center',
     justifyContent: 'center',
@@ -807,9 +1011,161 @@ const styles = StyleSheet.create({
   fabSelected: {
     backgroundColor: COLORS.primaryDark,
   },
-  fabPressed: {
-    opacity: 0.94,
-    transform: [{ scale: 0.96 }],
+  publishFabSheetRoot: {
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  publishFabSheetBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(15, 23, 42, 0.4)',
+  },
+  publishFabSheetCard: {
+    marginHorizontal: 0,
+    marginBottom: 0,
+    backgroundColor: COLORS.surface,
+    borderTopLeftRadius: 26,
+    borderTopRightRadius: 26,
+    paddingHorizontal: 0,
+    paddingTop: 8,
+    borderTopWidth: 3,
+    borderTopColor: COLORS.primary,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#0f172a',
+        shadowOffset: { width: 0, height: -2 },
+        shadowOpacity: 0.08,
+        shadowRadius: 12,
+      },
+      android: { elevation: 12 },
+    }),
+  },
+  publishFabSheetHandle: {
+    alignSelf: 'center',
+    width: 44,
+    height: 5,
+    borderRadius: 999,
+    backgroundColor: COLORS.primary,
+    opacity: 0.88,
+    marginBottom: 10,
+  },
+  publishFabSheetHeader: {
+    paddingHorizontal: 20,
+    paddingBottom: 16,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: COLORS.borderLight,
+  },
+  publishFabSheetHeaderAccentRow: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+  },
+  publishFabSheetHeaderAccentBar: {
+    width: 4,
+    borderRadius: 4,
+    backgroundColor: COLORS.primary,
+    marginRight: 12,
+    alignSelf: 'stretch',
+    minHeight: 48,
+  },
+  publishFabSheetHeaderTextBlock: {
+    flex: 1,
+    minWidth: 0,
+  },
+  publishFabSheetTitle: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: COLORS.primaryDark,
+    letterSpacing: -0.5,
+    marginBottom: 6,
+  },
+  publishFabSheetCaption: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: COLORS.textSecondary,
+    lineHeight: 20,
+  },
+  publishFabSheetActions: {
+    marginHorizontal: 16,
+    marginTop: 14,
+    marginBottom: 4,
+    borderRadius: 18,
+    overflow: 'hidden',
+    backgroundColor: COLORS.surface,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: COLORS.primaryMuted38,
+  },
+  publishFabSheetRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+  },
+  publishFabSheetRowNew: {
+    backgroundColor: COLORS.instantBookingOnSurface,
+  },
+  publishFabSheetRowReuse: {
+    backgroundColor: COLORS.surface,
+  },
+  publishFabSheetRowPressedNew: {
+    backgroundColor: COLORS.primaryMuted22,
+  },
+  publishFabSheetRowPressedReuse: {
+    backgroundColor: 'rgba(37, 99, 235, 0.06)',
+  },
+  publishFabSheetRowSeparator: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: COLORS.primaryMuted38,
+    marginLeft: 14 + 40 + 12,
+  },
+  publishFabSheetRowIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  publishFabSheetRowIconPrimary: {
+    backgroundColor: COLORS.surface,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: COLORS.primaryMuted38,
+  },
+  publishFabSheetRowIconSecondary: {
+    backgroundColor: 'rgba(37, 99, 235, 0.1)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(37, 99, 235, 0.22)',
+  },
+  publishFabSheetRowText: {
+    flex: 1,
+    minWidth: 0,
+  },
+  publishFabSheetRowTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: COLORS.text,
+    letterSpacing: -0.2,
+  },
+  publishFabSheetRowSub: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: COLORS.textMuted,
+    marginTop: 2,
+    lineHeight: 18,
+  },
+  publishFabSheetCancel: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginHorizontal: 16,
+    marginTop: 6,
+    paddingVertical: 14,
+    borderRadius: 16,
+  },
+  publishFabSheetCancelPressed: {
+    backgroundColor: 'rgba(15, 23, 42, 0.04)',
+  },
+  publishFabSheetCancelText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: COLORS.textSecondary,
   },
   profileTabClip: {
     alignItems: 'center',

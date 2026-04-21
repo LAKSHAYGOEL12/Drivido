@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Platform, Pressable, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
+import { BackHandler, Platform, Pressable, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { useFocusEffect, useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import type { PublishStackParamList } from '../../navigation/types';
@@ -89,6 +89,21 @@ function initialClockFromRoute(
 
 export default function PublishSelectTimeScreen(): React.JSX.Element {
   const navigation = useNavigation<any>();
+  const onBack = useCallback(() => {
+    navigation.goBack();
+  }, [navigation]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (Platform.OS !== 'android') return undefined;
+      const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+        onBack();
+        return true;
+      });
+      return () => sub.remove();
+    }, [onBack])
+  );
+
   const route = useRoute<ScreenRoute>();
   const {
     selectedFrom,
@@ -102,6 +117,8 @@ export default function PublishSelectTimeScreen(): React.JSX.Element {
     routePolylineEncoded,
     publishRestoreKey,
     publishRecentEditEntry,
+    publishWizardReview,
+    publishFabExitTab,
     selectedDateIso,
     initialTimeHour,
     initialTimeMinute,
@@ -185,13 +202,15 @@ export default function PublishSelectTimeScreen(): React.JSX.Element {
       selectedTimeHour: clockHour24,
       selectedTimeMinute: clockMinute,
       ...(publishRecentEditEntry ? { publishRecentEditEntry } : {}),
+      ...(publishWizardReview ? { publishWizardReview: true } : {}),
+      ...(publishFabExitTab ? { publishFabExitTab } : {}),
     });
   };
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn} hitSlop={12}>
+        <TouchableOpacity onPress={onBack} style={styles.backBtn} hitSlop={12}>
           <Ionicons name="chevron-back" size={24} color={COLORS.primary} />
         </TouchableOpacity>
         <View style={styles.headerTitleWrap}>

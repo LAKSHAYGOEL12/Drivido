@@ -3,6 +3,7 @@ import type { MaterialTopTabScreenProps } from '@react-navigation/material-top-t
 import type { CompositeScreenProps, NavigatorScreenParams } from '@react-navigation/native';
 import type { RideListItem } from '../types/api';
 import type { RecentPublishedEntry } from '../services/recent-published-storage';
+import type { MainTabName } from './mainTabOrder';
 
 /** Searcher's trip when opening ride detail from search (booking may differ from driver's end-to-end route). */
 export type PassengerSearchParams = {
@@ -23,6 +24,32 @@ export type TripsReturnToRideContext = {
     ride: RideListItem;
     passengerSearch?: PassengerSearchParams;
   };
+};
+
+/**
+ * Shared params for the same `LocationPickerScreen` mounted in Search / Rides / Inbox / Publish stacks.
+ * Keeps cross-tab “Edit & republish” flows type-safe when the picker runs outside `PublishStack`.
+ */
+export type SharedLocationPickerParams = {
+  field?: 'from' | 'to';
+  currentFrom?: string;
+  currentTo?: string;
+  currentDate?: string;
+  currentPassengers?: string;
+  currentFromLatitude?: number;
+  currentFromLongitude?: number;
+  currentToLatitude?: number;
+  currentToLongitude?: number;
+  /** Publish-style pickup / drop-off (also used by republish). */
+  currentPickupLatitude?: number;
+  currentPickupLongitude?: number;
+  currentDestinationLatitude?: number;
+  currentDestinationLongitude?: number;
+  returnScreen?: 'SearchRides' | 'PublishWizard' | 'PublishRecentEdit';
+  publishRestoreKey?: string;
+  publishRecentEditEntry?: RecentPublishedEntry;
+  publishWizardReview?: boolean;
+  publishFabExitTab?: MainTabName;
 };
 
 /**
@@ -49,19 +76,7 @@ export type SearchStackParamList = {
     /** Set when Search tab is pressed: clears stack + resets form (timestamp). */
     _tabResetToken?: number;
   } | undefined;
-  LocationPicker: {
-    field?: 'from' | 'to';
-    currentFrom?: string;
-    currentTo?: string;
-    currentDate?: string;
-    currentPassengers?: string;
-    currentFromLatitude?: number;
-    currentFromLongitude?: number;
-    currentToLatitude?: number;
-    currentToLongitude?: number;
-    returnScreen?: 'SearchRides' | 'PublishRide' | 'PublishRecentEdit';
-    publishRestoreKey?: string;
-  } | undefined;
+  LocationPicker: SharedLocationPickerParams | undefined;
   SearchResults: {
     from: string;
     to: string;
@@ -144,40 +159,26 @@ export type PublishAfterRouteParams = {
   selectedDurationSeconds?: number;
   routePolylineEncoded?: string;
   publishRestoreKey?: string;
-  /** When set, fare/seats wizard continues to PublishRecentEdit instead of PublishRide. */
+  /** When set, fare/seats wizard continues to PublishRecentEdit instead of the pickup wizard. */
   publishRecentEditEntry?: RecentPublishedEntry;
+  /** FAB “New ride” wizard: after seats, open review screen instead of the full Publish form. */
+  publishWizardReview?: boolean;
+  /**
+   * Only when opening route preview from **Review your ride** (“Choose route on map”):
+   * back applies route to review; no forward arrow into the date wizard.
+   * Do not set on the normal pickup → route preview step (`publishWizardReview` alone is not enough).
+   */
+  publishReviewMapReturn?: boolean;
+  /** FAB new-ride: bottom tab to return to when backing out of the first pickup step (or similar fallbacks). */
+  publishFabExitTab?: MainTabName;
 };
 
 /**
- * Publish tab: stack (PublishRide → LocationPicker)
+ * Publish tab: stack (pickup `LocationPicker` → route preview → … → {@link PublishReview}).
  */
 export type PublishStackParamList = {
-  PublishRide: {
-    selectedFrom?: string;
-    selectedTo?: string;
-    pickupLatitude?: number;
-    pickupLongitude?: number;
-    destinationLatitude?: number;
-    destinationLongitude?: number;
-    selectedRate?: string;
-    /** Google Directions duration for selected path (seconds). */
-    selectedDurationSeconds?: number;
-    routePolylineEncoded?: string;
-    /** Route distance (km) from Directions / route preview — drives estimated fare range. */
-    selectedDistanceKm?: number;
-    /** Set when returning from map picker so merged params don’t keep a stale `selectedDistanceKm`. */
-    clearRouteFare?: boolean;
-    /** Echo from price screen — used when reopening fare editor. */
-    initialPricePerSeat?: number;
-    /** Seats offered (1–6), set after PublishSelectSeats in the wizard. */
-    offeredSeats?: number;
-    _publishRestoreKey?: string;
-    /**
-     * Bottom tab “Publish” tap sends a new timestamp (same idea as Find’s `_tabResetToken`)
-     * so `PublishRide` can clear local form state — navigating with `params: {}` does not remount the screen.
-     */
-    _publishTabResetToken?: number;
-  } | undefined;
+  /** FAB “Reuse recent” — pick a saved route without the legacy full publish form. */
+  PublishRecentsPicker: undefined;
   PublishRecentEdit: {
     entry: RecentPublishedEntry;
     /** Optional source context: return to originating RideDetail instead of Publish tab root on back. */
@@ -199,20 +200,7 @@ export type PublishStackParamList = {
     selectedTimeMinute?: number;
     offeredSeats?: number;
   } | undefined;
-  LocationPicker: {
-    field?: 'from' | 'to';
-    currentFrom?: string;
-    currentTo?: string;
-    currentPickupLatitude?: number;
-    currentPickupLongitude?: number;
-    currentDestinationLatitude?: number;
-    currentDestinationLongitude?: number;
-    returnScreen?: 'SearchRides' | 'PublishRide' | 'PublishRecentEdit';
-    /** Publish tab: restores form after stack reset */
-    publishRestoreKey?: string;
-    /** PublishRecentEdit → LocationPicker → route preview → price must return to recent edit. */
-    publishRecentEditEntry?: RecentPublishedEntry;
-  } | undefined;
+  LocationPicker: SharedLocationPickerParams | undefined;
   PublishRoutePreview: PublishAfterRouteParams;
   PublishSelectDate: PublishAfterRouteParams & { initialSelectedDateIso?: string };
   PublishSelectTime: PublishAfterRouteParams & {
@@ -228,9 +216,9 @@ export type PublishStackParamList = {
     destinationLatitude?: number;
     destinationLongitude?: number;
     selectedDistanceKm: number;
-    /** Preserve selected date when opening price and returning to PublishRide reset. */
+    /** Preserve selected date when opening price and returning to wizard root. */
     selectedDateIso?: string;
-    /** Preserve selected time when opening price and returning to PublishRide reset. */
+    /** Preserve selected time when opening price and returning to wizard root. */
     selectedTimeHour?: number;
     selectedTimeMinute?: number;
     /** From route preview (Directions); omitted when user skipped preview — computed from distance. */
@@ -239,15 +227,41 @@ export type PublishStackParamList = {
     /** Last confirmed price from Publish — keeps field when reopening fare. */
     initialPricePerSeat?: number;
     publishRestoreKey?: string;
-    /** When set, seats step resets to PublishRecentEdit instead of PublishRide. */
+    /** When set, seats step resets to PublishRecentEdit instead of the pickup wizard. */
     publishRecentEditEntry?: RecentPublishedEntry;
+    /** FAB “New ride” wizard: after seats, open review instead of the full Publish form. */
+    publishWizardReview?: boolean;
+    publishFabExitTab?: MainTabName;
   };
-  /** After fare is confirmed — pick seats, then reset to PublishRide or PublishRecentEdit. */
+  /** After fare is confirmed — pick seats, then review (wizard) or return to recent edit. */
   PublishSelectSeats: PublishStackParamList['PublishPrice'] & {
     selectedRate: string;
     initialPricePerSeat: number;
     /** Pre-fill from republish entry or prior choice; defaults to 1. */
     initialSeats?: number;
+  };
+  /** Final step of FAB “New ride” wizard — confirm and publish. */
+  PublishReview: {
+    selectedFrom?: string;
+    selectedTo?: string;
+    pickupLatitude?: number;
+    pickupLongitude?: number;
+    destinationLatitude?: number;
+    destinationLongitude?: number;
+    selectedDistanceKm: number;
+    selectedDurationSeconds?: number;
+    routePolylineEncoded?: string;
+    selectedDateIso?: string;
+    selectedTimeHour?: number;
+    selectedTimeMinute?: number;
+    publishRestoreKey?: string;
+    publishRecentEditEntry?: RecentPublishedEntry;
+    selectedRate: string;
+    initialPricePerSeat: number;
+    offeredSeats: number;
+    publishWizardReview?: boolean;
+    instantBooking?: boolean;
+    publishFabExitTab?: MainTabName;
   };
 };
 
@@ -289,23 +303,16 @@ export type RidesStackParamList = {
   } | undefined;
   /** Ratings view for an arbitrary user opened from ride details modal. */
   OwnerRatingsModal: { userId: string; displayName?: string; avatarUrl?: string } | undefined;
-  LocationPicker: {
-    field?: 'from' | 'to';
-    currentFrom?: string;
-    currentTo?: string;
-    currentDate?: string;
-    currentPassengers?: string;
-    currentFromLatitude?: number;
-    currentFromLongitude?: number;
-    currentToLatitude?: number;
-    currentToLongitude?: number;
-    returnScreen?: 'SearchRides' | 'PublishRide';
-  } | undefined;
+  LocationPicker: SharedLocationPickerParams | undefined;
   EditRide: { ride: RideListItem };
-  PublishRecentEdit: {
-    entry: RecentPublishedEntry;
-    returnToRide?: TripsReturnToRideContext;
-  };
+  /** Same screen as {@link PublishStackParamList PublishStack}'s `PublishRecentEdit` (opened from Your Rides). */
+  PublishRecentEdit: PublishStackParamList['PublishRecentEdit'];
+  /**
+   * Same screen as {@link PublishStackParamList PublishStack}'s `PublishRoutePreview`.
+   * Required when republish runs inside this stack so “Choose route on map” pushes above
+   * {@link PublishRecentEdit} and back navigation / `setParams` resolve correctly.
+   */
+  PublishRoutePreview: PublishStackParamList['PublishRoutePreview'];
   BookPassengerDetail: {
     ride: RideListItem;
     booking: NonNullable<RideListItem['bookings']>[number];
@@ -413,7 +420,6 @@ export type MainTabParamList = {
         screen: keyof SearchStackParamList;
         params?: SearchStackParamList[keyof SearchStackParamList];
       };
-  PublishStack: undefined;
   YourRides:
     | undefined
     | {
@@ -439,6 +445,7 @@ export type MainTabParamList = {
  */
 export type RootStackParamList = {
   Main: NavigatorScreenParams<MainTabParamList> | undefined;
+  PublishStack: NavigatorScreenParams<PublishStackParamList> | undefined;
   Login: { reason?: 'book' | 'tab' } | undefined;
   Register: undefined;
   /** Full legal agreement rendered from product-provided terms document. */

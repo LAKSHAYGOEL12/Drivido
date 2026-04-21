@@ -41,11 +41,11 @@ async function loadRide(
   }
 }
 
-const INBOX_TAB_INDEX = 3;
+const INBOX_TAB_INDEX = 2;
 
 /**
  * Replace entire Main tab state so Inbox is exactly InboxList → Chat (no stale Chat / RideDetail).
- * Matches tab order in `BottomTabs.tsx`.
+ * Matches `BottomTabs` pager order: Search → Trips → Inbox → Profile.
  */
 function dispatchOpenChatFromNotification(
   ride: RideListItem,
@@ -73,10 +73,6 @@ function dispatchOpenChatFromNotification(
               {
                 name: 'YourRides',
                 state: { routes: [{ name: 'YourRidesList' as const }], index: 0 },
-              },
-              {
-                name: 'PublishStack',
-                state: { routes: [{ name: 'PublishRide' as const }], index: 0 },
               },
               {
                 name: 'Inbox',

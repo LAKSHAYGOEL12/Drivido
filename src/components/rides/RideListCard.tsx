@@ -390,7 +390,7 @@ export default function RideListCard({
 
 const styles = StyleSheet.create({
   card: {
-    backgroundColor: COLORS.background,
+    backgroundColor: COLORS.surface,
     borderRadius: 12,
     paddingVertical: 10,
     paddingHorizontal: 12,

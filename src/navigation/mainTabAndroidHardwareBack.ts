@@ -1,13 +1,16 @@
 import { CommonActions } from '@react-navigation/native';
 import { rootNavigationRef } from './rootNavigationRef';
 
+/** Set by `MainBottomTabBar` when the Publish FAB sheet is open — lets Android back close the sheet instead of jumping to Find. */
+export const publishFabSheetOpenRef = { current: false };
+
 type RouteNode = {
   name?: string;
   state?: { routes?: RouteNode[]; index?: number };
 };
 
 /**
- * Instagram-style main tabs: Android back from another tab’s **stack root** opens Find (`SearchRides`)
+ * Instagram-style main tabs: Android back from another tab's stack root opens Find (`SearchRides`)
  * with the same nested navigation as tapping the Find tab (`merge: false`), so the transition is a
  * single coordinated jump — not “previous tab” history from the pager.
  *
@@ -16,6 +19,7 @@ type RouteNode = {
  */
 export function handleMainTabAndroidHardwareBackPress(): boolean {
   if (!rootNavigationRef.isReady()) return false;
+  if (publishFabSheetOpenRef.current) return false;
 
   const root = rootNavigationRef.getRootState() as {
     routes?: RouteNode[];

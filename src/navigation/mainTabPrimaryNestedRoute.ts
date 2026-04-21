@@ -1,7 +1,7 @@
 /**
  * Bottom tab bar policy (enforced in `BottomTabs.tsx`):
  *
- * The tab bar is shown **only** when the user is on exactly **one** of these five nested “root”
+ * The tab bar is shown **only** when the user is on exactly one of these nested root
  * screens — the initial screen of each tab’s stack. Every other nested route in any tab stack
  * hides the bar (`tabBarStyle: { display: 'none' }`).
  *
@@ -16,7 +16,6 @@
  */
 export const MAIN_TAB_PRIMARY_NESTED_ROUTE = {
   SearchStack: 'SearchRides',
-  PublishStack: 'PublishRide',
   YourRides: 'YourRidesList',
   Inbox: 'InboxList',
   Profile: 'ProfileHome',

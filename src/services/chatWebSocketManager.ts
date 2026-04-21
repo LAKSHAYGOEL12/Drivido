@@ -29,6 +29,10 @@ class ChatWebSocketManager {
   private static readonly SUBSCRIBE_SEND_GAP_MS = 80;
   /** Last close looked like a server/protocol fault — back off hard instead of tight reconnect loops. */
   private lastCloseSuggestedServerBug = false;
+  /** After a fatal auth close we stop reconnecting until `connect()` runs again (e.g. new token). */
+  private stopReconnectUntilNewConnect = false;
+  /** Only reset `reconnectAttempts` after the socket stays open briefly — avoids infinite open→401→reopen. */
+  private stableOpenTimer: ReturnType<typeof setTimeout> | null = null;
 
   private emitConnectionState(connected: boolean) {
     this.connectionListeners.forEach((listener) => {
@@ -89,6 +93,22 @@ class ChatWebSocketManager {
     }
   }
 
+  private clearStableOpenTimer() {
+    if (this.stableOpenTimer) {
+      clearTimeout(this.stableOpenTimer);
+      this.stableOpenTimer = null;
+    }
+  }
+
+  /** Server closed because the session token is not valid for chat (do not spin reconnect). */
+  private isFatalAuthClose(code: number, reason: string): boolean {
+    const r = reason.trim().toLowerCase();
+    if (r.includes('unauthorized')) return true;
+    if (r.includes('invalid token') || r.includes('jwt') || r.includes('token expired')) return true;
+    if (code === 4401 || code === 4003) return true;
+    return false;
+  }
+
   private clearSubscribeSendTimer() {
     if (this.subscribeSendTimer) {
       clearTimeout(this.subscribeSendTimer);
@@ -129,6 +149,7 @@ class ChatWebSocketManager {
   connect(wsUrl: string, token: string) {
     /** New intentional connect (e.g. after login) overrides a prior `disconnect()`. */
     this.isManualDisconnect = false;
+    this.stopReconnectUntilNewConnect = false;
 
     const sameTarget = this.url === wsUrl && this.token === token;
     if (sameTarget && this.ws?.readyState === WebSocket.OPEN) {
@@ -139,6 +160,7 @@ class ChatWebSocketManager {
     }
 
     this.clearReconnectTimer();
+    this.clearStableOpenTimer();
     this.url = wsUrl;
     this.token = token;
     this.isManualDisconnect = false;
@@ -172,7 +194,7 @@ class ChatWebSocketManager {
     }
 
     try {
-      const wsUrl = `${this.url}?token=${this.token}`;
+      const wsUrl = `${this.url}?token=${encodeURIComponent(this.token)}`;
       if (__DEV__) {
         console.log('[WS] Connecting:', this.url, '(token len', this.token.length, ')');
       }
@@ -181,8 +203,13 @@ class ChatWebSocketManager {
 
       this.ws.onopen = () => {
         if (__DEV__) console.log('[WS] Connected');
-        this.reconnectAttempts = 0;
         this.lastCloseSuggestedServerBug = false;
+        /** Do not reset reconnectAttempts here — immediate auth closes would loop forever. */
+        this.clearStableOpenTimer();
+        this.stableOpenTimer = setTimeout(() => {
+          this.stableOpenTimer = null;
+          this.reconnectAttempts = 0;
+        }, 2500);
         /** After open, wait before app-level pings so subscribe burst finishes first. */
         this.startHeartbeatDeferred();
         this.emitConnectionState(true);
@@ -270,15 +297,27 @@ class ChatWebSocketManager {
         if (__DEV__) {
           console.log('[WS] Closed code=', code, reason ? `reason="${reason}"` : '');
         }
+        this.clearStableOpenTimer();
         this.stopHeartbeat();
         this.clearSubscribeSendTimer();
         this.subscribeSendQueue = [];
         this.emitConnectionState(false);
         this.ws = null;
 
-        if (!this.isManualDisconnect) {
-          this.attemptReconnect();
+        if (this.isManualDisconnect) return;
+
+        if (this.isFatalAuthClose(code, reason)) {
+          this.stopReconnectUntilNewConnect = true;
+          if (__DEV__) {
+            console.warn(
+              '[WS] Stopping reconnect (auth rejected). Check API chat handshake vs access token; sign out/in if token is stale.'
+            );
+          }
+          return;
         }
+        if (this.stopReconnectUntilNewConnect) return;
+
+        this.attemptReconnect();
       };
     } catch (error) {
       console.error('[WS] ❌ Connection error:', error);
@@ -289,6 +328,7 @@ class ChatWebSocketManager {
   private attemptReconnect() {
     this.clearReconnectTimer();
     if (this.isManualDisconnect) return;
+    if (this.stopReconnectUntilNewConnect) return;
     if (this.reconnectAttempts < this.maxReconnectAttempts) {
       this.reconnectAttempts++;
       let delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1);
@@ -428,7 +468,9 @@ class ChatWebSocketManager {
   disconnect() {
     if (__DEV__) console.log('[WS] Disconnect (manual)');
     this.isManualDisconnect = true;
+    this.stopReconnectUntilNewConnect = false;
     this.clearReconnectTimer();
+    this.clearStableOpenTimer();
     this.clearSubscribeSendTimer();
     this.subscribeSendQueue = [];
     this.reconnectAttempts = 0;

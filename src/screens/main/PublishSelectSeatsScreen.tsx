@@ -1,6 +1,6 @@
 import React, { useLayoutEffect, useMemo, useState } from 'react';
-import { Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { CommonActions, useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
+import { BackHandler, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { CommonActions, useFocusEffect, useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import type { PublishStackParamList } from '../../navigation/types';
@@ -17,6 +17,21 @@ function clampSeats(n: number): number {
 }
 
 export default function PublishSelectSeatsScreen(): React.JSX.Element {
+  const onBack = React.useCallback(() => {
+    navigation.goBack();
+  }, [navigation]);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      if (Platform.OS !== 'android') return undefined;
+      const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+        onBack();
+        return true;
+      });
+      return () => sub.remove();
+    }, [onBack])
+  );
+
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<any>();
   const route = useRoute<ScreenRoute>();
@@ -47,25 +62,6 @@ export default function PublishSelectSeatsScreen(): React.JSX.Element {
       typeof p.selectedDurationSeconds === 'number' && !Number.isNaN(p.selectedDurationSeconds)
         ? p.selectedDurationSeconds
         : fallbackSeconds;
-
-    const rideParams = {
-      selectedFrom: p.selectedFrom,
-      selectedTo: p.selectedTo,
-      pickupLatitude: p.pickupLatitude,
-      pickupLongitude: p.pickupLongitude,
-      destinationLatitude: p.destinationLatitude,
-      destinationLongitude: p.destinationLongitude,
-      ...(p.selectedDateIso ? { selectedDateIso: p.selectedDateIso } : {}),
-      ...(typeof p.selectedTimeHour === 'number' ? { selectedTimeHour: p.selectedTimeHour } : {}),
-      ...(typeof p.selectedTimeMinute === 'number' ? { selectedTimeMinute: p.selectedTimeMinute } : {}),
-      selectedRate: p.selectedRate,
-      initialPricePerSeat: p.initialPricePerSeat,
-      selectedDistanceKm: p.selectedDistanceKm,
-      selectedDurationSeconds,
-      routePolylineEncoded: p.routePolylineEncoded ?? '',
-      offeredSeats,
-      ...(p.publishRestoreKey ? { _publishRestoreKey: p.publishRestoreKey } : {}),
-    };
 
     if (p.publishRecentEditEntry) {
       navigation.dispatch(
@@ -99,12 +95,50 @@ export default function PublishSelectSeatsScreen(): React.JSX.Element {
       return;
     }
 
-    navigation.dispatch(
-      CommonActions.reset({
-        index: 0,
-        routes: [{ name: 'PublishRide', params: rideParams }],
-      })
-    );
+    if (p.publishWizardReview) {
+      navigation.navigate('PublishReview', {
+        selectedFrom: p.selectedFrom,
+        selectedTo: p.selectedTo,
+        pickupLatitude: p.pickupLatitude,
+        pickupLongitude: p.pickupLongitude,
+        destinationLatitude: p.destinationLatitude,
+        destinationLongitude: p.destinationLongitude,
+        selectedDistanceKm: p.selectedDistanceKm,
+        selectedDurationSeconds,
+        routePolylineEncoded: p.routePolylineEncoded ?? '',
+        ...(p.selectedDateIso ? { selectedDateIso: p.selectedDateIso } : {}),
+        ...(typeof p.selectedTimeHour === 'number' ? { selectedTimeHour: p.selectedTimeHour } : {}),
+        ...(typeof p.selectedTimeMinute === 'number' ? { selectedTimeMinute: p.selectedTimeMinute } : {}),
+        selectedRate: p.selectedRate,
+        initialPricePerSeat: p.initialPricePerSeat,
+        offeredSeats,
+        publishWizardReview: true,
+        ...(p.publishRestoreKey ? { publishRestoreKey: p.publishRestoreKey } : {}),
+        ...(p.publishFabExitTab ? { publishFabExitTab: p.publishFabExitTab } : {}),
+      });
+      return;
+    }
+
+    navigation.navigate('PublishReview', {
+      selectedFrom: p.selectedFrom,
+      selectedTo: p.selectedTo,
+      pickupLatitude: p.pickupLatitude,
+      pickupLongitude: p.pickupLongitude,
+      destinationLatitude: p.destinationLatitude,
+      destinationLongitude: p.destinationLongitude,
+      selectedDistanceKm: p.selectedDistanceKm,
+      selectedDurationSeconds,
+      routePolylineEncoded: p.routePolylineEncoded ?? '',
+      ...(p.selectedDateIso ? { selectedDateIso: p.selectedDateIso } : {}),
+      ...(typeof p.selectedTimeHour === 'number' ? { selectedTimeHour: p.selectedTimeHour } : {}),
+      ...(typeof p.selectedTimeMinute === 'number' ? { selectedTimeMinute: p.selectedTimeMinute } : {}),
+      selectedRate: p.selectedRate,
+      initialPricePerSeat: p.initialPricePerSeat,
+      offeredSeats,
+      publishWizardReview: true,
+      ...(p.publishRestoreKey ? { publishRestoreKey: p.publishRestoreKey } : {}),
+      ...(p.publishFabExitTab ? { publishFabExitTab: p.publishFabExitTab } : {}),
+    });
   };
 
   if (!stopsOk) {
@@ -114,7 +148,7 @@ export default function PublishSelectSeatsScreen(): React.JSX.Element {
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn} hitSlop={12}>
+        <TouchableOpacity onPress={onBack} style={styles.backBtn} hitSlop={12}>
           <Ionicons name="chevron-back" size={24} color={COLORS.primary} />
         </TouchableOpacity>
         <View style={styles.headerTitleWrap}>

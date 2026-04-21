@@ -29,7 +29,7 @@ export default function InboxStack(): React.JSX.Element {
       }}
       initialRouteName="InboxList"
     >
-      <Stack.Screen name="InboxList" component={Inbox} />
+      <Stack.Screen name="InboxList" component={Inbox} options={{ headerShown: false }} />
       <Stack.Screen name="Chat" component={ChatScreen} />
       <Stack.Screen
         name="RideDetail"

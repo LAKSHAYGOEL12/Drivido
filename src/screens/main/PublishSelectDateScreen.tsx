@@ -1,6 +1,6 @@
-import React, { useMemo, useState } from 'react';
-import { Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
+import React, { useCallback, useMemo, useState } from 'react';
+import { BackHandler, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { useFocusEffect, useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import type { PublishStackParamList } from '../../navigation/types';
@@ -38,6 +38,21 @@ function parseInitialDate(iso?: string): Date {
 
 export default function PublishSelectDateScreen(): React.JSX.Element {
   const navigation = useNavigation<any>();
+  const onBack = useCallback(() => {
+    navigation.goBack();
+  }, [navigation]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (Platform.OS !== 'android') return undefined;
+      const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+        onBack();
+        return true;
+      });
+      return () => sub.remove();
+    }, [onBack])
+  );
+
   const route = useRoute<ScreenRoute>();
   const {
     selectedFrom,
@@ -52,6 +67,8 @@ export default function PublishSelectDateScreen(): React.JSX.Element {
     publishRestoreKey,
     publishRecentEditEntry,
     initialSelectedDateIso,
+    publishWizardReview,
+    publishFabExitTab,
   } = route.params;
 
   const [selectedDate, setSelectedDate] = useState(() => parseInitialDate(initialSelectedDateIso));
@@ -89,6 +106,8 @@ export default function PublishSelectDateScreen(): React.JSX.Element {
     routePolylineEncoded: routePolylineEncoded ?? '',
     publishRestoreKey,
     ...(publishRecentEditEntry ? { publishRecentEditEntry } : {}),
+    ...(publishWizardReview ? { publishWizardReview: true } : {}),
+    ...(publishFabExitTab ? { publishFabExitTab } : {}),
   };
 
   const onContinue = () => {
@@ -104,7 +123,7 @@ export default function PublishSelectDateScreen(): React.JSX.Element {
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn} hitSlop={12}>
+        <TouchableOpacity onPress={onBack} style={styles.backBtn} hitSlop={12}>
           <Ionicons name="chevron-back" size={24} color={COLORS.primary} />
         </TouchableOpacity>
         <View style={styles.headerTitleWrap}>

@@ -1,5 +1,5 @@
 /**
- * Keyed drafts so PublishRide can restore form after stack reset (location pick).
+ * Keyed drafts for the publish wizard (`LocationPicker` → …) after stack reset (location pick).
  * Drafts are removed after `DRAFT_TTL_MS` so Strict Mode remounts still see data,
  * but the window must cover route preview → date → time → price.
  */
@@ -35,7 +35,7 @@ export function getPublishRideDraft(key: string): PublishRideFormDraft | null {
   return draftByKey.get(key) ?? null;
 }
 
-/** Long enough for route preview → date → time → price; 3s was too short and left PublishRide empty. */
+/** Long enough for route preview → date → time → price; 3s was too short and left the draft empty. */
 const DRAFT_TTL_MS = 120_000;
 
 export function schedulePublishDraftCleanup(key: string): void {

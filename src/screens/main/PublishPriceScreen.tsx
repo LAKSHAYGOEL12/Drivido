@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
+  BackHandler,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
@@ -9,7 +10,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
+import { useFocusEffect, useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import type { PublishStackParamList } from '../../navigation/types';
@@ -32,6 +33,21 @@ function clampPrice(n: number): number {
 
 export default function PublishPriceScreen(): React.JSX.Element {
   const navigation = useNavigation<any>();
+  const onBack = useCallback(() => {
+    navigation.goBack();
+  }, [navigation]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (Platform.OS !== 'android') return undefined;
+      const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+        onBack();
+        return true;
+      });
+      return () => sub.remove();
+    }, [onBack])
+  );
+
   const route = useRoute<PriceRouteProp>();
   const {
     selectedFrom,
@@ -49,6 +65,8 @@ export default function PublishPriceScreen(): React.JSX.Element {
     publishRestoreKey,
     initialPricePerSeat,
     publishRecentEditEntry,
+    publishWizardReview,
+    publishFabExitTab,
   } = route.params;
 
   const distanceKmForReco = useMemo(
@@ -208,6 +226,8 @@ export default function PublishPriceScreen(): React.JSX.Element {
             ),
           }
         : {}),
+      ...(publishWizardReview ? { publishWizardReview: true } : {}),
+      ...(publishFabExitTab ? { publishFabExitTab } : {}),
     });
   };
 
@@ -224,7 +244,7 @@ export default function PublishPriceScreen(): React.JSX.Element {
       >
         <View style={styles.headerBlock}>
           <View style={styles.headerTopRow}>
-            <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn} hitSlop={12}>
+            <TouchableOpacity onPress={onBack} style={styles.backBtn} hitSlop={12}>
               <Ionicons name="chevron-back" size={26} color={COLORS.text} />
             </TouchableOpacity>
           </View>
