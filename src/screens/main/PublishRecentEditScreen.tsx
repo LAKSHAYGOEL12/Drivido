@@ -732,10 +732,13 @@ export default function PublishRecentEditScreen({ navigation }: Props): React.JS
             );
           } else {
             (navigation as { navigate?: (config: Record<string, unknown>) => void }).navigate?.({
-              name: 'YourRides',
+              name: 'Main',
               params: {
-                screen: 'YourRidesList',
-                params: { _afterBookRefresh: refreshToken },
+                screen: 'YourRides',
+                params: {
+                  screen: 'YourRidesList',
+                  params: { _afterBookRefresh: refreshToken },
+                },
               },
               merge: false,
             } as never);

@@ -928,7 +928,6 @@ export default function SearchResultsScreen(): React.JSX.Element {
           const rideDate = getRideDateYMD(ride);
           if (rideDate !== searchDate) return false;
           if (!routeMatches(ride, searchFrom, searchTo, searchFromCoords, searchToCoords)) return false;
-          if (currentUserId && isViewerRideOwner(ride, currentUserId)) return false;
           if (isRideCancelledByOwner(ride)) return false;
           if (!isAtLeast15MinsLater(ride)) return false;
           return true;
