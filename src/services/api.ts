@@ -23,6 +23,7 @@ import { setStoredTokens, clearStoredTokens } from './token-storage';
 import { getFreshFirebaseIdToken } from './firebaseIdToken';
 import { exchangeFirebaseIdTokenForBackendSession } from './backendAuthExchange';
 import { OFFLINE_USER_MESSAGE } from '../constants/offlineMessaging';
+import { emitNetworkFailure, emitNetworkSuccess } from './networkHeartbeat';
 
 /**
  * GET `/api/rides/:id` can 404 when the ride was deleted/expired but bookings or list payloads
@@ -105,10 +106,8 @@ function getHeaders(includeJsonContentType = true): HeadersInit {
 }
 
 const DEFAULT_TIMEOUT_MS = 15000;
-const NETWORK_ERROR_COOLDOWN_MS = 12000;
 
 type RequestConfig = RequestInit & { timeout?: number; /** When true, GET 404 returns null instead of throwing (no console.warn). */ silentNotFound?: boolean };
-let networkErrorCooldownUntil = 0;
 
 function isNetworkFailureErrorMessage(message: string): boolean {
   const m = message.toLowerCase();
@@ -119,13 +118,6 @@ function isNetworkFailureErrorMessage(message: string): boolean {
     m.includes('econnrefused') ||
     m.includes('failed to fetch')
   );
-}
-
-function maybeSetNetworkCooldown(err: unknown): void {
-  if (!(err instanceof Error)) return;
-  if (isNetworkFailureErrorMessage(err.message)) {
-    networkErrorCooldownUntil = Date.now() + NETWORK_ERROR_COOLDOWN_MS;
-  }
 }
 
 /** Refresh token response from backend. */
@@ -170,11 +162,6 @@ async function request<T>(
     );
   }
   const { timeout = DEFAULT_TIMEOUT_MS, headers: optHeaders, silentNotFound, ...init } = options;
-  const method = String(init.method ?? 'GET').toUpperCase();
-  const isChatPath = path.includes('/chat/');
-  if (method === 'GET' && !isChatPath && Date.now() < networkErrorCooldownUntil) {
-    throw new Error(OFFLINE_USER_MESSAGE);
-  }
   const isFormDataBody = typeof FormData !== 'undefined' && init.body instanceof FormData;
   const pathWithPrefix = path.startsWith('http')
     ? path
@@ -190,6 +177,12 @@ async function request<T>(
       headers: { ...getHeaders(!isFormDataBody), ...optHeaders } as HeadersInit,
     });
     clearTimeout(timeoutId);
+    /**
+     * Transport reached the host — pulse `NetworkProvider` so the UI flips out of any
+     * pending offline state immediately, regardless of HTTP status (a 401 from /auth still
+     * proves connectivity).
+     */
+    emitNetworkSuccess();
 
     const data =
       res.status === 204 || (res.headers.get('content-length') === '0')
@@ -240,9 +233,6 @@ async function request<T>(
       if (__DEV__ && !isChat404 && !isAuth404 && !isRide404) console.warn('[API]', res.status, url, data);
       throw Object.assign(new Error(msg), { status: res.status, data });
     }
-    if (method === 'GET') {
-      networkErrorCooldownUntil = 0;
-    }
     return data as T;
   } catch (e) {
     clearTimeout(timeoutId);
@@ -257,6 +247,7 @@ async function request<T>(
       const isNetworkFailed =
         isNetworkFailureErrorMessage(e.message);
       if (isAborted) {
+        emitNetworkFailure();
         throw new Error(
           'Connection timed out. Check that the backend is running and your device can reach ' +
             (getApiBaseUrl() || 'the server') +
@@ -264,11 +255,12 @@ async function request<T>(
         );
       }
       if (isNetworkFailed) {
-        maybeSetNetworkCooldown(e);
+        emitNetworkFailure();
         throw new Error(OFFLINE_USER_MESSAGE);
       }
       throw e;
     }
+    emitNetworkFailure();
     throw new Error(OFFLINE_USER_MESSAGE);
   }
 }
@@ -321,6 +313,7 @@ async function getJsonWithEtagImpl<T>(
       headers: { ...getHeaders(), ...extraHeaders } as HeadersInit,
     });
     clearTimeout(timeoutId);
+    emitNetworkSuccess();
 
     const etagHeader = res.headers.get('etag') ?? res.headers.get('ETag');
 
@@ -389,6 +382,7 @@ async function getJsonWithEtagImpl<T>(
       const isNetworkFailed =
         isNetworkFailureErrorMessage(e.message);
       if (isAborted) {
+        emitNetworkFailure();
         throw new Error(
           'Connection timed out. Check that the backend is running and your device can reach ' +
             (getApiBaseUrl() || 'the server') +
@@ -396,11 +390,12 @@ async function getJsonWithEtagImpl<T>(
         );
       }
       if (isNetworkFailed) {
-        maybeSetNetworkCooldown(e);
+        emitNetworkFailure();
         throw new Error(OFFLINE_USER_MESSAGE);
       }
       throw e;
     }
+    emitNetworkFailure();
     throw new Error(OFFLINE_USER_MESSAGE);
   }
 }

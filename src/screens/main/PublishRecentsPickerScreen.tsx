@@ -34,13 +34,21 @@ function formatPublishedMetaLine(e: RecentPublishedEntry): string {
   const label = formatPublishStyleDateLabel(dt);
   const time = formatTimeLabel(e.hour, e.minute);
   const pax = e.seats === 1 ? '1 seat' : `${e.seats} seats`;
-  const fare = e.rate.trim() ? `₹${e.rate}` : '—';
+  const fare = e.rate.trim() ? `\u20B9${e.rate}` : '\u2014';
   const mode = e.instantBooking ? 'Instant' : 'Request';
-  return `${label} · ${time} · ${pax} · ${fare} · ${mode}`;
+  return `${label} \u00B7 ${time} \u00B7 ${pax} \u00B7 ${fare} \u00B7 ${mode}`;
 }
 
 /**
  * FAB “Reuse recent”: pick a saved route without the legacy full Publish form.
+ *
+ * Two visual states intentionally diverge:
+ * - **Empty** uses a polished icon-led "No saved routes yet" call-to-action.
+ *   This was a deliberate redesign and we keep it as-is.
+ * - **Populated** uses the established card-style list (accent strip, icon
+ *   circle, From → To stack, meta line). Users explicitly asked us not to
+ *   replace this layout — it's the canonical "saved routes" presentation in
+ *   the rest of the app, so consistency wins over churn.
  */
 export default function PublishRecentsPickerScreen(): React.JSX.Element {
   const navigation = useNavigation<any>();
@@ -111,57 +119,68 @@ export default function PublishRecentsPickerScreen(): React.JSX.Element {
         <Text style={styles.title}>Reuse a route</Text>
         <View style={styles.headerRight} />
       </View>
-      <Text style={styles.subtitle}>Pick a ride you published before, or start a new one.</Text>
 
       {loading ? (
         <View style={styles.centered}>
           <ActivityIndicator color={COLORS.primary} />
         </View>
       ) : rows.length === 0 ? (
+        // Redesigned empty state — kept per product feedback.
         <View style={styles.emptyWrap}>
-          <Text style={styles.emptyText}>No saved routes yet.</Text>
+          <View style={styles.emptyIconWrap}>
+            <Ionicons name="navigate-outline" size={26} color={COLORS.primary} />
+          </View>
+          <Text style={styles.emptyTitle}>No saved routes yet</Text>
+          <Text style={styles.emptyText}>Routes you publish will appear here for quick reuse.</Text>
           <TouchableOpacity style={styles.primaryBtn} onPress={onStartNew} activeOpacity={0.85}>
-            <Text style={styles.primaryBtnText}>New ride</Text>
+            <Text style={styles.primaryBtnText}>Publish a ride</Text>
           </TouchableOpacity>
         </View>
       ) : (
-        <FlatList
-          data={rows}
-          keyExtractor={(item) => item.id}
-          contentContainerStyle={{ paddingBottom: 24 + insets.bottom }}
-          renderItem={({ item }) => (
-            <Pressable
-              style={({ pressed }) => [styles.pubRecentItem, pressed && styles.pubRecentItemPressed]}
-              onPress={() => onPick(item)}
-            >
-              <View style={styles.pubRecentAccent} />
-              <View style={styles.pubRecentItemMain}>
-                <View style={styles.pubRecentIconCircle}>
-                  <Ionicons name="navigate-outline" size={16} color={COLORS.primary} />
-                </View>
-                <View style={styles.pubRecentTextCol}>
-                  <View style={styles.pubRecentRouteStack}>
-                    <Text style={styles.pubRecentRouteTitle} numberOfLines={1} ellipsizeMode="tail">
-                      {briefRouteListLabel(item.pickup)}
-                    </Text>
-                    <View style={styles.pubRecentArrowRow}>
-                      <View style={styles.pubRecentArrowLine} />
-                      <Ionicons name="arrow-down" size={12} color={COLORS.textMuted} />
-                      <View style={styles.pubRecentArrowLine} />
+        // Populated list — preserved from the prior design (card with accent
+        // strip + icon circle + From → To stack + meta line).
+        <>
+          <Text style={styles.subtitle}>Pick a ride you published before, or start a new one.</Text>
+          <FlatList
+            data={rows}
+            keyExtractor={(item) => item.id}
+            contentContainerStyle={{ paddingBottom: 24 + insets.bottom }}
+            renderItem={({ item }) => (
+              <Pressable
+                style={({ pressed }) => [styles.pubRecentItem, pressed && styles.pubRecentItemPressed]}
+                onPress={() => onPick(item)}
+                accessibilityRole="button"
+                accessibilityLabel={`Reuse route from ${briefRouteListLabel(item.pickup)} to ${briefRouteListLabel(item.destination)}`}
+              >
+                <View style={styles.pubRecentAccent} />
+                <View style={styles.pubRecentItemMain}>
+                  <View style={styles.pubRecentIconCircle}>
+                    <Ionicons name="navigate-outline" size={16} color={COLORS.primary} />
+                  </View>
+                  <View style={styles.pubRecentTextCol}>
+                    <View style={styles.pubRecentRouteStack}>
+                      <Text style={styles.pubRecentRouteTitle} numberOfLines={1} ellipsizeMode="tail">
+                        {briefRouteListLabel(item.pickup)}
+                      </Text>
+                      <View style={styles.pubRecentArrowRow}>
+                        <View style={styles.pubRecentArrowLine} />
+                        <Ionicons name="arrow-down" size={12} color={COLORS.textMuted} />
+                        <View style={styles.pubRecentArrowLine} />
+                      </View>
+                      <Text style={styles.pubRecentRouteSubtitle} numberOfLines={1} ellipsizeMode="tail">
+                        {briefRouteListLabel(item.destination)}
+                      </Text>
                     </View>
-                    <Text style={styles.pubRecentRouteSubtitle} numberOfLines={1} ellipsizeMode="tail">
-                      {briefRouteListLabel(item.destination)}
+                    <Text style={styles.pubRecentMeta} numberOfLines={1}>
+                      {formatPublishedMetaLine(item)}
                     </Text>
                   </View>
-                  <Text style={styles.pubRecentMeta} numberOfLines={1}>
-                    {formatPublishedMetaLine(item)}
-                  </Text>
+                  <Ionicons name="chevron-forward" size={18} color={COLORS.border} style={styles.pubRecentChevron} />
                 </View>
-                <Ionicons name="chevron-forward" size={18} color={COLORS.border} style={styles.pubRecentChevron} />
-              </View>
-            </Pressable>
-          )}
-        />
+              </Pressable>
+            )}
+          />
+        </>
       )}
     </SafeAreaView>
   );
@@ -169,6 +188,7 @@ export default function PublishRecentsPickerScreen(): React.JSX.Element {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: COLORS.backgroundSecondary },
+
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -184,6 +204,7 @@ const styles = StyleSheet.create({
     color: COLORS.text,
   },
   headerRight: { width: 44 },
+
   subtitle: {
     fontSize: 14,
     fontWeight: '500',
@@ -192,16 +213,51 @@ const styles = StyleSheet.create({
     marginBottom: 16,
     lineHeight: 20,
   },
+
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  emptyWrap: { flex: 1, paddingHorizontal: 24, justifyContent: 'center', alignItems: 'center' },
-  emptyText: { fontSize: 15, color: COLORS.textSecondary, textAlign: 'center', marginBottom: 20 },
+
+  // ───── Empty state (kept from the redesign) ─────────────────────────────
+  emptyWrap: {
+    flex: 1,
+    paddingHorizontal: 28,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  emptyIconWrap: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(37, 99, 235, 0.10)',
+    marginBottom: 14,
+  },
+  emptyTitle: {
+    fontSize: 17,
+    fontWeight: '800',
+    color: COLORS.text,
+    letterSpacing: -0.3,
+    marginBottom: 6,
+  },
+  emptyText: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: COLORS.textSecondary,
+    textAlign: 'center',
+    lineHeight: 20,
+    marginBottom: 22,
+  },
   primaryBtn: {
     backgroundColor: COLORS.primary,
     paddingVertical: 14,
     paddingHorizontal: 28,
     borderRadius: 14,
+    minWidth: 180,
+    alignItems: 'center',
   },
-  primaryBtnText: { color: COLORS.white, fontSize: 16, fontWeight: '800' },
+  primaryBtnText: { color: COLORS.white, fontSize: 15, fontWeight: '800', letterSpacing: -0.1 },
+
+  // ───── Populated list (restored to the previous card design) ────────────
   pubRecentItem: {
     flexDirection: 'row',
     alignItems: 'center',

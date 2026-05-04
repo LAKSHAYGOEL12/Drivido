@@ -1,5 +1,6 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useMemo, useState, useRef, useCallback } from 'react';
 import {
+  Pressable,
   StyleSheet,
   Text,
   View,
@@ -24,6 +25,11 @@ import {
   type RecentSearchEntry,
 } from '../../services/recent-search-storage';
 import { briefRouteListLabel } from '../../utils/routeListBriefLabel';
+import { usePromotionCampaigns } from '../../contexts/PromotionCampaignsContext';
+import { resolveTopOfferProgresses } from '../../utils/promotionOfferCopy';
+import SearchOffersModal, {
+  type OfferChipAnchor,
+} from '../../components/promotions/SearchOffersModal';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -184,8 +190,7 @@ export default function SearchRides(): React.JSX.Element {
   const sessionReady = isAuthenticated && !needsProfileCompletion;
   const mainTabScrollBottomPad = useMainTabScrollBottomInset();
   const recentUserKey = (user?.id ?? user?.phone ?? '').trim();
-  const welcomeName =
-    user?.name?.trim() || user?.phone?.trim() || user?.email?.trim() || '';
+  const welcomeName = user?.name?.trim() || '';
   const welcomeShort = firstNameFromDisplay(welcomeName);
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
@@ -199,6 +204,44 @@ export default function SearchRides(): React.JSX.Element {
   const [passengers, setPassengers] = useState('1');
   const [recents, setRecents] = useState<RecentSearchEntry[]>([]);
   const tabResetHandledRef = useRef<number | null>(null);
+
+  /**
+   * Top-right gift affordance — production-standard "promo entry point" (Zomato Gold / Swiggy
+   * One style). Renders next to the greeting whenever there are live offers and opens the
+   * exact same {@link SearchOffersModal} the floating strip uses, so the two CTAs share state
+   * and feel like one offers system.
+   */
+  const { catalog, meRows, loadingMe } = usePromotionCampaigns();
+  const { offers: topOffers, lines: topOfferLines } = useMemo(
+    () => resolveTopOfferProgresses(catalog, meRows),
+    [catalog, meRows]
+  );
+  const hasLiveOffers = topOffers.length > 0;
+  const giftCountBadge =
+    topOffers.length > 9 ? '9+' : topOffers.length > 1 ? String(topOffers.length) : '';
+
+  const [offersModalOpen, setOffersModalOpen] = useState(false);
+  const [offersAnchor, setOffersAnchor] = useState<OfferChipAnchor | null>(null);
+  const giftMeasureRef = useRef<View>(null);
+
+  const handleOpenOffersModal = useCallback(() => {
+    const node = giftMeasureRef.current;
+    if (!node) {
+      setOffersAnchor(null);
+      setOffersModalOpen(true);
+      return;
+    }
+    node.measureInWindow((x, y, w, h) => {
+      const next = w > 0 && h > 0 ? { x, y, width: w, height: h } : null;
+      setOffersAnchor(next);
+      setOffersModalOpen(true);
+    });
+  }, []);
+
+  const handleCloseOffersModal = useCallback(() => {
+    setOffersModalOpen(false);
+    setOffersAnchor(null);
+  }, []);
 
   const passengersCount = Math.min(6, Math.max(1, parseInt(passengers, 10) || 1));
   const passengersLabel =
@@ -447,20 +490,61 @@ export default function SearchRides(): React.JSX.Element {
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.heroBlock}>
-          {sessionReady ? (
-            <View style={styles.greetingChip}>
-              <Text style={styles.greetingChipText}>
-                {welcomeShort ? (
-                  <>
-                    Hi, <Text style={styles.greetingChipName}>{welcomeShort}</Text>
-                  </>
-                ) : (
-                  'Hi there'
-                )}
-              </Text>
+          {sessionReady || hasLiveOffers ? (
+            <View style={styles.heroTopRow}>
+              <View style={styles.heroTopLeft}>
+                {sessionReady ? (
+                  <View style={styles.greetingChip}>
+                    <Text style={styles.greetingChipText}>
+                      {welcomeShort ? (
+                        <>
+                          Hi, <Text style={styles.greetingChipName}>{welcomeShort}</Text>
+                        </>
+                      ) : (
+                        'Hi there'
+                      )}
+                    </Text>
+                  </View>
+                ) : null}
+              </View>
+              {hasLiveOffers ? (
+                <View ref={giftMeasureRef} collapsable={false} style={styles.giftWrap}>
+                  <Pressable
+                    onPress={handleOpenOffersModal}
+                    accessibilityRole="button"
+                    accessibilityLabel={
+                      topOffers.length > 1
+                        ? `${topOffers.length} offers available`
+                        : 'Offers'
+                    }
+                    accessibilityHint="Opens your offers and progress"
+                    android_ripple={{
+                      color: 'rgba(251, 191, 36, 0.18)',
+                      borderless: true,
+                      radius: 22,
+                    }}
+                    style={({ pressed }) => [
+                      styles.giftBtn,
+                      pressed && styles.giftBtnPressed,
+                    ]}
+                  >
+                    <View style={styles.giftBtnGlow} pointerEvents="none" />
+                    <Ionicons name="gift" size={18} color="#FBBF24" />
+                  </Pressable>
+                  {/*
+                   * Badge lives OUTSIDE the button so the button can keep `overflow: hidden`
+                   * for the glow without clipping the badge. Padding on `giftWrap` reserves
+                   * just enough room for the badge to peek out without crossing the screen edge.
+                   */}
+                  {giftCountBadge ? (
+                    <View style={styles.giftBadge} pointerEvents="none">
+                      <Text style={styles.giftBadgeText}>{giftCountBadge}</Text>
+                    </View>
+                  ) : null}
+                </View>
+              ) : null}
             </View>
           ) : null}
-          <Text style={styles.heroEyebrow}>Search</Text>
           <Text style={styles.heroTitle}>Find a ride</Text>
           <Text style={styles.heroSubtitle}>Where are you heading?</Text>
         </View>
@@ -652,6 +736,18 @@ export default function SearchRides(): React.JSX.Element {
         value={passengersCount}
         onDone={(n) => setPassengers(String(n))}
       />
+
+      <SearchOffersModal
+        visible={offersModalOpen}
+        onClose={handleCloseOffersModal}
+        offers={topOffers}
+        lines={topOfferLines}
+        sessionReady={sessionReady}
+        loadingMe={loadingMe}
+        focusOfferIndex={0}
+        navigation={navigation}
+        offerAnchor={offersAnchor}
+      />
     </SafeAreaView>
   );
 }
@@ -672,13 +768,96 @@ const styles = StyleSheet.create({
   heroBlock: {
     marginBottom: 22,
   },
+  heroTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+  },
+  /** Left flex slot — keeps the greeting chip pinned left while the gift sits on the right. */
+  heroTopLeft: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    minWidth: 0,
+  },
   greetingChip: {
     alignSelf: 'flex-start',
     backgroundColor: COLORS.primaryMuted22,
     paddingHorizontal: 14,
     paddingVertical: 7,
     borderRadius: 999,
-    marginBottom: 14,
+    marginBottom: 0,
+  },
+  /**
+   * TOP-RIGHT GIFT AFFORDANCE ──────────────────────────────────
+   * Production-standard "promo entry point" — compact indigo pill with a gold gift glyph and
+   * an optional red count badge, mirroring the floating strip's stub so the two CTAs read
+   * as the same affordance in two locations.
+   *
+   * `giftWrap` reserves just enough top/right padding for the badge to peek out past the
+   * button's `overflow: hidden` rim without ever crossing the screen's right inset, so the
+   * badge can never be clipped by the surrounding ScrollView or hero row.
+   */
+  giftWrap: {
+    marginLeft: 12,
+    paddingTop: 6,
+    paddingRight: 6,
+  },
+  giftBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#1E1B4B',
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: 'rgba(251, 191, 36, 0.5)',
+    ...Platform.select({
+      ios: {
+        shadowColor: '#0F172A',
+        shadowOffset: { width: 0, height: 3 },
+        shadowOpacity: 0.16,
+        shadowRadius: 8,
+      },
+      android: { elevation: 5 },
+      default: {},
+    }),
+  },
+  giftBtnPressed: {
+    opacity: 0.9,
+    transform: [{ scale: 0.96 }],
+  },
+  giftBtnGlow: {
+    position: 'absolute',
+    top: -6,
+    left: -6,
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: 'rgba(251, 191, 36, 0.22)',
+  },
+  giftBadge: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    minWidth: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: '#EF4444',
+    borderWidth: 1.5,
+    borderColor: COLORS.backgroundSecondary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 4,
+  },
+  giftBadgeText: {
+    fontSize: 9.5,
+    fontWeight: '900',
+    color: '#FFFFFF',
+    letterSpacing: -0.2,
+    lineHeight: 12,
   },
   greetingChipText: {
     fontSize: 14,
@@ -688,14 +867,6 @@ const styles = StyleSheet.create({
   greetingChipName: {
     fontWeight: '800',
     color: COLORS.text,
-  },
-  heroEyebrow: {
-    fontSize: 11,
-    fontWeight: '800',
-    letterSpacing: 1.4,
-    color: COLORS.primary,
-    textTransform: 'uppercase',
-    marginBottom: 6,
   },
   heroTitle: {
     fontSize: 32,

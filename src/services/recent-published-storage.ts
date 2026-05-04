@@ -21,9 +21,19 @@ export type RecentPublishedEntry = {
   pickupLongitude: number;
   destinationLatitude: number;
   destinationLongitude: number;
-  /** YYYY-MM-DD */
+  /**
+   * Canonical UTC instant for the ride's departure (ISO 8601 with Z suffix).
+   * When present this is the SINGLE source of truth for the displayed wall-clock
+   * time — `dateYmd`, `hour`, `minute` below are derived from it in the device's
+   * local timezone on every read. Kept optional for backward compatibility with
+   * legacy rows written before this field existed.
+   */
+  scheduledAt?: string;
+  /** YYYY-MM-DD in the device's local timezone (derived from `scheduledAt` when present). */
   dateYmd: string;
+  /** 0–23 in the device's local timezone (derived from `scheduledAt` when present). */
   hour: number;
+  /** 0–59 in the device's local timezone (derived from `scheduledAt` when present). */
   minute: number;
   seats: number;
   rate: string;
@@ -35,6 +45,52 @@ export type RecentPublishedEntry = {
   createdAt?: string;
   updatedAt?: string;
 };
+
+/**
+ * Build a canonical UTC ISO instant from local wall-clock parts. Returns `undefined`
+ * if the inputs aren't a valid calendar moment.
+ *
+ * Why it lives here: every caller has (dateYmd + hour + minute) in the device's
+ * local zone; the storage layer is the one place that needs the instant. Doing
+ * the conversion here keeps the three publish call sites symmetrical.
+ */
+function buildScheduledAtIsoFromLocal(
+  dateYmd: string,
+  hour: number,
+  minute: number
+): string | undefined {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateYmd.trim());
+  if (!m) return undefined;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const da = Number(m[3]);
+  if (!y || !mo || !da) return undefined;
+  const d = new Date(y, mo - 1, da, hour, minute, 0, 0);
+  if (Number.isNaN(d.getTime())) return undefined;
+  return d.toISOString();
+}
+
+/**
+ * Inverse of the above: given a canonical UTC ISO instant, return the wall-clock
+ * parts in the DEVICE'S local timezone. This is what guarantees the round-trip
+ * matches what the user saw on the clock, regardless of what timezone the server
+ * was in when it echoed back (`hour`, `minute`) fields — those are intrinsically
+ * zone-ambiguous and must never be trusted over `scheduledAt`.
+ */
+function localPartsFromIso(
+  iso: string
+): { dateYmd: string; hour: number; minute: number } | null {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  const y = d.getFullYear();
+  const mo = String(d.getMonth() + 1).padStart(2, '0');
+  const da = String(d.getDate()).padStart(2, '0');
+  return {
+    dateYmd: `${y}-${mo}-${da}`,
+    hour: d.getHours(),
+    minute: d.getMinutes(),
+  };
+}
 
 function asNum(v: unknown): number | undefined {
   if (typeof v === 'number' && !Number.isNaN(v)) return v;
@@ -70,16 +126,43 @@ function normalizePublished(raw: unknown): RecentPublishedEntry | null {
   const r = raw as Record<string, unknown>;
   const pickup = String(r.pickup ?? r.pickup_location_name ?? '').trim();
   const destination = String(r.destination ?? r.destination_location_name ?? '').trim();
-  const dateYmd = String(r.dateYmd ?? r.date_ymd ?? '').trim();
-  if (!pickup || !destination || !/^\d{4}-\d{2}-\d{2}$/.test(dateYmd)) return null;
   const plat = asNum(r.pickupLatitude ?? r.pickup_latitude);
   const plon = asNum(r.pickupLongitude ?? r.pickup_longitude);
   const dlat = asNum(r.destinationLatitude ?? r.destination_latitude);
   const dlon = asNum(r.destinationLongitude ?? r.destination_longitude);
+  if (!pickup || !destination) return null;
   if (plat == null || plon == null || dlat == null || dlon == null) return null;
   if (isSamePickupAndDestination(pickup, destination, plat, plon, dlat, dlon)) return null;
-  const hour = Math.max(0, Math.min(23, Math.floor(Number(r.hour ?? 0))));
-  const minute = Math.max(0, Math.min(59, Math.floor(Number(r.minute ?? 0))));
+
+  /**
+   * TIMEZONE-SAFE WALL CLOCK ─────────────────────────────────────────────────
+   * The backend can (and today does) return `hour`/`minute`/`dateYmd` derived
+   * from `scheduledAt` in its own timezone (usually UTC on a Node server),
+   * which does NOT match the user's local wall clock. If the server echoes a
+   * canonical instant via `scheduledAt`, ALWAYS re-derive wall-clock parts
+   * from it using device-local getters — that is the only source of truth
+   * the client can fully own.
+   *
+   * Fallback: for legacy rows written before this migration (no `scheduledAt`),
+   * trust the sent `hour`/`minute`/`dateYmd` as a best effort. These rows age
+   * out quickly given `MAX_ENTRIES = 3`.
+   */
+  const scheduledAtRaw = String(r.scheduledAt ?? r.scheduled_at ?? '').trim();
+  let dateYmd = String(r.dateYmd ?? r.date_ymd ?? '').trim();
+  let hour = Math.max(0, Math.min(23, Math.floor(Number(r.hour ?? 0))));
+  let minute = Math.max(0, Math.min(59, Math.floor(Number(r.minute ?? 0))));
+  let scheduledAtIso: string | undefined;
+  if (scheduledAtRaw) {
+    const local = localPartsFromIso(scheduledAtRaw);
+    if (local) {
+      dateYmd = local.dateYmd;
+      hour = local.hour;
+      minute = local.minute;
+      scheduledAtIso = new Date(scheduledAtRaw).toISOString();
+    }
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateYmd)) return null;
+
   const seats = Math.max(1, Math.min(6, Math.floor(Number(r.seats)) || 1));
   return {
     id: String(r.id ?? r._id ?? `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`),
@@ -90,6 +173,7 @@ function normalizePublished(raw: unknown): RecentPublishedEntry | null {
     pickupLongitude: plon,
     destinationLatitude: dlat,
     destinationLongitude: dlon,
+    scheduledAt: scheduledAtIso,
     dateYmd,
     hour,
     minute,
@@ -161,8 +245,41 @@ export async function loadRecentPublished(userKey?: string): Promise<RecentPubli
       .map(normalizePublished)
       .filter((x): x is RecentPublishedEntry => Boolean(x))
       .slice(0, MAX_ENTRIES);
-    await saveLocal(normalized, userKey);
-    return normalized;
+
+    /**
+     * SCHEDULED-AT BACKFILL (defense in depth) ────────────────────────────
+     * The server is authoritative on list membership/order and most fields,
+     * but the ride's departure instant is something the client computed
+     * perfectly from the user's own clock tap. If the current server build
+     * strips `scheduledAt` from the response (or echoes a zone-ambiguous
+     * wall clock), restore the correct instant from the local cache matched
+     * by `rideId` and re-derive the displayed wall clock from it.
+     *
+     * This means: once a ride has been locally persisted with a correct
+     * `scheduledAt`, no subsequent server refresh can silently shift its
+     * displayed time by a timezone offset.
+     */
+    const localByRide = new Map<string, RecentPublishedEntry>();
+    for (const l of local) {
+      if (l.rideId) localByRide.set(l.rideId, l);
+    }
+    const merged = normalized.map((row) => {
+      if (row.scheduledAt) return row;
+      const localMatch = row.rideId ? localByRide.get(row.rideId) : undefined;
+      if (!localMatch?.scheduledAt) return row;
+      const parts = localPartsFromIso(localMatch.scheduledAt);
+      if (!parts) return row;
+      return {
+        ...row,
+        scheduledAt: localMatch.scheduledAt,
+        dateYmd: parts.dateYmd,
+        hour: parts.hour,
+        minute: parts.minute,
+      };
+    });
+
+    await saveLocal(merged, userKey);
+    return merged;
   } catch {
     return local;
   }
@@ -191,6 +308,18 @@ export async function addRecentPublished(
     return loadRecentPublished(userKey);
   }
 
+  const normalizedDateYmd = entry.dateYmd.trim();
+  const normalizedHour = Math.max(0, Math.min(23, Math.floor(entry.hour)));
+  const normalizedMinute = Math.max(0, Math.min(59, Math.floor(entry.minute)));
+  /**
+   * Canonical instant built from the local wall-clock the user actually picked.
+   * Sent to the server so it never has to guess a zone, and stored locally so
+   * an offline/guest round-trip is identical to an online one.
+   */
+  const scheduledAt =
+    entry.scheduledAt?.trim() ||
+    buildScheduledAtIsoFromLocal(normalizedDateYmd, normalizedHour, normalizedMinute);
+
   const snapshot: Omit<RecentPublishedEntry, 'id'> = {
     rideId: (entry.rideId ?? '').trim() || undefined,
     pickup,
@@ -199,9 +328,10 @@ export async function addRecentPublished(
     pickupLongitude: entry.pickupLongitude,
     destinationLatitude: entry.destinationLatitude,
     destinationLongitude: entry.destinationLongitude,
-    dateYmd: entry.dateYmd.trim(),
-    hour: Math.max(0, Math.min(23, Math.floor(entry.hour))),
-    minute: Math.max(0, Math.min(59, Math.floor(entry.minute))),
+    scheduledAt,
+    dateYmd: normalizedDateYmd,
+    hour: normalizedHour,
+    minute: normalizedMinute,
     seats: Math.max(1, Math.min(6, Math.floor(entry.seats) || 1)),
     rate: entry.rate.trim(),
     rideDescription: (entry.rideDescription ?? entry.description ?? '').trim(),
@@ -228,11 +358,46 @@ export async function addRecentPublished(
     return mergeLocalOnly();
   }
 
+  /**
+   * Persist the snapshot locally FIRST so its canonical `scheduledAt` is
+   * available to the backfill step inside `loadRecentPublished` below. Without
+   * this, the subsequent GET would see an empty local cache for the freshly
+   * published ride and — if the server strips `scheduledAt` from its response —
+   * would fall back to the server's zone-ambiguous hour/minute for the one
+   * row that matters most to the user right now.
+   */
+  await mergeLocalOnly();
+
+  /**
+   * WIRE PAYLOAD (UTC-first) ──────────────────────────────────────────────
+   * The backend contract is strictly `scheduledAt`-only for write. We keep
+   * `dateYmd`/`hour`/`minute` in the on-disk snapshot because they're the
+   * derived views used for local display, dedupe, and legacy-cache reads,
+   * but they must never leak onto the wire — sending them would re-introduce
+   * a timezone-ambiguous field into the request body and invite future
+   * server changes to trust the wrong source again.
+   */
+  const wirePayload = {
+    rideId: snapshot.rideId,
+    pickup: snapshot.pickup,
+    destination: snapshot.destination,
+    pickupLatitude: snapshot.pickupLatitude,
+    pickupLongitude: snapshot.pickupLongitude,
+    destinationLatitude: snapshot.destinationLatitude,
+    destinationLongitude: snapshot.destinationLongitude,
+    scheduledAt: snapshot.scheduledAt,
+    seats: snapshot.seats,
+    rate: snapshot.rate,
+    rideDescription: snapshot.rideDescription,
+    description: snapshot.description,
+    instantBooking: snapshot.instantBooking,
+  };
+
   try {
     if (snapshot.rideId) {
-      await api.put(API.endpoints.recentPublished.upsertByRide(snapshot.rideId), snapshot);
+      await api.put(API.endpoints.recentPublished.upsertByRide(snapshot.rideId), wirePayload);
     } else {
-      await api.post(API.endpoints.recentPublished.upsert, snapshot);
+      await api.post(API.endpoints.recentPublished.upsert, wirePayload);
     }
     return loadRecentPublished(userKey);
   } catch {

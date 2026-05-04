@@ -132,6 +132,7 @@ export default function ChatScreen(): React.JSX.Element {
     otherUserName,
     otherUserId,
     otherUserAvatarUrl: routePeerAvatar,
+    otherUserIdentityVerified: routePeerVerified,
     otherUserDeactivated: routePeerDeactivatedFlag,
   } = route.params as {
     ride?: RideListItem;
@@ -139,6 +140,7 @@ export default function ChatScreen(): React.JSX.Element {
     otherUserName: string;
     otherUserId: string;
     otherUserAvatarUrl?: string;
+    otherUserIdentityVerified?: boolean;
     otherUserDeactivated?: boolean;
   };
 
@@ -216,6 +218,25 @@ export default function ChatScreen(): React.JSX.Element {
     () => (peerAvatarUrl ? { otherUserAvatarUrl: peerAvatarUrl } : undefined),
     [peerAvatarUrl]
   );
+  /**
+   * Peer's verified ✓ for the chat header avatar. Prefer the freshest inbox
+   * conversation flag (re-fetched from server) and fall back to the route
+   * param used to open this chat from inbox / ride detail. Backend SSOT.
+   */
+  const peerVerified = useMemo(() => {
+    if (otherUserDeactivated) return false;
+    const targetRideId = normalizeChatRideId(ride.id);
+    const targetOther = (otherUserId ?? '').trim();
+    const match = conversations.find((c) => {
+      if (!c.ride?.id) return false;
+      if (normalizeChatRideId(c.ride.id) !== targetRideId) return false;
+      if (targetOther && c.otherUserId && c.otherUserId.trim() === targetOther) return true;
+      if (!targetOther && c.otherUserName?.trim() === otherUserName?.trim()) return true;
+      return false;
+    });
+    if (match?.otherUserIdentityVerified === true) return true;
+    return routePeerVerified === true;
+  }, [conversations, otherUserDeactivated, otherUserId, otherUserName, ride.id, routePeerVerified]);
   const { user } = useAuth();
   const currentUserId = (user?.id ?? user?.phone ?? '').trim();
   const isRideOwner = Boolean(currentUserId && (ride.userId ?? '').trim() === currentUserId);
@@ -672,6 +693,7 @@ export default function ChatScreen(): React.JSX.Element {
               backgroundColor={COLORS.primary}
               fallbackTextColor={COLORS.white}
               style={styles.headerAvatar}
+              verified={peerVerified}
             />
             <View style={styles.headerNameCol}>
               <Text style={styles.headerName}>{displayName}</Text>

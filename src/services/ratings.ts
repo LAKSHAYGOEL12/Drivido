@@ -12,6 +12,8 @@ import {
   ratingRowReviewerInactive,
 } from '../utils/deactivatedAccount';
 import { normalizeRidePreferenceIds } from '../constants/ridePreferences';
+import { pickSubjectIdentityVerified } from '../utils/identityVerifiedExtract';
+import { setUserIdentityVerified } from '../utils/identityVerifiedCache';
 
 export type SubmitRideRatingPayload = {
   rideId: string;
@@ -28,6 +30,12 @@ export type UserRatingReview = {
   fromUserName: string;
   fromUserId?: string;
   fromUserAvatarUrl?: string;
+  /**
+   * Backend SSOT — set true only when the reviewer's user record has
+   * `isIdentityVerified === true`. Drives the small verified ✓ badge on
+   * the reviewer's avatar in ratings lists. Frontend never derives this.
+   */
+  fromUserIdentityVerified?: boolean;
   createdAt: string;
 };
 
@@ -55,7 +63,21 @@ export type UserRatingsSummary = {
   subjectOccupation?: string;
   /** Driver comfort tags from `user.ridePreferences` on ratings payload (may be empty). */
   subjectRidePreferences: string[];
+  /**
+   * Backend SSOT verified \u2713 badge for the subject (peer profile).
+   * `true` only when admin manually flipped `users.isIdentityVerified` in Mongo.
+   * Frontend never derives this from any other state.
+   */
+  subjectIdentityVerified?: boolean;
 };
+
+/**
+ * Backend may surface the verified flag under either camel- or snake_case (or
+ * the abbreviated `identity*` aliases) depending on serializer; we read all
+ * four. The strict-boolean helper is centralized in
+ * `src/utils/identityVerifiedExtract.ts` so other services
+ * (probe, chat normalization) stay aligned on alias coverage.
+ */
 
 function extractRatingsArray(raw: unknown): unknown[] {
   if (Array.isArray(raw)) return raw;
@@ -225,7 +247,17 @@ function extractVerifiedSubjectPhone(body: unknown, expectedUserId: string): str
 /** Try common public-profile URL shapes when ratings payload omits avatar or contact phone. */
 async function probePublicUserProfileExtras(
   userId: string
-): Promise<{ subjectAvatarUrl?: string; subjectContactPhone?: string }> {
+): Promise<{
+  subjectAvatarUrl?: string;
+  subjectContactPhone?: string;
+  /**
+   * Backend SSOT — `true` if any public profile endpoint surfaces the verified
+   * flag for this user (`isIdentityVerified`/`is_identity_verified`/...). Lets
+   * the frontend show the ✓ badge on peer profiles + ratings even when the
+   * `/ratings/:id` payload doesn't echo it on the embedded user object.
+   */
+  subjectIdentityVerified?: boolean;
+}> {
   const id = userId.trim();
   if (!id) return {};
 
@@ -249,6 +281,7 @@ async function probePublicUserProfileExtras(
 
   let subjectAvatarUrl: string | undefined;
   let subjectContactPhone: string | undefined;
+  let subjectIdentityVerified: boolean | undefined;
 
   for (let i = 0; i < pathProbes.length; i++) {
     const { userIdFromPath } = pathProbes[i];
@@ -258,10 +291,14 @@ async function probePublicUserProfileExtras(
     const verifiedPhone = extractVerifiedSubjectPhone(body, id);
     if (verifiedAvatar && !subjectAvatarUrl) subjectAvatarUrl = verifiedAvatar;
     if (verifiedPhone && !subjectContactPhone) subjectContactPhone = verifiedPhone;
-    if (!userIdFromPath) continue;
     const top = asObject(body) ?? {};
     const nested = asObject(top.data) ?? {};
     const user = asObject(nested.user) ?? asObject(top.user) ?? {};
+    if (subjectIdentityVerified !== true) {
+      const probedVerified = pickSubjectIdentityVerified(user, nested, top);
+      if (probedVerified) subjectIdentityVerified = true;
+    }
+    if (!userIdFromPath) continue;
     if (!subjectAvatarUrl) {
       const loose =
         pickAvatarUrlFromRecord(top) ??
@@ -274,6 +311,7 @@ async function probePublicUserProfileExtras(
   return {
     ...(subjectAvatarUrl ? { subjectAvatarUrl } : {}),
     ...(subjectContactPhone ? { subjectContactPhone } : {}),
+    ...(subjectIdentityVerified ? { subjectIdentityVerified: true } : {}),
   };
 }
 
@@ -435,6 +473,26 @@ export async function getUserRatingsSummary(userId: string): Promise<UserRatings
       const fromUserAvatarUrl =
         pickAvatarUrlFromRecord(fromUserObj) ?? pickAvatarUrlFromRecord(obj) ?? undefined;
       const reviewerInactive = ratingRowReviewerInactive(obj, fromUserObj);
+      // Reviewer's verified badge — backend SSOT. Hidden whenever the reviewer
+      // is inactive (we already mask their name/avatar in that case).
+      // Accept both the canonical alias coalesce (`isIdentityVerified` on the
+      // nested reviewer/user object or row) and the typed row aliases the
+      // backend now emits explicitly per review row:
+      //   - fromUserIdentityVerified / from_user_identity_verified
+      //   - reviewerIdentityVerified / reviewer_identity_verified
+      const reviewerRowVerifiedAlias =
+        obj.fromUserIdentityVerified === true ||
+        obj.from_user_identity_verified === true ||
+        obj.reviewerIdentityVerified === true ||
+        obj.reviewer_identity_verified === true;
+      const fromUserIdentityVerified =
+        !reviewerInactive &&
+        (pickSubjectIdentityVerified(fromUserObj, obj) || reviewerRowVerifiedAlias);
+      if (fromUserIdentityVerified && fromUserId) {
+        // Remember reviewer verified state so their avatar shows the ✓ wherever
+        // we render them next (chat, ride card, peer profile) without another fetch.
+        setUserIdentityVerified(fromUserId, true);
+      }
       return {
         id: asString(obj._id || obj.id) || `${idx}`,
         rating: Math.min(5, Math.max(0, Math.round(asNumber(ratingRaw)))),
@@ -443,6 +501,7 @@ export async function getUserRatingsSummary(userId: string): Promise<UserRatings
         fromUserName: reviewerInactive ? DEACTIVATED_ACCOUNT_LABEL : fromUserNameCandidate,
         fromUserId: reviewerInactive ? undefined : fromUserId || undefined,
         ...(reviewerInactive || !fromUserAvatarUrl ? {} : { fromUserAvatarUrl }),
+        ...(fromUserIdentityVerified ? { fromUserIdentityVerified: true } : {}),
         createdAt: asString(obj.createdAt ?? obj.updatedAt ?? obj.date),
       };
     });
@@ -531,6 +590,24 @@ export async function getUserRatingsSummary(userId: string): Promise<UserRatings
     Array.isArray(subjectRidePrefsRaw) ? subjectRidePrefsRaw : []
   );
 
+  // Top-level subject verification is now also projected by the backend under
+  // the typed aliases `subjectIdentityVerified` / `subject_identity_verified`
+  // on the response root + nested `data`. Accept those alongside the canonical
+  // `isIdentityVerified` aliases on the user object so we don't miss the flag
+  // depending on which projection the controller picked.
+  const subjectTopLevelVerifiedAlias =
+    data.subjectIdentityVerified === true ||
+    data.subject_identity_verified === true ||
+    root?.subjectIdentityVerified === true ||
+    root?.subject_identity_verified === true;
+  const subjectIdentityVerified =
+    pickSubjectIdentityVerified(userObj, data, root) ||
+    subjectTopLevelVerifiedAlias ||
+    extras.subjectIdentityVerified === true;
+  // Authoritative: cache so the rest of the app (ride cards, chat header,
+  // search results) can show the ✓ even when their list payload omits the flag.
+  setUserIdentityVerified(userId, subjectIdentityVerified === true);
+
   return {
     avgRating: finalAvgRating,
     totalRatings: finalTotalRatings,
@@ -541,5 +618,6 @@ export async function getUserRatingsSummary(userId: string): Promise<UserRatings
     ...(subjectOccupationRaw ? { subjectOccupation: subjectOccupationRaw } : {}),
     ...(subjectContactPhone ? { subjectContactPhone } : {}),
     subjectRidePreferences,
+    ...(subjectIdentityVerified ? { subjectIdentityVerified: true } : {}),
   };
 }

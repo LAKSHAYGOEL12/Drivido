@@ -79,6 +79,7 @@ export default function Inbox(): React.JSX.Element {
       otherUserName: conv.otherUserName,
       otherUserId: conv.otherUserId ?? '',
       ...(conv.otherUserAvatarUrl ? { otherUserAvatarUrl: conv.otherUserAvatarUrl } : {}),
+      ...(conv.otherUserIdentityVerified === true ? { otherUserIdentityVerified: true } : {}),
       ...(conv.otherUserDeactivated === true ||
       ridePeerDeactivated(conv.ride, (conv.otherUserId ?? '').trim())
         ? { otherUserDeactivated: true }
@@ -100,6 +101,7 @@ export default function Inbox(): React.JSX.Element {
             size={50}
             backgroundColor={COLORS.primary}
             fallbackTextColor={COLORS.white}
+            verified={item.otherUserIdentityVerified === true}
           />
         </View>
         <View style={styles.rowCenter}>

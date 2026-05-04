@@ -1,8 +1,9 @@
-import React, { useMemo, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import {
   StyleSheet,
   Text,
   View,
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
@@ -17,7 +18,7 @@ import {
 import { Alert } from '../../utils/themedAlert';
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { Ionicons } from '@expo/vector-icons';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { RootStackScreenProps } from '../../navigation/types';
 import { useAuth } from '../../contexts/AuthContext';
@@ -34,19 +35,25 @@ import {
   validationErrors,
   clampPhoneNationalInput,
   GENDER_OPTIONS,
+  normalizeIdentityNumber,
   type GenderValue,
+  type IdentityDocumentValue,
 } from '../../constants/validation';
 import { COLORS } from '../../constants/colors';
-import { LEGAL_AGREEMENT_VERSION } from '../../constants/legal/legalAgreement';
+import { useImagePicker } from '../../hooks/useImagePicker';
+import { uploadIdentityDocument } from '../../services/identityDocument';
+import IdentityVerificationCard from '../../components/profile/IdentityVerificationCard';
 
 type Props = RootStackScreenProps<'CompleteProfile'>;
 
-const DIAL_CODE = '+91';
+/**
+ * Reserved scroll padding so the last field clears the absolutely-positioned
+ * Continue footer that overlays the bottom of the ScrollView. Mirrors the
+ * Edit Profile screen's proven pattern.
+ */
+const SCROLL_PADDING_ABOVE_FOOTER = 120;
 
-/** Must stay defined: some Metro/Hermes caches still evaluate old style objects that reference `CELL_GAP`. */
-const CELL_GAP = 10;
-const ROW_GAP_MD = 12;
-const ROW_GAP_SM = 8;
+const DIAL_CODE = '+91';
 
 const GENDER_DISPLAY: Record<GenderValue, string> = {
   male: 'Male',
@@ -66,7 +73,7 @@ function formatDobDisplay(iso: string): string {
   const t = iso.trim();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(t)) return t;
   const [y, mo, da] = t.split('-');
-  return `${mo}/${da}/${y}`;
+  return `${da}/${mo}/${y}`;
 }
 
 function parseYmdToLocalDate(iso: string): Date {
@@ -90,11 +97,17 @@ function defaultPickerDate(min: Date, max: Date): Date {
 
 export default function CompleteProfile(): React.JSX.Element {
   const navigation = useNavigation<Props['navigation']>();
+  const insets = useSafeAreaInsets();
   const { refreshUser, patchUser, logout } = useAuth();
 
   const [dateOfBirth, setDateOfBirth] = useState('');
   const [gender, setGender] = useState<GenderValue | ''>('');
   const [phoneNational, setPhoneNational] = useState('');
+  const [identityType, setIdentityType] = useState<IdentityDocumentValue | ''>('');
+  const [identityNumber, setIdentityNumber] = useState('');
+  const [identityPhotoUri, setIdentityPhotoUri] = useState<string | null>(null);
+  const [identityLabel, setIdentityLabel] = useState('');
+  const { pickFromGallery, takePhoto } = useImagePicker();
   const [termsAccepted, setTermsAccepted] = useState(false);
   const [genderPickerOpen, setGenderPickerOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -106,12 +119,33 @@ export default function CompleteProfile(): React.JSX.Element {
     dateOfBirth?: string;
     gender?: string;
     phone?: string;
+    identity?: string;
+    identityPhoto?: string;
+    identityLabel?: string;
   }>({});
 
   const scrollRef = useRef<ScrollView | null>(null);
+  const scrollContentRef = useRef<View | null>(null);
   const signOutInFlightRef = useRef(false);
   const [dobPickerOpen, setDobPickerOpen] = useState(false);
   const [dobPickerDate, setDobPickerDate] = useState(() => new Date());
+  /** Live keyboard height — drives the absolute footer's `bottom` and ScrollView's bottom padding. */
+  const [keyboardBottomInset, setKeyboardBottomInset] = useState(0);
+
+  useEffect(() => {
+    const show = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hide = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const subShow = Keyboard.addListener(show, (e) => {
+      setKeyboardBottomInset(e.endCoordinates?.height ?? 0);
+    });
+    const subHide = Keyboard.addListener(hide, () => {
+      setKeyboardBottomInset(0);
+    });
+    return () => {
+      subShow.remove();
+      subHide.remove();
+    };
+  }, []);
 
   const { dobMin, dobMax } = useMemo(() => {
     const max = new Date();
@@ -120,11 +154,6 @@ export default function CompleteProfile(): React.JSX.Element {
     min.setFullYear(min.getFullYear() - 120);
     return { dobMin: min, dobMax: max };
   }, []);
-
-  const legalDisplayVersion = useMemo(
-    () => (legalVersionRequired ?? LEGAL_AGREEMENT_VERSION).trim() || LEGAL_AGREEMENT_VERSION,
-    [legalVersionRequired]
-  );
 
   useFocusEffect(
     useCallback(() => {
@@ -198,15 +227,37 @@ export default function CompleteProfile(): React.JSX.Element {
     /** RootNavigator resets to guest Main once auth clears — do not navigate here or tabs flash under the overlay. */
   }, [logout]);
 
+  const identityIsTouched = identityType !== '' || identityNumber.trim().length > 0;
+
   const validate = (): boolean => {
     const next: typeof errors = {};
     if (!validation.dateOfBirth(dateOfBirth)) next.dateOfBirth = validationErrors.dateOfBirth;
     if (!gender || !validation.gender(gender)) next.gender = validationErrors.gender;
     if (!validation.phoneNational(phoneNational)) next.phone = validationErrors.phone;
+    if (identityIsTouched) {
+      if (!identityType || !identityNumber.trim()) {
+        next.identity = validationErrors.identityIncomplete;
+      } else if (!validation.identityNumber(identityNumber, identityType)) {
+        next.identity =
+          identityType === 'aadhaar'
+            ? validationErrors.identityAadhaar
+            : identityType === 'pan'
+              ? validationErrors.identityPan
+              : identityType === 'driver_license'
+                ? validationErrors.identityDriverLicense
+                : validationErrors.identityOther;
+      }
+      if (identityType === 'other' && !validation.identityLabel(identityLabel)) {
+        next.identityLabel = validationErrors.identityLabel;
+      }
+      if (!identityPhotoUri) {
+        next.identityPhoto = 'Add a clear photo of the document to continue.';
+      }
+    }
     setErrors(next);
     if (Object.keys(next).length > 0) return false;
     if (!termsAccepted) {
-      Alert.alert('Terms', 'Please accept the Terms & Privacy Policy to continue.');
+      Alert.alert('Terms', 'Please accept the Terms and Privacy Policy to continue.');
       return false;
     }
     return true;
@@ -239,6 +290,40 @@ export default function CompleteProfile(): React.JSX.Element {
     return msg || 'Couldn’t save changes.';
   };
 
+  /**
+   * Best-effort upload — never blocks account onboarding.
+   * Verification status is owned by the backend; if upload fails the user can re-try
+   * later from Profile. Logs in dev so we notice silent failures without alerting users.
+   *
+   * On success we refresh the auth user so the freshly-set
+   * `identityVerificationStatus: 'pending'` lands in memory immediately. The badge
+   * itself stays off until an admin manually flips `isIdentityVerified` in Mongo.
+   */
+  const submitIdentityDocumentIfPresent = useCallback(async () => {
+    if (!identityIsTouched) return;
+    if (!identityType || !identityPhotoUri) return;
+    const number = normalizeIdentityNumber(identityNumber);
+    if (!validation.identityNumber(number, identityType)) return;
+    if (identityType === 'other' && !validation.identityLabel(identityLabel)) return;
+    try {
+      await uploadIdentityDocument({
+        documentType: identityType,
+        documentNumber: number,
+        documentLabel: identityType === 'other' ? identityLabel.trim() : undefined,
+        localUri: identityPhotoUri,
+      });
+      try {
+        await refreshUser();
+      } catch {
+        // Refresh is opportunistic; next /auth/me on resume will pick up status.
+      }
+    } catch (err) {
+      if (__DEV__) {
+        console.warn('[CompleteProfile] identity document upload failed', err);
+      }
+    }
+  }, [identityIsTouched, identityType, identityNumber, identityPhotoUri, identityLabel, refreshUser]);
+
   const handleContinue = async () => {
     if (!validate() || saving || finishing) return;
     const national = clampPhoneNationalInput(phoneNational);
@@ -267,6 +352,7 @@ export default function CompleteProfile(): React.JSX.Element {
         });
       }
       await submitProfile();
+      await submitIdentityDocumentIfPresent();
       setSaving(false);
       setFinishing(true);
       await new Promise((r) => setTimeout(r, 520));
@@ -294,6 +380,7 @@ export default function CompleteProfile(): React.JSX.Element {
             phone: national,
           });
           await refreshUser();
+          await submitIdentityDocumentIfPresent();
           setSaving(false);
           setFinishing(true);
           await new Promise((r) => setTimeout(r, 520));
@@ -318,54 +405,91 @@ export default function CompleteProfile(): React.JSX.Element {
     }
   };
 
+  const pickIdentityPhoto = useCallback(
+    async (source: 'library' | 'camera') => {
+      const picked =
+        source === 'library'
+          ? await pickFromGallery({ aspect: [4, 3], quality: 0.85 })
+          : await takePhoto({ aspect: [4, 3], quality: 0.85 });
+      if (picked?.uri) {
+        setIdentityPhotoUri(picked.uri);
+        setErrors((e) => ({ ...e, identityPhoto: undefined }));
+      }
+    },
+    [pickFromGallery, takePhoto]
+  );
+
+  const promptIdentityPhotoSource = useCallback(() => {
+    Alert.alert(
+      'Document photo',
+      'Choose where to add the document photo from.',
+      [
+        { text: 'Take photo', onPress: () => void pickIdentityPhoto('camera') },
+        { text: 'Choose from gallery', onPress: () => void pickIdentityPhoto('library') },
+        { text: 'Cancel', style: 'cancel' },
+      ],
+      { cancelable: true }
+    );
+  }, [pickIdentityPhoto]);
+
   const canContinue =
     termsAccepted &&
     validation.dateOfBirth(dateOfBirth) &&
     !!gender &&
     validation.gender(gender) &&
     validation.phoneNational(phoneNational) &&
+    (!identityIsTouched ||
+      (!!identityType &&
+        validation.identityNumber(identityNumber, identityType) &&
+        (identityType !== 'other' || validation.identityLabel(identityLabel)) &&
+        !!identityPhotoUri)) &&
     !saving &&
     !finishing;
 
   return (
-    <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
-      <KeyboardAvoidingView
-        style={styles.container}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 16 : 20}
-      >
-        <View style={styles.topBar}>
-          <TouchableOpacity
-            onPress={() => void handleSignOut()}
-            style={styles.signOutBtn}
-            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-            accessibilityRole="button"
-            accessibilityLabel="Sign out"
-            disabled={saving || finishing || signingOut}
-          >
-            <Text
-              style={[
-                styles.signOutBtnText,
-                (saving || finishing || signingOut) && styles.signOutBtnTextDisabled,
-              ]}
-            >
-              Sign out
-            </Text>
-          </TouchableOpacity>
-        </View>
-        <View style={styles.divider} />
-
-        <ScrollView
-          ref={scrollRef}
-          contentContainerStyle={styles.scroll}
-          keyboardShouldPersistTaps="handled"
-          showsVerticalScrollIndicator={false}
+    <SafeAreaView style={styles.safe} edges={['top']}>
+      <View style={styles.header}>
+        <Text style={styles.headerTitle}>Complete your info</Text>
+        <TouchableOpacity
+          onPress={() => void handleSignOut()}
+          style={styles.signOutBtn}
+          hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+          accessibilityRole="button"
+          accessibilityLabel="Sign out"
+          disabled={saving || finishing || signingOut}
         >
-          <Text style={styles.headline}>Complete your info</Text>
-          <Text style={styles.subheadline}>Help us personalize your experience and secure your account.</Text>
+          <Text
+            style={[
+              styles.signOutBtnText,
+              (saving || finishing || signingOut) && styles.signOutBtnTextDisabled,
+            ]}
+          >
+            Sign out
+          </Text>
+        </TouchableOpacity>
+      </View>
 
-          <View style={styles.fieldBlock}>
-            <Text style={styles.fieldLabel}>
+      <View style={styles.body}>
+        <KeyboardAvoidingView
+          style={styles.kav}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 16 : 0}
+        >
+          <ScrollView
+            ref={scrollRef}
+            contentContainerStyle={[
+              styles.scroll,
+              { paddingBottom: SCROLL_PADDING_ABOVE_FOOTER + insets.bottom + keyboardBottomInset },
+            ]}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="on-drag"
+            showsVerticalScrollIndicator={false}
+          >
+            <View ref={scrollContentRef} collapsable={false} style={styles.scrollInner}>
+          <View style={styles.panel}>
+            <Text style={styles.panelOverline}>Personal</Text>
+
+            <Text style={styles.panelLead}>
               Date of birth <Text style={styles.asterisk}>*</Text>
             </Text>
             {Platform.OS === 'web' ? (
@@ -384,76 +508,23 @@ export default function CompleteProfile(): React.JSX.Element {
                 style={[styles.dobRow, errors.dateOfBirth ? styles.fieldError : null]}
                 onPress={openDobPicker}
                 activeOpacity={0.75}
+                accessibilityRole="button"
+                accessibilityLabel="Pick date of birth"
               >
-                <Ionicons name="calendar-outline" size={20} color={COLORS.textSecondary} style={styles.dobIcon} />
-                <Text style={[styles.dobText, !dateOfBirth.trim() && styles.dobPlaceholder]}>
-                  {dateOfBirth.trim() ? formatDobDisplay(dateOfBirth.trim()) : 'MM/DD/YYYY'}
+                <Ionicons name="calendar-outline" size={20} color={COLORS.textSecondary} style={styles.leadingIcon} />
+                <Text style={[styles.dobText, !dateOfBirth.trim() && styles.placeholderText]}>
+                  {dateOfBirth.trim() ? formatDobDisplay(dateOfBirth.trim()) : 'DD/MM/YYYY'}
                 </Text>
+                <Ionicons name="chevron-down" size={18} color={COLORS.textMuted} />
               </TouchableOpacity>
             )}
-            {errors.dateOfBirth ? <Text style={styles.fieldErrText}>{errors.dateOfBirth}</Text> : null}
-          </View>
+            {errors.dateOfBirth ? <Text style={styles.errText}>{errors.dateOfBirth}</Text> : null}
 
-          {Platform.OS === 'android' && dobPickerOpen ? (
-            <DateTimePicker
-              value={dobPickerDate}
-              mode="date"
-              display="default"
-              minimumDate={dobMin}
-              maximumDate={dobMax}
-              onChange={onAndroidDobChange}
-            />
-          ) : null}
-
-          {Platform.OS === 'ios' ? (
-            <Modal visible={dobPickerOpen} animationType="slide" transparent onRequestClose={() => setDobPickerOpen(false)}>
-              <View style={styles.dobModalRoot}>
-                <Pressable style={styles.dobModalBackdrop} onPress={() => setDobPickerOpen(false)} />
-                <SafeAreaView edges={['bottom']} style={styles.dobModalSheet}>
-                  <View style={styles.dobModalGrabberWrap} pointerEvents="none">
-                    <View style={styles.dobModalGrabber} />
-                  </View>
-                  <View style={styles.dobModalHeader}>
-                    <View style={styles.dobModalHeaderSide}>
-                      <TouchableOpacity onPress={() => setDobPickerOpen(false)} hitSlop={12}>
-                        <Text style={styles.dobModalCancel}>Cancel</Text>
-                      </TouchableOpacity>
-                    </View>
-                    <View style={styles.dobModalTitleBlock}>
-                      <Text style={styles.dobModalTitle}>Date of birth</Text>
-                      <Text style={styles.dobModalSubtitle}>Choose a day on the calendar</Text>
-                    </View>
-                    <View style={[styles.dobModalHeaderSide, styles.dobModalHeaderSideEnd]}>
-                      <TouchableOpacity onPress={confirmIosDob} hitSlop={12}>
-                        <Text style={styles.dobModalDone}>Done</Text>
-                      </TouchableOpacity>
-                    </View>
-                  </View>
-                  <View style={styles.dobPickerWrap}>
-                    <DateTimePicker
-                      style={styles.dobPickerNative}
-                      value={dobPickerDate}
-                      mode="date"
-                      display="inline"
-                      minimumDate={dobMin}
-                      maximumDate={dobMax}
-                      onChange={(_, d) => {
-                        if (d) setDobPickerDate(clampDate(d, dobMin, dobMax));
-                      }}
-                      themeVariant="light"
-                    />
-                  </View>
-                </SafeAreaView>
-              </View>
-            </Modal>
-          ) : null}
-
-          <View style={styles.fieldBlock}>
-            <Text style={styles.fieldLabel}>
+            <Text style={[styles.panelLead, styles.panelLeadSpaced]}>
               Gender <Text style={styles.asterisk}>*</Text>
             </Text>
             <TouchableOpacity
-              style={[styles.genderDropdown, errors.gender ? styles.fieldError : null]}
+              style={[styles.dropdown, errors.gender ? styles.fieldError : null]}
               onPress={() => {
                 setGenderPickerOpen(true);
                 setErrors((e) => ({ ...e, gender: undefined }));
@@ -463,74 +534,73 @@ export default function CompleteProfile(): React.JSX.Element {
               accessibilityLabel="Select gender"
             >
               <Text
-                style={[styles.genderDropdownText, !gender && styles.genderDropdownPlaceholder]}
+                style={[styles.dropdownText, !gender && styles.placeholderText]}
                 numberOfLines={1}
               >
                 {gender ? GENDER_DISPLAY[gender] : 'Select gender'}
               </Text>
-              <Ionicons name="chevron-down" size={20} color={COLORS.textSecondary} />
+              <Ionicons name="chevron-down" size={18} color={COLORS.textMuted} />
             </TouchableOpacity>
-            {errors.gender ? <Text style={styles.fieldErrText}>{errors.gender}</Text> : null}
+            {errors.gender ? <Text style={styles.errText}>{errors.gender}</Text> : null}
           </View>
 
-          <Modal
-            visible={genderPickerOpen}
-            transparent
-            animationType="fade"
-            onRequestClose={() => setGenderPickerOpen(false)}
-          >
-            <View style={styles.genderModalRoot}>
-              <Pressable style={styles.genderModalBackdrop} onPress={() => setGenderPickerOpen(false)} />
-              <View style={styles.genderModalSheet}>
-                <Text style={styles.genderModalTitle}>Gender</Text>
-                {GENDER_OPTIONS.map((opt) => (
-                  <TouchableOpacity
-                    key={opt.value}
-                    style={styles.genderModalOption}
-                    onPress={() => {
-                      setGender(opt.value);
-                      setGenderPickerOpen(false);
-                      setErrors((e) => ({ ...e, gender: undefined }));
-                    }}
-                  >
-                    <Text style={styles.genderModalOptionText}>{GENDER_DISPLAY[opt.value]}</Text>
-                    {gender === opt.value ? (
-                      <Ionicons name="checkmark" size={22} color={COLORS.primary} />
-                    ) : null}
-                  </TouchableOpacity>
-                ))}
-              </View>
-            </View>
-          </Modal>
-
-          <View style={styles.fieldBlock}>
-            <Text style={styles.fieldLabel}>
-              Phone number <Text style={styles.asterisk}>*</Text>
+          <View style={styles.panel}>
+            <Text style={styles.panelOverline}>Contact</Text>
+            <Text style={styles.panelLead}>
+              Phone <Text style={styles.asterisk}>*</Text>
             </Text>
-            <View style={styles.phoneRow}>
-              <View style={[styles.dialFixed, styles.phoneRowPrefix]}>
-                <Text style={styles.dialFixedText}>{DIAL_CODE}</Text>
-              </View>
-              <View style={[styles.phoneInputWrap, errors.phone ? styles.fieldError : null]}>
-                <Ionicons name="call-outline" size={18} color={COLORS.textSecondary} style={styles.phoneIcon} />
-                <TextInput
-                  style={styles.phoneInput}
-                  value={phoneNational}
-                  onChangeText={(v) => {
-                    setPhoneNational(clampPhoneNationalInput(v));
-                    setErrors((e) => ({ ...e, phone: undefined }));
-                  }}
-                  placeholder="10-digit mobile number"
-                  placeholderTextColor={COLORS.textMuted}
-                  keyboardType="number-pad"
-                  maxLength={10}
-                />
-              </View>
+            <View style={[styles.phoneWrap, errors.phone ? styles.fieldError : null]}>
+              <Text style={styles.dial}>{DIAL_CODE}</Text>
+              <TextInput
+                style={styles.phoneInput}
+                value={phoneNational}
+                onChangeText={(v) => {
+                  setPhoneNational(clampPhoneNationalInput(v));
+                  setErrors((e) => ({ ...e, phone: undefined }));
+                }}
+                placeholder="10-digit mobile number"
+                placeholderTextColor={COLORS.textMuted}
+                keyboardType="number-pad"
+                maxLength={10}
+              />
             </View>
-            {errors.phone ? <Text style={styles.fieldErrText}>{errors.phone}</Text> : null}
+            {errors.phone ? <Text style={styles.errText}>{errors.phone}</Text> : null}
           </View>
 
-          <View style={styles.termsBox}>
+          <IdentityVerificationCard
+            value={{
+              type: identityType,
+              number: identityNumber,
+              photoUri: identityPhotoUri,
+              label: identityLabel,
+            }}
+            onChange={(next) => {
+              setIdentityType(next.type);
+              setIdentityNumber(next.number);
+              setIdentityPhotoUri(next.photoUri);
+              setIdentityLabel(next.label ?? '');
+              setErrors((e) => ({
+                ...e,
+                identity: undefined,
+                identityPhoto: undefined,
+                identityLabel: undefined,
+              }));
+            }}
+            errors={{
+              identity: errors.identity,
+              identityPhoto: errors.identityPhoto,
+              identityLabel: errors.identityLabel,
+            }}
+            onPickPhoto={promptIdentityPhotoSource}
+            scrollRef={scrollRef}
+            scrollContentRef={scrollContentRef}
+            mode="optional"
+            disabled={saving || finishing}
+            style={styles.identityPanelSpacing}
+          />
+
+          <View style={styles.panel}>
+            <Text style={styles.panelOverline}>Agreement</Text>
             <TouchableOpacity
               style={styles.termsRow}
               onPress={() => setTermsAccepted((v) => !v)}
@@ -538,8 +608,8 @@ export default function CompleteProfile(): React.JSX.Element {
               accessibilityRole="checkbox"
               accessibilityState={{ checked: termsAccepted }}
             >
-              <View style={[styles.checkbox, styles.termsCheckbox, termsAccepted && styles.checkboxOn]}>
-                {termsAccepted ? <Ionicons name="checkmark" size={16} color={COLORS.white} /> : null}
+              <View style={[styles.checkbox, termsAccepted && styles.checkboxOn]}>
+                {termsAccepted ? <Ionicons name="checkmark" size={14} color={COLORS.white} /> : null}
               </View>
               <Text style={styles.termsText}>
                 I agree to the <Text style={styles.termsBold}>Terms and Privacy Policy</Text>
@@ -549,38 +619,130 @@ export default function CompleteProfile(): React.JSX.Element {
               onPress={() => navigation.navigate('LegalAgreement', { source: 'complete_profile' })}
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               accessibilityRole="link"
-              accessibilityLabel="Read full legal agreement"
+              accessibilityLabel="Read the Terms and Privacy Policy"
+              style={styles.termsLinkRow}
             >
-              <Text style={styles.termsLink}>Read full legal agreement (v{legalDisplayVersion})</Text>
+              <Text style={styles.termsLink}>Read the Terms and Privacy Policy</Text>
+              <Ionicons name="chevron-forward" size={14} color={COLORS.secondary} />
             </TouchableOpacity>
-            <View style={styles.infoRow}>
-              <Ionicons name="information-circle-outline" size={16} color={COLORS.secondary} style={styles.infoIcon} />
-              <Text style={styles.infoText}>
-                Used for ride verification, safety, and account notices—see Privacy Policy.
-              </Text>
+          </View>
+            </View>
+          </ScrollView>
+        </KeyboardAvoidingView>
+
+        {Platform.OS === 'android' && dobPickerOpen ? (
+          <DateTimePicker
+            value={dobPickerDate}
+            mode="date"
+            display="default"
+            minimumDate={dobMin}
+            maximumDate={dobMax}
+            onChange={onAndroidDobChange}
+          />
+        ) : null}
+
+        {Platform.OS === 'ios' ? (
+          <Modal visible={dobPickerOpen} animationType="slide" transparent onRequestClose={() => setDobPickerOpen(false)}>
+            <View style={styles.dobModalRoot}>
+              <Pressable style={styles.dobModalBackdrop} onPress={() => setDobPickerOpen(false)} />
+              <SafeAreaView edges={['bottom']} style={styles.dobModalSheet}>
+                <View style={styles.dobModalGrabberWrap} pointerEvents="none">
+                  <View style={styles.dobModalGrabber} />
+                </View>
+                <View style={styles.dobModalHeader}>
+                  <View style={styles.dobModalHeaderSide}>
+                    <TouchableOpacity onPress={() => setDobPickerOpen(false)} hitSlop={12}>
+                      <Text style={styles.dobModalCancel}>Cancel</Text>
+                    </TouchableOpacity>
+                  </View>
+                  <View style={styles.dobModalTitleBlock}>
+                    <Text style={styles.dobModalTitle}>Date of birth</Text>
+                  </View>
+                  <View style={[styles.dobModalHeaderSide, styles.dobModalHeaderSideEnd]}>
+                    <TouchableOpacity onPress={confirmIosDob} hitSlop={12}>
+                      <Text style={styles.dobModalDone}>Done</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+                <View style={styles.dobPickerWrap}>
+                  <DateTimePicker
+                    style={styles.dobPickerNative}
+                    value={dobPickerDate}
+                    mode="date"
+                    display="inline"
+                    minimumDate={dobMin}
+                    maximumDate={dobMax}
+                    onChange={(_, d) => {
+                      if (d) setDobPickerDate(clampDate(d, dobMin, dobMax));
+                    }}
+                    themeVariant="light"
+                  />
+                </View>
+              </SafeAreaView>
+            </View>
+          </Modal>
+        ) : null}
+
+        <Modal
+          visible={genderPickerOpen}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setGenderPickerOpen(false)}
+        >
+          <View style={styles.genderModalRoot}>
+            <Pressable style={styles.genderModalBackdrop} onPress={() => setGenderPickerOpen(false)} />
+            <View style={styles.genderModalSheet}>
+              <Text style={styles.genderModalTitle}>Gender</Text>
+              {GENDER_OPTIONS.map((opt) => (
+                <TouchableOpacity
+                  key={opt.value}
+                  style={styles.genderModalOption}
+                  onPress={() => {
+                    setGender(opt.value);
+                    setGenderPickerOpen(false);
+                    setErrors((e) => ({ ...e, gender: undefined }));
+                  }}
+                >
+                  <Text style={styles.genderModalOptionText}>{GENDER_DISPLAY[opt.value]}</Text>
+                  {gender === opt.value ? (
+                    <Ionicons name="checkmark" size={22} color={COLORS.primary} />
+                  ) : null}
+                </TouchableOpacity>
+              ))}
             </View>
           </View>
-        </ScrollView>
+        </Modal>
 
-        <View style={styles.footer}>
-          <View style={styles.footerDivider} />
+        <View
+          style={[
+            styles.footer,
+            {
+              paddingBottom: Math.max(insets.bottom, 12),
+              bottom: keyboardBottomInset,
+            },
+          ]}
+        >
           <TouchableOpacity
             style={[styles.continueBtn, !canContinue && styles.continueBtnDisabled]}
             onPress={() => void handleContinue()}
             disabled={!canContinue}
             activeOpacity={0.85}
           >
-            <Text style={[styles.continueBtnText, !canContinue && styles.continueBtnTextDisabled]}>
-              {finishing ? 'Thinking' : saving ? 'Saving…' : 'Continue'}
-            </Text>
+            {saving || finishing ? (
+              <ActivityIndicator color={COLORS.white} />
+            ) : (
+              <Text style={[styles.continueBtnText, !canContinue && styles.continueBtnTextDisabled]}>
+                Continue
+              </Text>
+            )}
           </TouchableOpacity>
         </View>
-      </KeyboardAvoidingView>
+      </View>
       {signingOut || finishing ? (
         <View style={styles.thinkingOverlay} pointerEvents="auto">
           <ActivityIndicator size="large" color={COLORS.primary} />
           <Text style={styles.thinkingLabel}>
-            {signingOut ? 'Shutting down' : 'Thinking'}
+            {signingOut ? 'Signing out' : 'Saving'}
           </Text>
         </View>
       ) : null}
@@ -596,97 +758,254 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
-  topBar: {
+  body: {
+    flex: 1,
+    position: 'relative',
+  },
+  kav: {
+    flex: 1,
+  },
+  header: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
     paddingHorizontal: 16,
     paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: COLORS.border,
+    backgroundColor: COLORS.surface,
+  },
+  headerTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: COLORS.text,
+    letterSpacing: -0.35,
   },
   signOutBtn: {
     paddingVertical: 6,
     paddingHorizontal: 4,
   },
   signOutBtnText: {
-    fontSize: 15,
-    fontWeight: '600',
+    fontSize: 14,
+    fontWeight: '700',
     color: COLORS.error,
   },
   signOutBtnTextDisabled: {
     opacity: 0.4,
   },
-  divider: {
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: COLORS.border,
-    marginHorizontal: 16,
-  },
   scroll: {
-    paddingHorizontal: 22,
-    paddingTop: 20,
-    paddingBottom: 24,
+    paddingHorizontal: 20,
   },
-  headline: {
-    fontSize: 24,
+  scrollInner: {
+    paddingTop: 16,
+  },
+  panel: {
+    backgroundColor: COLORS.surface,
+    borderRadius: 20,
+    paddingHorizontal: 18,
+    paddingVertical: 18,
+    marginBottom: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: COLORS.tabBarPillBorder,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#0f172a',
+        shadowOffset: { width: 0, height: 6 },
+        shadowOpacity: 0.06,
+        shadowRadius: 16,
+      },
+      android: { elevation: 2 },
+    }),
+  },
+  panelOverline: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: COLORS.textMuted,
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+    marginBottom: 12,
+  },
+  panelLead: {
+    fontSize: 15,
     fontWeight: '800',
     color: COLORS.text,
-    marginBottom: 8,
-  },
-  subheadline: {
-    fontSize: 15,
-    color: COLORS.textSecondary,
-    lineHeight: 22,
-    marginBottom: 28,
-  },
-  fieldBlock: {
-    marginBottom: 22,
-  },
-  fieldLabel: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: COLORS.text,
+    letterSpacing: -0.25,
     marginBottom: 10,
+  },
+  panelLeadSpaced: {
+    marginTop: 18,
   },
   asterisk: {
     color: COLORS.error,
-    fontWeight: '700',
+    fontWeight: '800',
   },
   textField: {
-    borderWidth: 1,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: COLORS.border,
     borderRadius: 14,
-    paddingVertical: 14,
     paddingHorizontal: 16,
-    fontSize: 16,
+    paddingVertical: Platform.OS === 'ios' ? 14 : 12,
+    fontSize: 15,
+    fontWeight: '600',
     color: COLORS.text,
-    backgroundColor: COLORS.background,
+    backgroundColor: COLORS.backgroundSecondary,
+    minHeight: 54,
   },
   dobRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderWidth: 1,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: COLORS.border,
     borderRadius: 14,
-    paddingVertical: 14,
     paddingHorizontal: 16,
-    backgroundColor: COLORS.background,
+    paddingVertical: Platform.OS === 'ios' ? 14 : 12,
+    backgroundColor: COLORS.backgroundSecondary,
+    minHeight: 54,
   },
-  dobIcon: {
-    marginRight: ROW_GAP_MD,
+  leadingIcon: {
+    marginRight: 10,
   },
   dobText: {
     flex: 1,
-    fontSize: 16,
+    fontSize: 15,
+    fontWeight: '600',
     color: COLORS.text,
   },
-  dobPlaceholder: {
+  placeholderText: {
     color: COLORS.textMuted,
+    fontWeight: '500',
+  },
+  dropdown: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: COLORS.border,
+    borderRadius: 14,
+    paddingHorizontal: 16,
+    paddingVertical: Platform.OS === 'ios' ? 14 : 12,
+    backgroundColor: COLORS.backgroundSecondary,
+    minHeight: 54,
+  },
+  dropdownText: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: '600',
+    color: COLORS.text,
   },
   fieldError: {
     borderColor: COLORS.error,
   },
-  fieldErrText: {
-    marginTop: 6,
+  errText: {
+    marginTop: 8,
     fontSize: 13,
+    fontWeight: '600',
     color: COLORS.error,
+  },
+  phoneWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: COLORS.border,
+    borderRadius: 14,
+    paddingHorizontal: 16,
+    backgroundColor: COLORS.backgroundSecondary,
+    minHeight: 54,
+  },
+  dial: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: COLORS.textSecondary,
+    marginRight: 8,
+  },
+  phoneInput: {
+    flex: 1,
+    fontSize: 16,
+    fontWeight: '600',
+    color: COLORS.text,
+    paddingVertical: Platform.OS === 'ios' ? 14 : 12,
+  },
+  identityPanelSpacing: {
+    marginBottom: 14,
+  },
+  termsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  checkbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: COLORS.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  checkboxOn: {
+    backgroundColor: COLORS.primary,
+    borderColor: COLORS.primary,
+  },
+  termsText: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLORS.text,
+    lineHeight: 20,
+  },
+  termsBold: {
+    fontWeight: '800',
+    color: COLORS.secondary,
+  },
+  termsLinkRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 10,
+    marginLeft: 34,
+    gap: 4,
+  },
+  termsLink: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: COLORS.secondary,
+  },
+  footer: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    paddingHorizontal: 20,
+    paddingTop: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: COLORS.border,
+    backgroundColor: COLORS.surface,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#0f172a',
+        shadowOffset: { width: 0, height: -4 },
+        shadowOpacity: 0.06,
+        shadowRadius: 12,
+      },
+      android: { elevation: 8 },
+    }),
+  },
+  continueBtn: {
+    backgroundColor: COLORS.primary,
+    borderRadius: 14,
+    paddingVertical: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 52,
+  },
+  continueBtnDisabled: {
+    opacity: 0.55,
+  },
+  continueBtnText: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: COLORS.white,
+    letterSpacing: -0.2,
+  },
+  continueBtnTextDisabled: {
+    color: COLORS.white,
   },
   dobModalRoot: {
     flex: 1,
@@ -736,14 +1055,8 @@ const styles = StyleSheet.create({
   },
   dobModalTitle: {
     fontSize: 17,
-    fontWeight: '700',
+    fontWeight: '800',
     color: COLORS.text,
-  },
-  dobModalSubtitle: {
-    marginTop: 2,
-    fontSize: 12,
-    fontWeight: '500',
-    color: COLORS.textMuted,
   },
   dobModalCancel: {
     fontSize: 16,
@@ -753,7 +1066,7 @@ const styles = StyleSheet.create({
   dobModalDone: {
     fontSize: 16,
     color: COLORS.primary,
-    fontWeight: '700',
+    fontWeight: '800',
   },
   dobPickerWrap: {
     paddingHorizontal: 8,
@@ -764,26 +1077,6 @@ const styles = StyleSheet.create({
   },
   dobPickerNative: {
     width: '100%',
-  },
-  genderDropdown: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    borderRadius: 14,
-    paddingVertical: 14,
-    paddingHorizontal: 16,
-    backgroundColor: COLORS.background,
-  },
-  genderDropdownText: {
-    flex: 1,
-    fontSize: 16,
-    fontWeight: '600',
-    color: COLORS.text,
-  },
-  genderDropdownPlaceholder: {
-    color: COLORS.textMuted,
-    fontWeight: '500',
   },
   genderModalRoot: {
     flex: 1,
@@ -804,7 +1097,7 @@ const styles = StyleSheet.create({
   },
   genderModalTitle: {
     fontSize: 13,
-    fontWeight: '700',
+    fontWeight: '800',
     color: COLORS.textMuted,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
@@ -823,134 +1116,8 @@ const styles = StyleSheet.create({
   },
   genderModalOptionText: {
     fontSize: 16,
-    color: COLORS.text,
     fontWeight: '600',
-  },
-  phoneRow: {
-    flexDirection: 'row',
-    alignItems: 'stretch',
-  },
-  phoneRowPrefix: {
-    marginRight: CELL_GAP,
-  },
-  dialFixed: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    borderRadius: 14,
-    paddingHorizontal: 14,
-    minWidth: 72,
-    backgroundColor: COLORS.backgroundSecondary,
-  },
-  dialFixedText: {
-    fontSize: 16,
-    fontWeight: '700',
     color: COLORS.text,
-  },
-  phoneInputWrap: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    borderRadius: 14,
-    paddingHorizontal: 12,
-    backgroundColor: COLORS.background,
-  },
-  phoneIcon: {
-    marginRight: 8,
-  },
-  phoneInput: {
-    flex: 1,
-    fontSize: 16,
-    color: COLORS.text,
-    paddingVertical: 14,
-  },
-  termsBox: {
-    backgroundColor: 'rgba(59, 130, 246, 0.08)',
-    borderRadius: 14,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(59, 130, 246, 0.2)',
-  },
-  termsRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-  },
-  termsCheckbox: {
-    marginRight: ROW_GAP_MD,
-  },
-  checkbox: {
-    width: 22,
-    height: 22,
-    borderRadius: 6,
-    borderWidth: 2,
-    borderColor: COLORS.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 2,
-  },
-  checkboxOn: {
-    backgroundColor: COLORS.primary,
-    borderColor: COLORS.primary,
-  },
-  termsText: {
-    flex: 1,
-    fontSize: 15,
-    color: COLORS.text,
-    lineHeight: 22,
-  },
-  termsBold: {
-    fontWeight: '800',
-    color: COLORS.secondary,
-  },
-  termsLink: {
-    marginTop: 8,
-    marginLeft: 34,
-    fontSize: 13,
-    fontWeight: '700',
-    color: COLORS.secondary,
-  },
-  infoRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    marginTop: 12,
-  },
-  infoIcon: {
-    marginRight: ROW_GAP_SM,
-  },
-  infoText: {
-    flex: 1,
-    fontSize: 13,
-    color: COLORS.textSecondary,
-    lineHeight: 18,
-  },
-  footer: {
-    paddingHorizontal: 22,
-    paddingBottom: 8,
-  },
-  footerDivider: {
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: COLORS.border,
-    marginBottom: 14,
-  },
-  continueBtn: {
-    backgroundColor: COLORS.primary,
-    borderRadius: 14,
-    paddingVertical: 16,
-    alignItems: 'center',
-  },
-  continueBtnDisabled: {
-    backgroundColor: COLORS.borderLight,
-  },
-  continueBtnText: {
-    fontSize: 17,
-    fontWeight: '700',
-    color: COLORS.white,
-  },
-  continueBtnTextDisabled: {
-    color: COLORS.textMuted,
   },
   thinkingOverlay: {
     ...StyleSheet.absoluteFillObject,
@@ -961,7 +1128,7 @@ const styles = StyleSheet.create({
   thinkingLabel: {
     marginTop: 12,
     color: COLORS.textSecondary,
-    fontWeight: '600',
-    fontSize: 16,
+    fontWeight: '700',
+    fontSize: 15,
   },
 });

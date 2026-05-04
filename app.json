@@ -3,7 +3,7 @@
     "name": "EcoPickO",
     "slug": "ecopicko",
     "scheme": "ecopicko",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "orientation": "portrait",
     "icon": "./assets/app-logo.png",
     "userInterfaceStyle": "light",
@@ -44,6 +44,7 @@
       "supportsTablet": true
     },
     "android": {
+      "package": "com.drivido.ecopicko",
       "softwareKeyboardLayoutMode": "resize",
       "statusBar": {
         "backgroundColor": "#ffffff",
@@ -56,6 +57,11 @@
     },
     "web": {
       "favicon": "./assets/app-logo.png"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "47b64d6c-4e4a-45e9-8b00-176cacad828c"
+      }
     }
   }
 }

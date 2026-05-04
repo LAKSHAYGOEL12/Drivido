@@ -9,6 +9,7 @@ import AccountSecurityScreen from '../screens/main/AccountSecurityScreen';
 import TripsScreen from '../screens/main/TripsScreen';
 import RatingsScreen from '../screens/main/RatingsScreen';
 import UserProfileEntry from '../screens/main/UserProfileEntry';
+import VerifyIdentityScreen from '../screens/main/VerifyIdentityScreen';
 
 const Stack = createNativeStackNavigator<ProfileStackParamList>();
 
@@ -36,6 +37,7 @@ export default function ProfileStack(): React.JSX.Element {
       />
       <Stack.Screen name="Trips" component={TripsScreen} />
       <Stack.Screen name="Ratings" component={RatingsScreen} />
+      <Stack.Screen name="VerifyIdentity" component={VerifyIdentityScreen} />
     </Stack.Navigator>
   );
 }

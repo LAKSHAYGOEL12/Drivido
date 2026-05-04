@@ -43,8 +43,8 @@ import { showToast } from '../../utils/toast';
 const SCROLL_PADDING_ABOVE_FOOTER = 120;
 
 /** Approx. Y offset from vehicle card top to plate/color row (scroll target). */
-const CARD_OFFSET_PLATE_COLOR = 168;
-const CARD_OFFSET_MODEL = 48;
+const CARD_OFFSET_PLATE_COLOR = 184;
+const CARD_OFFSET_MODEL = 52;
 /** Keep focused field this many px below the top of the visible scroll area. */
 const FOCUS_SCROLL_TOP_MARGIN = 96;
 const OCCUPATION_OPTIONS = [
@@ -416,7 +416,6 @@ export default function EditProfileScreen(): React.JSX.Element {
             <View style={styles.panel}>
               <Text style={styles.panelOverline}>Profile</Text>
               <Text style={styles.panelLead}>About you</Text>
-              <Text style={styles.fieldHelp}>Optional — shown on your public profile.</Text>
               <TextInput
                 style={styles.bioInput}
                 value={profileBio}
@@ -435,7 +434,6 @@ export default function EditProfileScreen(): React.JSX.Element {
               {bioError ? <Text style={styles.errorText}>{bioError}</Text> : null}
 
               <Text style={[styles.panelLead, styles.panelLeadSpaced]}>Occupation</Text>
-              <Text style={styles.fieldHelp}>Optional — visible to other members.</Text>
               <View style={styles.occupationChipWrap}>
                 {OCCUPATION_OPTIONS.map((opt) => {
                   const active = occupation.trim().toLowerCase() === opt.toLowerCase();
@@ -460,7 +458,7 @@ export default function EditProfileScreen(): React.JSX.Element {
                 })}
               </View>
               <TextInput
-                style={styles.fieldInput}
+                style={styles.occupationInput}
                 value={occupation}
                 onChangeText={setOccupation}
                 onFocus={() => {
@@ -476,7 +474,6 @@ export default function EditProfileScreen(): React.JSX.Element {
               <Text style={styles.charCount}>{occupation.length}/80</Text>
 
               <Text style={[styles.panelLead, styles.panelLeadSpaced]}>Ride preferences</Text>
-              <Text style={styles.fieldHelp}>Optional tags on your profile.</Text>
               <View style={styles.prefChipWrap}>
                 {RIDE_PREFERENCE_OPTIONS.map((o) => {
                   const on = ridePrefs.includes(o.id);
@@ -504,9 +501,6 @@ export default function EditProfileScreen(): React.JSX.Element {
 
             <View style={styles.panel}>
               <Text style={styles.panelOverline}>Vehicles</Text>
-              <Text style={styles.fieldHelpTight}>
-                Used when you publish rides. You can add up to two.
-              </Text>
               {rows.map((r, index) => (
                 <View
                   key={r.key}
@@ -582,7 +576,6 @@ export default function EditProfileScreen(): React.JSX.Element {
             <View style={[styles.panel, styles.panelLast]}>
               <Text style={styles.panelOverline}>Account</Text>
               <Text style={styles.panelLead}>Phone</Text>
-              <Text style={styles.fieldHelp}>For booking updates and verification.</Text>
               <View style={styles.inputWrap}>
                 <Text style={styles.dial}>+91</Text>
                 <TextInput
@@ -727,37 +720,35 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: COLORS.text,
     letterSpacing: -0.25,
-    marginBottom: 4,
+    marginBottom: 10,
   },
   panelLeadSpaced: {
     marginTop: 18,
-  },
-  fieldHelp: {
-    fontSize: 13,
-    fontWeight: '500',
-    color: COLORS.textSecondary,
-    marginBottom: 10,
-    lineHeight: 19,
-  },
-  fieldHelpTight: {
-    fontSize: 13,
-    fontWeight: '500',
-    color: COLORS.textSecondary,
-    marginBottom: 14,
-    lineHeight: 19,
   },
   bioInput: {
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: COLORS.border,
     borderRadius: 14,
-    paddingHorizontal: 14,
-    paddingVertical: Platform.OS === 'ios' ? 12 : 10,
+    paddingHorizontal: 16,
+    paddingVertical: Platform.OS === 'ios' ? 14 : 12,
     fontSize: 15,
     lineHeight: 22,
     color: COLORS.text,
     backgroundColor: COLORS.backgroundSecondary,
-    minHeight: 96,
-    maxHeight: 168,
+    minHeight: 112,
+    maxHeight: 200,
+  },
+  occupationInput: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: COLORS.border,
+    borderRadius: 14,
+    paddingHorizontal: 16,
+    paddingVertical: Platform.OS === 'ios' ? 14 : 12,
+    fontSize: 15,
+    fontWeight: '600',
+    color: COLORS.text,
+    backgroundColor: COLORS.backgroundSecondary,
+    minHeight: 54,
   },
   charCount: {
     fontSize: 11,
@@ -835,8 +826,8 @@ const styles = StyleSheet.create({
     borderColor: COLORS.border,
     borderRadius: 14,
     backgroundColor: COLORS.backgroundSecondary,
-    paddingHorizontal: 14,
-    minHeight: 50,
+    paddingHorizontal: 16,
+    minHeight: 54,
   },
   dial: {
     fontSize: 15,
@@ -849,7 +840,7 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: COLORS.text,
-    paddingVertical: Platform.OS === 'ios' ? 12 : 10,
+    paddingVertical: Platform.OS === 'ios' ? 14 : 12,
   },
   errorText: {
     fontSize: 13,
@@ -933,13 +924,13 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: COLORS.border,
     borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: Platform.OS === 'ios' ? 11 : 9,
+    paddingHorizontal: 14,
+    paddingVertical: Platform.OS === 'ios' ? 13 : 11,
     fontSize: 15,
     fontWeight: '600',
     color: COLORS.text,
     backgroundColor: COLORS.surface,
-    minHeight: 44,
+    minHeight: 50,
   },
   saveFooter: {
     position: 'absolute',

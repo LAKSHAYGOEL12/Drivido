@@ -21,7 +21,7 @@ import {
   ScrollView,
   BackHandler,
 } from 'react-native';
-import NetInfo from '@react-native-community/netinfo';
+import { useNetworkStatus } from '../../contexts/NetworkContext';
 import { Alert } from '../../utils/themedAlert';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { SharedLocationPickerParams } from '../../navigation/types';
@@ -408,18 +408,12 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
     }, [publishFabExitTab, dismissPublishLocationPicker])
   );
 
-  const [netOnline, setNetOnline] = useState<boolean | null>(null);
-  const offline = netOnline === false;
-
-  useEffect(() => {
-    const unsub = NetInfo.addEventListener((s) => {
-      setNetOnline(s.isConnected === true && s.isInternetReachable !== false);
-    });
-    void NetInfo.fetch().then((s) => {
-      setNetOnline(s.isConnected === true && s.isInternetReachable !== false);
-    });
-    return () => unsub();
-  }, []);
+  /**
+   * Reactive offline flag from the centralized {@link useNetworkStatus} provider — only
+   * `true` after the provider's backend probe has confirmed unreachability, so transient
+   * NetInfo blips no longer block "Use current location".
+   */
+  const { isOffline: offline } = useNetworkStatus();
 
   const bumpSkipPublishGeocode = useCallback((ms = PUBLISH_SKIP_GEOCODE_AFTER_ANIM_MS) => {
     skipPublishGeocodeUntilRef.current = Date.now() + ms;
@@ -833,7 +827,7 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
   );
 
   const handleUseCurrentLocation = useCallback(async () => {
-    if (netOnline === false) {
+    if (offline) {
       showToast({ title: OFFLINE_HEADLINE, message: OFFLINE_SUBTITLE_RETRY, variant: 'info' });
       return;
     }
@@ -954,7 +948,7 @@ export default function LocationPickerScreen({ navigation, route }: Props): Reac
     focusPublishMapOnCoords,
     placeFieldType,
     recentUserKey,
-    netOnline,
+    offline,
   ]);
 
   const handleDone = () => {

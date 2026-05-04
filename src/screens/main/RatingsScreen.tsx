@@ -12,6 +12,8 @@ import { getUserRatingsSummary, type UserRatingReview } from '../../services/rat
 import type { ProfileStackParamList } from '../../navigation/types';
 import { calculateAge } from '../../utils/calculateAge';
 import { DEACTIVATED_ACCOUNT_LABEL } from '../../utils/deactivatedAccount';
+import { userIsIdentityVerified } from '../../utils/identityVerified';
+import { useIdentityVerifiedCached } from '../../utils/identityVerifiedCache';
 
 export default function RatingsScreen(): React.JSX.Element {
   const navigation = useNavigation<NativeStackNavigationProp<ProfileStackParamList>>();
@@ -28,6 +30,18 @@ export default function RatingsScreen(): React.JSX.Element {
   const [recentReviews, setRecentReviews] = useState<UserRatingReview[]>([]);
   const [loading, setLoading] = useState(true);
   const [subjectDeactivated, setSubjectDeactivated] = useState(false);
+  /**
+   * Backend SSOT verified ✓ for the rated user (peer profile).
+   * Sourced from `getUserRatingsSummary(...).subjectIdentityVerified === true`.
+   */
+  const [subjectVerifiedFromApi, setSubjectVerifiedFromApi] = useState(false);
+  /**
+   * Resilience fallback: any other screen that already learned the subject is
+   * verified (chat thread, ride card probe, prior ratings load) seeds the
+   * shared cache. We OR with it so the ✓ shows even before our local
+   * `getUserRatingsSummary` call resolves.
+   */
+  const subjectVerifiedFromCache = useIdentityVerifiedCached(targetUserId);
   const ratingsFetchSeqRef = useRef(0);
 
   const displayName =
@@ -64,6 +78,7 @@ export default function RatingsScreen(): React.JSX.Element {
           setTotalRatings(summary.totalRatings);
           setRecentReviews(summary.reviews);
           setSubjectAvatarUrl(summary.subjectAvatarUrl);
+          setSubjectVerifiedFromApi(summary.subjectIdentityVerified === true);
         } catch {
           if (cancelled || runId !== ratingsFetchSeqRef.current) return;
           setSubjectDeactivated(false);
@@ -71,6 +86,7 @@ export default function RatingsScreen(): React.JSX.Element {
           setTotalRatings(0);
           setRecentReviews([]);
           setSubjectAvatarUrl(undefined);
+          setSubjectVerifiedFromApi(false);
         } finally {
           if (!cancelled && runId === ratingsFetchSeqRef.current) setLoading(false);
         }
@@ -221,6 +237,13 @@ export default function RatingsScreen(): React.JSX.Element {
               size={34}
               backgroundColor="#dbeafe"
               fallbackTextColor="#1e40af"
+              verified={
+                subjectDeactivated && !isViewingSelf
+                  ? false
+                  : isViewingSelf
+                    ? userIsIdentityVerified(user)
+                    : subjectVerifiedFromApi || subjectVerifiedFromCache
+              }
             />
             {targetAge !== null ? (
               <View style={styles.topAgeBadge}>
@@ -322,6 +345,7 @@ export default function RatingsScreen(): React.JSX.Element {
                       name={review.fromUserName || review.fromUserId || 'User'}
                       size={36}
                       backgroundColor="#e2e8f0"
+                      verified={review.fromUserIdentityVerified === true}
                     />
                   </View>
                   <View style={styles.reviewNameWrap}>
@@ -413,15 +437,21 @@ const styles = StyleSheet.create({
     width: 34,
     height: 34,
     borderRadius: 17,
-    overflow: 'hidden',
+    /**
+     * No `overflow: 'hidden'` — the inner image is already clipped to a
+     * circle by `UserAvatar`'s own `clip` view. Clipping here would chop
+     * off the verified ✓ badge that bleeds slightly past the circle.
+     */
     alignItems: 'center',
     justifyContent: 'center',
     position: 'relative',
   },
   topAgeBadge: {
     position: 'absolute',
+    // Anchored to the top-right so it cannot collide with the verified ✓ badge
+    // that UserAvatar paints in the bottom-right corner (right/bottom: -2).
     right: -6,
-    bottom: -6,
+    top: -6,
     paddingVertical: 2,
     paddingHorizontal: 4,
     borderRadius: 8,
@@ -575,7 +605,10 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 18,
-    overflow: 'hidden',
+    /**
+     * Intentionally no `overflow: 'hidden'` — `UserAvatar` internally clips
+     * the image, and clipping here would chop the verified ✓ badge off.
+     */
     alignItems: 'center',
     justifyContent: 'center',
   },

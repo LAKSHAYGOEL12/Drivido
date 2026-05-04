@@ -22,7 +22,9 @@ import { AppAlertProvider } from './src/contexts/AppAlertProvider';
 import { ToastProvider } from './src/contexts/ToastContext';
 import { LocationProvider } from './src/contexts/LocationContext';
 import { InboxProvider } from './src/contexts/InboxContext';
+import { PromotionCampaignsProvider } from './src/contexts/PromotionCampaignsContext';
 import { OwnerPendingRequestsProvider } from './src/contexts/OwnerPendingRequestsContext';
+import { NetworkProvider } from './src/contexts/NetworkContext';
 import RootNavigator from './src/navigation/RootNavigator';
 import { COLORS } from './src/constants/colors';
 import { applyGlobalRobotoFont } from './src/constants/typography';
@@ -129,24 +131,28 @@ export default function App(): React.JSX.Element | null {
       {appCoreReady ? (
         <SafeAreaProvider style={styles.appRoot}>
           <AppErrorBoundary>
-            <AuthProvider>
-              <NotificationPreferencesProvider>
-                <ThemeProvider>
-                  <AppAlertProvider>
-                    <ToastProvider>
-                      <ThemedStatusBar />
-                      <LocationProvider>
-                        <OwnerPendingRequestsProvider>
-                          <InboxProvider>
-                            <RootNavigator />
-                          </InboxProvider>
-                        </OwnerPendingRequestsProvider>
-                      </LocationProvider>
-                    </ToastProvider>
-                  </AppAlertProvider>
-                </ThemeProvider>
-              </NotificationPreferencesProvider>
-            </AuthProvider>
+            <NetworkProvider>
+              <AuthProvider>
+                <NotificationPreferencesProvider>
+                  <ThemeProvider>
+                    <AppAlertProvider>
+                      <ToastProvider>
+                        <ThemedStatusBar />
+                        <LocationProvider>
+                          <OwnerPendingRequestsProvider>
+                            <InboxProvider>
+                              <PromotionCampaignsProvider>
+                                <RootNavigator />
+                              </PromotionCampaignsProvider>
+                            </InboxProvider>
+                          </OwnerPendingRequestsProvider>
+                        </LocationProvider>
+                      </ToastProvider>
+                    </AppAlertProvider>
+                  </ThemeProvider>
+                </NotificationPreferencesProvider>
+              </AuthProvider>
+            </NetworkProvider>
           </AppErrorBoundary>
         </SafeAreaProvider>
       ) : null}

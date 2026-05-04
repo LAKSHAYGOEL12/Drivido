@@ -11,6 +11,10 @@ function userUpdatePath(): string {
 /**
  * PATCH `/api/user/update` — extend if backend adds fields.
  * Sends camelCase; many backends also accept snake_case.
+ *
+ * Identity verification (document type, number, photo) is NOT sent here —
+ * it has its own dedicated multipart endpoint (`POST /user/identity-document`)
+ * that handles secure storage and the manual admin review flow.
  */
 export async function updateUserProfileFields(body: {
   dateOfBirth: string;

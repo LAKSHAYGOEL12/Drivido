@@ -23,6 +23,7 @@ import api from '../../services/api';
 import { API } from '../../constants/API';
 import { getUserRatingsSummary } from '../../services/ratings';
 import UserAvatar from '../../components/common/UserAvatar';
+import { bookingPassengerIsIdentityVerified } from '../../utils/identityVerified';
 import { BookingHistoryTimeline } from '../../components/common/BookingHistoryTimeline';
 import { calculateAge } from '../../utils/calculateAge';
 import { buildBookingHistoryTimelineItems } from '../../utils/bookingHistoryDisplay';
@@ -174,6 +175,9 @@ export default function BookPassengerDetailScreen(): React.JSX.Element {
       otherUserName: passengerName || 'Passenger',
       otherUserId: passengerId,
       ...(passengerAvatarUrl ? { otherUserAvatarUrl: passengerAvatarUrl } : {}),
+      ...(bookingPassengerIsIdentityVerified(booking)
+        ? { otherUserIdentityVerified: true }
+        : {}),
     });
   };
 
@@ -296,6 +300,7 @@ export default function BookPassengerDetailScreen(): React.JSX.Element {
                     size={80}
                     backgroundColor={COLORS.primary}
                     fallbackTextColor={COLORS.white}
+                    verified={bookingPassengerIsIdentityVerified(booking)}
                   />
                 </View>
                 {passengerAge !== null ? (
@@ -375,6 +380,7 @@ export default function BookPassengerDetailScreen(): React.JSX.Element {
               size={72}
               backgroundColor={COLORS.primary}
               fallbackTextColor={COLORS.white}
+              verified={bookingPassengerIsIdentityVerified(booking)}
             />
             {passengerAge !== null ? (
               <View style={styles.ageBadge}>
@@ -918,8 +924,10 @@ const styles = StyleSheet.create({
   },
   ageBadge: {
     position: 'absolute',
-    right: -22,
-    bottom: 4,
+    // Pinned to the top-right so it never collides with the verified ✓ badge
+    // that UserAvatar paints in the bottom-right corner (right/bottom: -2).
+    right: -10,
+    top: -4,
     paddingVertical: 4,
     paddingHorizontal: 8,
     borderRadius: 12,

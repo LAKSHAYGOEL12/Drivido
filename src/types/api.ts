@@ -37,6 +37,9 @@ export interface LoginResponse {
     avatarUrl?: string | null;
     avatar_url?: string | null;
     verified?: boolean;
+    /** Backend SSOT — true only after admin manually verifies the identity document. */
+    isIdentityVerified?: boolean;
+    is_identity_verified?: boolean;
   };
   token: string;
   refreshToken?: string;
@@ -64,6 +67,9 @@ export interface RegisterResponse {
     avatarUrl?: string | null;
     avatar_url?: string | null;
     avatarUri?: string | null;
+    /** Backend SSOT — true only after admin manually verifies the identity document. */
+    isIdentityVerified?: boolean;
+    is_identity_verified?: boolean;
   };
   token: string;
 }
@@ -271,6 +277,9 @@ export interface RideListItem {
   publisherAvatarUrl?: string;
   /** Publisher/driver date of birth when API provides it. */
   publisherDateOfBirth?: string;
+  /** Backend SSOT — driver \u2713 badge. Render only when explicitly true. */
+  publisherIdentityVerified?: boolean;
+  publisher_identity_verified?: boolean;
   /** Driver preference tags copied from profile for ride detail/list display. */
   publisherRidePreferences?: string[];
   publisher_ride_preferences?: string[];
@@ -382,6 +391,9 @@ export interface RideListItem {
     /** Passenger phone when API includes it for ride owner (see `pickPassengerPhoneFromBooking`). */
     phone?: string;
     passengerPhone?: string;
+    /** Backend SSOT — show \u2713 only when explicitly true (set by admin after manual review). */
+    isIdentityVerified?: boolean;
+    is_identity_verified?: boolean;
     /**
      * Optional timeline for this passenger (partial seat cancels, etc.) when backend
      * keeps one active booking row but still returns past seat snapshots.
@@ -484,6 +496,9 @@ export interface RideDetailResponse {
     ratingCount?: number;
     phone?: string;
     passengerPhone?: string;
+    /** Backend SSOT — show \u2713 only when explicitly true. */
+    isIdentityVerified?: boolean;
+    is_identity_verified?: boolean;
   }>;
 }
 
@@ -531,6 +546,14 @@ export interface ChatConversationResponse {
   other_user_account_active?: boolean;
   /** When backend includes peer profile image for inbox / chat headers. */
   otherUserAvatarUrl?: string;
+  /**
+   * Backend SSOT — `true` when peer's user record has
+   * `isIdentityVerified === true`. Drives the verified ✓ badge on inbox /
+   * chat header avatars. Backend should serialize both camelCase and
+   * snake_case for older clients.
+   */
+  otherUserIdentityVerified?: boolean;
+  other_user_identity_verified?: boolean;
   lastMessage: string;
   lastMessageAt: number;
   lastMessageSenderId: string;

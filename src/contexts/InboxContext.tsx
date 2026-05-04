@@ -42,6 +42,7 @@ import {
   DEACTIVATED_ACCOUNT_LABEL,
   ridePeerDeactivated,
 } from '../utils/deactivatedAccount';
+import { setUserIdentityVerified } from '../utils/identityVerifiedCache';
 
 export type InboxMessageStatus = ChatDeliveryStatus;
 
@@ -62,6 +63,13 @@ export interface InboxConversation {
   /** True when peer is deactivated — pass into Chat for header + send guard. */
   otherUserDeactivated?: boolean;
   otherUserAvatarUrl?: string;
+  /**
+   * Backend SSOT — `true` when peer's user record has
+   * `isIdentityVerified === true`. Drives the verified ✓ badge on the inbox
+   * row and chat header avatar. Always reset to `false` when peer is
+   * deactivated.
+   */
+  otherUserIdentityVerified?: boolean;
   lastMessage: string;
   lastMessageAt: number;
   messageStatus: InboxMessageStatus;
@@ -324,6 +332,10 @@ function buildConversationsForUser(
       otherUserId: otherId || undefined,
       otherUserDeactivated: peerDeactivated,
       otherUserAvatarUrl: peerDeactivated ? undefined : t.otherUserAvatarUrl,
+      // Hide verified badge for deactivated peers (we already mask their identity).
+      otherUserIdentityVerified: peerDeactivated
+        ? false
+        : t.otherUserIdentityVerified === true,
       lastMessage: t.lastMessage ?? '',
       lastMessageAt: t.lastMessageAt ?? 0,
       messageStatus: isLastMessageFromMe ? lastStatus : 'sent',
@@ -385,6 +397,21 @@ function mergeServerConversationsIntoThreads(
       typeof rawUnread === 'number' && !Number.isNaN(rawUnread)
         ? Math.max(0, Math.floor(rawUnread))
         : (existing?.unreadFor?.[currentUserId] ?? 0);
+    /**
+     * Read peer verified flag from any of the backend aliases. Reset to
+     * undefined when peer is deactivated so the badge never renders.
+     */
+    const serverPeerVerified =
+      !peerDeactivated &&
+      (c.otherUserIdentityVerified === true || c.other_user_identity_verified === true);
+    if (serverPeerVerified) {
+      // Backend told us this peer is verified — share the fact via the cache so
+      // their avatar shows the ✓ everywhere we render them next (ride cards in
+      // search/All rides, ratings rows) without waiting on those endpoints to
+      // also project the flag.
+      const peerId = participantIds.find((pid) => pid && pid !== currentUserId);
+      if (peerId) setUserIdentityVerified(peerId, true);
+    }
     next[key] = {
       ride: { ...c.ride, id: rid },
       participantIds: existing?.participantIds ?? participantIds,
@@ -393,6 +420,9 @@ function mergeServerConversationsIntoThreads(
         (typeof avatarFromServer === 'string' && avatarFromServer.trim()
           ? avatarFromServer.trim()
           : undefined) ?? existing?.otherUserAvatarUrl,
+      otherUserIdentityVerified: peerDeactivated
+        ? false
+        : serverPeerVerified || existing?.otherUserIdentityVerified === true,
       lastMessage: c.lastMessage ?? existing?.lastMessage ?? '',
       lastMessageAt: c.lastMessageAt ?? existing?.lastMessageAt ?? 0,
       lastMessageSenderId: c.lastMessageSenderId ?? existing?.lastMessageSenderId ?? '',

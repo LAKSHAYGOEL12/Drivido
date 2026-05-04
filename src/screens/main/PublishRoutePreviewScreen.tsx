@@ -1,5 +1,5 @@
 import React, { useCallback, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, BackHandler, Dimensions, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, BackHandler, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { CommonActions, StackActions, useFocusEffect, useNavigation, useRoute } from '@react-navigation/native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -420,7 +420,7 @@ export default function PublishRoutePreviewScreen(): React.JSX.Element {
             contentContainerStyle={[
               styles.routeScrollContent,
               {
-                paddingBottom: (mapReturnMode ? 12 : 72) + Math.max(insets.bottom, 12),
+                paddingBottom: (mapReturnMode ? 8 : 64) + Math.max(insets.bottom, 8),
               },
             ]}
             keyboardShouldPersistTaps="handled"
@@ -504,11 +504,17 @@ export default function PublishRoutePreviewScreen(): React.JSX.Element {
   );
 }
 
+/**
+ * Layout is pure flex now (no module-level Dimensions snapshot) so Fast Refresh
+ * never holds a stale height. Map gets ~80% of the available area (flex: 4) and
+ * the sheet is a compact, scrollable route chooser bounded by minHeight/maxHeight.
+ */
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.backgroundSecondary },
   mapArea: {
+    flex: 4,
     width: '100%',
-    height: Math.min(520, Dimensions.get('window').height * 0.66),
+    minHeight: 360,
     backgroundColor: COLORS.background,
   },
   map: { flex: 1 },
@@ -532,20 +538,22 @@ const styles = StyleSheet.create({
   },
   sheet: {
     flex: 1,
-    marginTop: -6,
+    minHeight: 180,
+    maxHeight: 260,
+    marginTop: -10,
     backgroundColor: COLORS.background,
     borderTopLeftRadius: 22,
     borderTopRightRadius: 22,
     paddingHorizontal: 18,
-    paddingTop: 16,
-    paddingBottom: 22,
+    paddingTop: 12,
+    paddingBottom: 18,
   },
   sheetTitle: {
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: '800',
     color: COLORS.text,
-    marginBottom: 14,
-    lineHeight: 26,
+    marginBottom: 10,
+    lineHeight: 24,
   },
   loadingRow: {
     flexDirection: 'row',
@@ -560,7 +568,7 @@ const styles = StyleSheet.create({
   routeOption: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 10,
+    paddingVertical: 8,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: COLORS.borderLight,
     gap: 10,
@@ -584,7 +592,7 @@ const styles = StyleSheet.create({
     minHeight: 0,
   },
   routeScrollContent: {
-    flexGrow: 1,
+    paddingBottom: 4,
   },
   nextFab: {
     position: 'absolute',

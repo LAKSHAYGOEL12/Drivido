@@ -83,6 +83,17 @@ export function applyCanonicalRideApiFields(input: Record<string, unknown>): Rec
   else delete out.publisherAccountActive;
   delete out.publisher_account_active;
 
+  /**
+   * Backend SSOT for the verified \u2713 badge on driver avatar (ride list + detail).
+   * Backend may send camel- or snake-case; we coerce to a strict boolean and only keep `true`.
+   * Anything else (undefined / 'false' / null) leaves the key absent so render sites can
+   * safely use `=== true` checks.
+   */
+  const piv = out.publisherIdentityVerified ?? out.publisher_identity_verified;
+  if (piv === true || piv === 'true') out.publisherIdentityVerified = true;
+  else delete out.publisherIdentityVerified;
+  delete out.publisher_identity_verified;
+
   const vehicleModel = trimStr(out.vehicleModel) || trimStr(out.vehicle_model);
   if (vehicleModel) out.vehicleModel = vehicleModel;
   else delete out.vehicleModel;

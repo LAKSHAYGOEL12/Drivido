@@ -10,6 +10,11 @@ import {
 } from 'react-native';
 import { Alert } from '../../utils/themedAlert';
 import UserAvatar from '../../components/common/UserAvatar';
+import {
+  userIsIdentityVerified,
+  viewerIdentityVerificationState,
+} from '../../utils/identityVerified';
+import IdentityVerificationStatus from '../../components/common/IdentityVerificationStatus';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
@@ -34,6 +39,7 @@ import { pickPublisherPhoneFromRide } from '../../utils/rideDisplay';
 import { DEACTIVATED_ACCOUNT_LABEL } from '../../utils/deactivatedAccount';
 import RidePreferenceChips from '../../components/profile/RidePreferenceChips';
 import { normalizeRidePreferenceIds } from '../../constants/ridePreferences';
+import { useIdentityVerifiedCached } from '../../utils/identityVerifiedCache';
 
 type OwnerProfileRoute =
   | RouteProp<TypesRidesStackParamList, 'OwnerProfileModal'>
@@ -57,6 +63,7 @@ export default function OwnerProfileModal(): React.JSX.Element {
   const hidePublisherPhone = route.params?.hidePublisherPhone === true;
   const targetAge = paramDateOfBirth ? calculateAge(paramDateOfBirth) : null;
   const isSelf = Boolean(user?.id?.trim() && targetUserId === user.id.trim());
+  const subjectVerifiedFromCache = useIdentityVerifiedCached(targetUserId);
   /** No session: ratings are loaded via GET /ratings/:userId when this screen opens (see backend notes below). */
   const isGuest = !(user?.id ?? '').trim();
   const headerPhotoUri = peerDeactivated
@@ -121,6 +128,13 @@ export default function OwnerProfileModal(): React.JSX.Element {
   const [subjectBioFromApi, setSubjectBioFromApi] = useState('');
   const [subjectOccupationFromApi, setSubjectOccupationFromApi] = useState('');
   const [subjectRidePrefsFromApi, setSubjectRidePrefsFromApi] = useState<string[]>([]);
+  /**
+   * Backend SSOT \u2713 badge for the viewed peer (non-self). Only `true` from
+   * `getUserRatingsSummary` (read from the public-user payload) sets this; we never
+   * derive it from any other state. Cleared on every fetch so a stale `true` from a
+   * previous subject can't bleed onto a new profile.
+   */
+  const [subjectVerifiedFromApi, setSubjectVerifiedFromApi] = useState(false);
 
   useFocusEffect(
     useCallback(() => {
@@ -138,6 +152,7 @@ export default function OwnerProfileModal(): React.JSX.Element {
         setSubjectBioFromApi('');
         setSubjectOccupationFromApi('');
         setSubjectRidePrefsFromApi([]);
+        setSubjectVerifiedFromApi(false);
         return () => {};
       }
 
@@ -146,6 +161,7 @@ export default function OwnerProfileModal(): React.JSX.Element {
       setContactPhoneFromApi('');
       setSubjectBioFromApi('');
       setSubjectOccupationFromApi('');
+      setSubjectVerifiedFromApi(false);
       setLoading(true);
       setSinceLabel(formatMemberSinceLabel(isSelf ? user?.createdAt : undefined));
       setTripsLoading(true);
@@ -220,12 +236,14 @@ export default function OwnerProfileModal(): React.JSX.Element {
             setSubjectBioFromApi('');
             setSubjectOccupationFromApi('');
             setSubjectRidePrefsFromApi([]);
+            setSubjectVerifiedFromApi(false);
           } else {
             setSubjectBioFromApi((summary.subjectBio ?? '').trim());
             setSubjectOccupationFromApi((summary.subjectOccupation ?? '').trim());
             setSubjectRidePrefsFromApi(
               normalizeRidePreferenceIds(summary.subjectRidePreferences ?? [])
             );
+            setSubjectVerifiedFromApi(summary.subjectIdentityVerified === true);
           }
         } catch {
           if (cancelled || runId !== ratingsFetchSeqRef.current) return;
@@ -233,6 +251,7 @@ export default function OwnerProfileModal(): React.JSX.Element {
           setSubjectBioFromApi('');
           setSubjectOccupationFromApi('');
           setSubjectRidePrefsFromApi([]);
+          setSubjectVerifiedFromApi(false);
           if (!hadEmbeddedFromRide) {
             setAvgRating(0);
             setTotalRatings(0);
@@ -352,7 +371,22 @@ export default function OwnerProfileModal(): React.JSX.Element {
           </View>
 
           <View style={styles.avatarWrap}>
-            <UserAvatar uri={headerPhotoUri} name={targetDisplayName} size={72} />
+            <UserAvatar
+              uri={headerPhotoUri}
+              name={targetDisplayName}
+              size={72}
+              verified={
+                isSelf
+                  ? userIsIdentityVerified(user)
+                  : /**
+                     * Falls back to the shared verified-cache so opening this
+                     * peer profile from a card that already learned their
+                     * status (chat, ratings, ride card probe) shows the ✓
+                     * even before our local `getUserRatingsSummary` resolves.
+                     */
+                    subjectVerifiedFromApi || subjectVerifiedFromCache
+              }
+            />
             {targetAge !== null ? (
               <View style={styles.ageBadge}>
                 <Text style={styles.ageBadgeText}>{targetAge}y</Text>
@@ -361,6 +395,14 @@ export default function OwnerProfileModal(): React.JSX.Element {
           </View>
 
           <Text style={styles.name}>{targetDisplayName}</Text>
+          <IdentityVerificationStatus
+            state={viewerIdentityVerificationState({
+              isSelf,
+              user,
+              subjectVerified: subjectVerifiedFromApi,
+            })}
+            style={styles.verificationStatusPill}
+          />
           {subjectOccupationFromApi ? (
             <Text style={styles.occupation}>{subjectOccupationFromApi}</Text>
           ) : null}
@@ -570,8 +612,10 @@ const styles = StyleSheet.create({
 
   ageBadge: {
     position: 'absolute',
-    right: -22,
-    bottom: 4,
+    // Pinned to the top-right so it never collides with the verified ✓ badge
+    // that UserAvatar paints in the bottom-right corner (right/bottom: -2).
+    right: -10,
+    top: -4,
     paddingVertical: 4,
     paddingHorizontal: 8,
     borderRadius: 12,
@@ -593,6 +637,9 @@ const styles = StyleSheet.create({
   },
 
   name: { fontSize: 26, fontWeight: '800', color: COLORS.text, textAlign: 'center' },
+  verificationStatusPill: {
+    marginTop: 8,
+  },
   occupation: {
     marginTop: 2,
     textAlign: 'center',

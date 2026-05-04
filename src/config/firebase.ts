@@ -1,3 +1,4 @@
+import Constants from 'expo-constants';
 import { initializeApp, getApps, getApp, type FirebaseApp, type FirebaseOptions } from 'firebase/app';
 import { getFirestore, initializeFirestore, type Firestore } from 'firebase/firestore';
 import {
@@ -8,13 +9,40 @@ import {
 } from '@firebase/auth';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
+type FirebaseExtra = Partial<
+  Pick<
+    FirebaseOptions,
+    'apiKey' | 'authDomain' | 'projectId' | 'storageBucket' | 'messagingSenderId' | 'appId'
+  >
+>;
+
+function readFirebaseFromExpoExtra(): FirebaseExtra {
+  const extra = Constants.expoConfig?.extra as { firebase?: FirebaseExtra } | undefined;
+  const f = extra?.firebase;
+  return f && typeof f === 'object' ? f : {};
+}
+
+function pickStr(envVal: string | undefined, extraVal: unknown): string {
+  const fromEnv = typeof envVal === 'string' ? envVal.trim() : '';
+  if (fromEnv) return fromEnv;
+  return typeof extraVal === 'string' ? extraVal.trim() : '';
+}
+
+/**
+ * Prefer Metro-inlined `process.env.EXPO_PUBLIC_FIREBASE_*` (local `.env` + `expo start --clear`).
+ * Fallback: `app.config.js` → `expo.extra.firebase` (EAS / release APK when env vars were available at build).
+ */
+const extraFb = readFirebaseFromExpoExtra();
 const firebaseConfig: FirebaseOptions = {
-  apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY ?? '',
-  authDomain: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN ?? '',
-  projectId: process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID ?? '',
-  storageBucket: process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET ?? '',
-  messagingSenderId: process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID ?? '',
-  appId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID ?? '',
+  apiKey: pickStr(process.env.EXPO_PUBLIC_FIREBASE_API_KEY, extraFb.apiKey),
+  authDomain: pickStr(process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN, extraFb.authDomain),
+  projectId: pickStr(process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID, extraFb.projectId),
+  storageBucket: pickStr(process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET, extraFb.storageBucket),
+  messagingSenderId: pickStr(
+    process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
+    extraFb.messagingSenderId
+  ),
+  appId: pickStr(process.env.EXPO_PUBLIC_FIREBASE_APP_ID, extraFb.appId),
 };
 
 /** Same Firebase web config as the native app (for helpers / debugging). */

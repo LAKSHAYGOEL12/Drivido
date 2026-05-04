@@ -64,6 +64,17 @@ export const API = {
       profile: '/user/profile',
       update: '/user/update',
       avatar: '/user/avatar',
+      /**
+       * POST multipart — uploads identity document for manual admin review.
+       * Form fields: `documentType` ('aadhaar' | 'pan' | 'driver_license'),
+       * `documentNumber` (full text), `photo` (file part).
+       * Backend stores the photo in a private location and sets
+       * `identityDocument.status = 'pending'`. The verified \u2713 flag is flipped
+       * manually in Mongo by an admin — never by this endpoint.
+       */
+      identityDocument: '/user/identity-document',
+      /** GET — current identity verification status (self only). */
+      identityDocumentStatus: '/user/identity-document/status',
       /** CRUD for profile vehicles (max 2). Also returned on GET /auth/me. */
       vehicles: {
         list: '/user/vehicles',
@@ -141,6 +152,11 @@ export const API = {
       remove: (placeId: string) => `/recent-places/${encodeURIComponent(placeId)}`,
       /** DELETE - clear current user's recent places (optional query fieldType) */
       clear: '/recent-places',
+    },
+    /** Public catalog (no auth). Per-user progress: GET `me` (JWT). Backend may return `{ campaigns: [] }`. */
+    promotions: {
+      campaigns: '/promotions/campaigns',
+      me: '/promotions/me',
     },
   },
 

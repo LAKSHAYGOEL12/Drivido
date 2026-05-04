@@ -34,6 +34,7 @@ import { pickAvatarUrlFromRecord } from '../utils/avatarUrl';
 import { normalizeVehiclesFromRecord, type UserProfileVehicle } from '../utils/userVehicle';
 import { normalizeRidePreferenceIds } from '../constants/ridePreferences';
 import { validation, normalizePhoneForValidation } from '../constants/validation';
+import { setUserIdentityVerified } from '../utils/identityVerifiedCache';
 
 export type User = {
   id: string;
@@ -78,7 +79,107 @@ export type User = {
     termsPrivacyAcceptedAt?: string;
     termsPrivacyContentHash?: string;
   };
+  /**
+   * Backend SSOT for the verified \u2713 badge.
+   * `true` only after admin manually reviews the document in Mongo and sets the flag.
+   * Frontend never derives this from any other state.
+   */
+  isIdentityVerified?: boolean;
+  /** Self-only progress surface: 'pending' (uploaded, awaiting review), 'verified', or 'rejected'. */
+  identityVerificationStatus?: 'pending' | 'verified' | 'rejected';
+  /**
+   * Admin-supplied note explaining why the most recent submission was rejected
+   * (e.g. "Photo is blurry. Please upload a clear image."). Backend SSOT —
+   * surfaced only when `identityVerificationStatus === 'rejected'` and only on
+   * self payloads (`/auth/me`); never on peer profiles.
+   */
+  identityVerificationReason?: string;
 };
+
+export type IdentityVerificationStatus = NonNullable<User['identityVerificationStatus']>;
+
+/** Coerce common backend shapes for "true" — boolean true, "true"/"1", 1, etc. */
+function isTruthyFlag(v: unknown): boolean {
+  if (v === true) return true;
+  if (typeof v === 'number') return v === 1;
+  if (typeof v === 'string') {
+    const s = v.trim().toLowerCase();
+    return s === 'true' || s === '1' || s === 'yes';
+  }
+  return false;
+}
+
+/**
+ * Returns the `identityDocument` sub-object from a backend user record (camel-
+ * or snake-case), or `null` if not present. Backend's manual-review fields
+ * live here (`status`, `reviewReason`, …) so we always inspect this in
+ * addition to flat top-level aliases.
+ */
+function getIdentityDocumentRec(rec: Record<string, unknown>): Record<string, unknown> | null {
+  const cand = rec.identityDocument ?? rec.identity_document;
+  if (cand && typeof cand === 'object' && !Array.isArray(cand)) {
+    return cand as Record<string, unknown>;
+  }
+  return null;
+}
+
+function pickIdentityVerified(rec: Record<string, unknown>): boolean {
+  const flat = [
+    rec.isIdentityVerified,
+    rec.is_identity_verified,
+    rec.identityVerified,
+    rec.identity_verified,
+  ];
+  if (flat.some(isTruthyFlag)) return true;
+  /**
+   * Some backends only flip the nested `identityDocument.status` to
+   * `"verified"` and rely on a boolean elsewhere; treat that nested status
+   * as authoritative when present.
+   */
+  const doc = getIdentityDocumentRec(rec);
+  if (doc) {
+    const status = doc.status;
+    if (typeof status === 'string' && status.trim().toLowerCase() === 'verified') return true;
+    if (isTruthyFlag(doc.isVerified) || isTruthyFlag(doc.verified)) return true;
+  }
+  return false;
+}
+
+function pickIdentityStatus(rec: Record<string, unknown>): IdentityVerificationStatus | undefined {
+  const raw =
+    rec.identityVerificationStatus ??
+    rec.identity_verification_status ??
+    rec.identityDocumentStatus ??
+    rec.identity_document_status ??
+    getIdentityDocumentRec(rec)?.status;
+  if (typeof raw !== 'string') return undefined;
+  const v = raw.trim().toLowerCase();
+  if (v === 'verified' || v === 'pending' || v === 'rejected') return v;
+  return undefined;
+}
+
+/**
+ * Backend admin-supplied note for rejected submissions. Backend may emit it
+ * either camel- or snake-case at the top level, or nested inside
+ * `identityDocument.reviewReason`. We always return a trimmed string (never
+ * a whitespace-only value) so callers can simply check truthiness.
+ */
+function pickIdentityReason(rec: Record<string, unknown>): string | undefined {
+  const doc = getIdentityDocumentRec(rec);
+  const raw =
+    rec.identityVerificationReason ??
+    rec.identity_verification_reason ??
+    rec.identityDocumentReason ??
+    rec.identity_document_reason ??
+    rec.identityReviewReason ??
+    rec.identity_review_reason ??
+    doc?.reviewReason ??
+    doc?.review_reason ??
+    doc?.reason;
+  if (typeof raw !== 'string') return undefined;
+  const trimmed = raw.trim();
+  return trimmed ? trimmed : undefined;
+}
 
 type AuthState = {
   user: User | null;
@@ -153,6 +254,16 @@ function mergeUserWithMe(prev: User, next: User): User {
   }
   if (next.accountActive !== false) {
     delete user.accountActive;
+  }
+  /**
+   * Identity rejection reason is meaningful only while the status is
+   * `rejected`. The moment the user re-uploads (status -> `pending`) or the
+   * admin approves (status -> `verified`), backend stops sending the reason
+   * — drop the stale prev value so the UI never lingers on an old message.
+   * If `next` doesn't carry a status at all (partial payload), keep prev.
+   */
+  if (next.identityVerificationStatus && next.identityVerificationStatus !== 'rejected') {
+    delete user.identityVerificationReason;
   }
   if (Array.isArray(next.vehicles) && next.vehicles.length === 0) {
     return {
@@ -280,6 +391,10 @@ function buildSessionUser(fbUser: FirebaseUser, backendUser: BackendAuthUser): U
     ? strField(legalRaw.termsPrivacyContentHash) || strField(legalRaw.terms_privacy_content_hash)
     : '';
 
+  const beIdentityVerified = pickIdentityVerified(rec);
+  const beIdentityStatus = pickIdentityStatus(rec);
+  const beIdentityReason = pickIdentityReason(rec);
+
   const baseUser: User = {
     id: mongoId,
     phone: bePhone || fbPhone,
@@ -303,6 +418,9 @@ function buildSessionUser(fbUser: FirebaseUser, backendUser: BackendAuthUser): U
       ? { accountDeletionEffectiveAt: accountDeletionEffectiveAtRaw }
       : {}),
     ...(backendUserRecordInactive(backendUser) ? { accountActive: false } : {}),
+    ...(beIdentityVerified ? { isIdentityVerified: true } : {}),
+    ...(beIdentityStatus ? { identityVerificationStatus: beIdentityStatus } : {}),
+    ...(beIdentityReason ? { identityVerificationReason: beIdentityReason } : {}),
     ...(legalRaw
       ? {
           legalAcceptance: {
@@ -783,6 +901,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
     });
     return () => setOnAccountDeactivated(null);
   }, [applyAccountDeactivatedFromServer]);
+
+  /**
+   * Seed the shared verified-cache with the authenticated user's status so
+   * components that show the viewer's own avatar (ride cards in My Rides /
+   * All rides, profile header) get the ✓ even before any list payload echoes
+   * `publisherIdentityVerified`. Tracks identity status changes from /auth/me.
+   */
+  useEffect(() => {
+    const id = state.user?.id;
+    if (typeof id !== 'string' || !id.trim()) return;
+    setUserIdentityVerified(id, state.user?.isIdentityVerified === true);
+  }, [state.user?.id, state.user?.isIdentityVerified]);
 
   const value: AuthContextValue = {
     ...state,

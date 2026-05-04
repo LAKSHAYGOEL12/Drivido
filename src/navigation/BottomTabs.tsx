@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
   AppState,
@@ -32,6 +32,8 @@ import ProfileStack from './ProfileStack';
 import { useInbox } from '../contexts/InboxContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useOwnerPendingRequests } from '../contexts/OwnerPendingRequestsContext';
+import { usePromotionCampaigns } from '../contexts/PromotionCampaignsContext';
+import { resolveTopOfferProgresses } from '../utils/promotionOfferCopy';
 import { COLORS } from '../constants/colors';
 import { navigateToGuestLogin } from './navigateToGuestLogin';
 import { findMainTabNavigator } from './findMainTabNavigator';
@@ -54,6 +56,9 @@ import {
 } from './mainTabAndroidHardwareBack';
 import { MAIN_TAB_BAR_DISPLAY_ORDER, type MainTabName } from './mainTabOrder';
 import { navigatePublishStackToNewRideWizard } from './navigatePublishStackNewRideWizard';
+import FloatingOffersStrip, {
+  FLOATING_OFFERS_STRIP_GAP,
+} from '../components/promotions/FloatingOffersStrip';
 
 const PUBLISH_FAB_SHEET_OFF_Y = Math.min(520, Math.round(Dimensions.get('window').height * 0.5));
 
@@ -118,14 +123,30 @@ function computeHideMainTabBar(state: MaterialTopTabBarProps['state'] | undefine
   return !shouldShowMainTabBar(tabName, focusedNested);
 }
 
-/** Tab bar already receives full material-tab `state`; sync pager swipe from that (not nested `navigation.getState()`). */
+/**
+ * Tab bar already receives full material-tab `state`; we sync three signals from it:
+ * - pager swipe enable (mirrors tab-bar visibility),
+ * - focused root tab name (drives the SearchRides-only floating offers strip),
+ *
+ * using nested `navigation.getState()` is unreliable here because that may return the parent
+ * stack state on early frames; the material-tab `state` prop is always the authoritative source.
+ */
 function TabBarWithPagerSwipeSync(
-  props: MaterialTopTabBarProps & { onPagerSwipeChange: (enabled: boolean) => void }
+  props: MaterialTopTabBarProps & {
+    onPagerSwipeChange: (enabled: boolean) => void;
+    onFocusedRootTabChange: (name: string | undefined) => void;
+  }
 ): React.JSX.Element {
-  const { onPagerSwipeChange, ...barProps } = props;
+  const { onPagerSwipeChange, onFocusedRootTabChange, ...barProps } = props;
   useLayoutEffect(() => {
     onPagerSwipeChange(!computeHideMainTabBar(barProps.state));
-  }, [barProps.state, onPagerSwipeChange]);
+    const idx = barProps.state?.index;
+    const rootName =
+      typeof idx === 'number' && idx >= 0
+        ? barProps.state?.routes?.[idx]?.name
+        : undefined;
+    onFocusedRootTabChange(rootName);
+  }, [barProps.state, onPagerSwipeChange, onFocusedRootTabChange]);
   return <MainBottomTabBar {...barProps} />;
 }
 
@@ -481,18 +502,87 @@ function MainBottomTabBar(props: MaterialTopTabBarProps): React.JSX.Element {
 const PROFILE_TAB_RING_IDLE = 26;
 const PROFILE_TAB_RING_FOCUSED = 30;
 
+/**
+ * Small gold "gift" badge overlaid on the Profile avatar — visible ONLY when:
+ *   1. there is at least one live offer, and
+ *   2. the user has not yet tapped the Profile tab this JS process.
+ *
+ * Pulses gently to draw the eye on first view, then disappears on first tap. Session-scoped
+ * (no persistence), matching {@link FloatingOffersStrip}'s "show on every cold launch" rule.
+ */
+function ProfileOfferHintBadge(): React.JSX.Element {
+  const pulse = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    pulse.setValue(0);
+    /**
+     * Short burst of attention — 3 pulses then settle. A never-ending loop feels "needy" on
+     * a persistent tab bar element; three pulses is the standard "nudge" cadence used across
+     * premium apps (Swiggy / Zomato / Binance) for non-critical promos.
+     */
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, {
+          toValue: 1,
+          duration: 780,
+          easing: Easing.out(Easing.quad),
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulse, {
+          toValue: 0,
+          duration: 780,
+          easing: Easing.in(Easing.quad),
+          useNativeDriver: true,
+        }),
+      ]),
+      { iterations: 3 }
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [pulse]);
+
+  const scale = pulse.interpolate({
+    inputRange: [0, 1],
+    outputRange: [1, 1.14],
+  });
+  const haloOpacity = pulse.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, 0.55],
+  });
+  const haloScale = pulse.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.85, 1.9],
+  });
+
+  return (
+    <View style={styles.profileOfferBadgeWrap} pointerEvents="none">
+      <Animated.View
+        style={[
+          styles.profileOfferBadgeHalo,
+          { opacity: haloOpacity, transform: [{ scale: haloScale }] },
+        ]}
+      />
+      <Animated.View style={[styles.profileOfferBadge, { transform: [{ scale }] }]}>
+        <Ionicons name="gift" size={7} color="#FBBF24" />
+      </Animated.View>
+    </View>
+  );
+}
+
 function ProfileTabBarIcon({
   focused,
   color,
   size: _size,
   avatarUrl,
   displayName,
+  showOfferHint,
 }: {
   focused: boolean;
   color: string;
   size: number;
   avatarUrl?: string | null;
   displayName: string;
+  showOfferHint: boolean;
 }): React.JSX.Element {
   const uri = (avatarUrl ?? '').trim();
   const name = displayName.trim() || 'You';
@@ -500,24 +590,27 @@ function ProfileTabBarIcon({
   const r = ring / 2;
   const avatarSize = focused ? 26 : 22;
   return (
-    <View
-      style={[
-        styles.profileTabClip,
-        {
-          width: ring,
-          height: ring,
-          borderRadius: r,
-        },
-        focused ? styles.profileTabClipFocused : styles.profileTabClipIdle,
-      ]}
-    >
-      <UserAvatar
-        uri={uri || undefined}
-        name={name}
-        size={avatarSize}
-        backgroundColor={COLORS.backgroundSecondary}
-        fallbackTextColor={focused ? COLORS.text : color}
-      />
+    <View style={styles.profileTabIconHost} collapsable={false}>
+      <View
+        style={[
+          styles.profileTabClip,
+          {
+            width: ring,
+            height: ring,
+            borderRadius: r,
+          },
+          focused ? styles.profileTabClipFocused : styles.profileTabClipIdle,
+        ]}
+      >
+        <UserAvatar
+          uri={uri || undefined}
+          name={name}
+          size={avatarSize}
+          backgroundColor={COLORS.backgroundSecondary}
+          fallbackTextColor={focused ? COLORS.text : color}
+        />
+      </View>
+      {showOfferHint ? <ProfileOfferHintBadge /> : null}
     </View>
   );
 }
@@ -641,6 +734,35 @@ export default function BottomTabs(): React.JSX.Element {
     setMainTabPagerSwipeEnabled((prev) => (prev === enabled ? prev : enabled));
   }, []);
 
+  /**
+   * Focused root tab name (e.g. `SearchStack`, `YourRides`, `Inbox`, `Profile`, `PublishStack`).
+   * Synced from the material-tab state via {@link TabBarWithPagerSwipeSync}. Drives the
+   * floating offers strip — product wants the strip pinned to the SearchRides home only,
+   * never on Your Rides / Inbox / Profile, so a dedicated signal is cheaper and safer than
+   * recomputing from `navigation.getState()` every render.
+   */
+  const [focusedRootTab, setFocusedRootTab] = useState<string | undefined>(undefined);
+  const onFocusedRootTabChange = useCallback((name: string | undefined) => {
+    setFocusedRootTab((prev) => (prev === name ? prev : name));
+  }, []);
+
+  /**
+   * Profile tab's "gold gift" attention hint is driven by the same
+   * {@link usePromotionCampaigns} signal the floating strip consumes, so the two stay in sync
+   * (if offers vanish the hint disappears; if they arrive mid-session the hint reappears).
+   *
+   * Production behavior (per product): the hint is **persistent** while any offer is live.
+   * It is intentionally not dismissed on Profile tap — the user can close the floating strip,
+   * but the Profile tab continues to advertise that offers are still claimable. The badge only
+   * goes away when there are no active offers (offers expired, fully redeemed, or session lost).
+   */
+  const { catalog, meRows } = usePromotionCampaigns();
+  const liveOfferCount = useMemo(
+    () => resolveTopOfferProgresses(catalog, meRows).offers.length,
+    [catalog, meRows]
+  );
+  const showProfileOfferHint = sessionReady && liveOfferCount > 0;
+
   /** New session or account switch — refresh driver/passenger list so “My rides” isn’t stale. */
   useEffect(() => {
     const uid = user?.id?.trim();
@@ -678,13 +800,44 @@ export default function BottomTabs(): React.JSX.Element {
     return () => sub.remove();
   }, []);
 
+  /**
+   * `mainTabPagerSwipeEnabled` is recomputed from `!computeHideMainTabBar(state)` on every
+   * nav change (see {@link TabBarWithPagerSwipeSync}), so it is already the perfect signal
+   * for whether the **bottom tab chrome is currently visible**. We piggy-back on it to drive
+   * the floating offer strip's visibility — the strip disappears whenever the tabs do
+   * (Publish wizard, Location picker, Chat thread, etc.).
+   */
+  const tabChromeVisible = mainTabPagerSwipeEnabled;
+  /**
+   * Product rule: the floating offer strip lives **only** on the Search/Home tab root.
+   * On other tabs (Your Rides / Inbox / Profile / Publish) the strip is hidden even though
+   * the bottom tab chrome is visible — switching to a different tab is *not* a dismiss,
+   * we just don't want the strip to follow the user across tabs.
+   */
+  const offersStripVisible = tabChromeVisible && focusedRootTab === 'SearchStack';
+  /**
+   * Strip is **flush** with the top of the bottom-tab assembly — `tabBarLayoutHeight`
+   * (= `mainTabBarSlotHeight`) already accounts for the publish FAB's vertical rise, so the
+   * slot's top edge is exactly where the FAB's circle peaks. Setting `bottomOffset =
+   * tabBarLayoutHeight` (+ a 0pt gap) parks the strip's bottom edge right on that line so it
+   * reads as "attached to the tab bar" with zero visible gap — production-standard placement.
+   */
+  const offersStripBottom = tabBarLayoutHeight + FLOATING_OFFERS_STRIP_GAP;
+
   return (
+    <View style={stylesRoot.tabsHost} collapsable={false}>
     <Tab.Navigator
       /** Avoid competing with explicit Android handling in `mainTabAndroidHardwareBack`. */
       backBehavior="none"
       initialRouteName="SearchStack"
       tabBarPosition="bottom"
-      tabBar={(props) => <TabBarWithPagerSwipeSync {...props} onPagerSwipeChange={onPagerSwipeChange} />}
+      tabBar={(props) => (
+        <TabBarWithPagerSwipeSync
+          {...props}
+          onPagerSwipeChange={onPagerSwipeChange}
+          onFocusedRootTabChange={onFocusedRootTabChange}
+        />
+      )}
       screenOptions={{
         tabBarActiveTintColor: COLORS.text,
         tabBarInactiveTintColor: COLORS.textSecondary,
@@ -837,6 +990,9 @@ export default function BottomTabs(): React.JSX.Element {
            * stale screens (e.g. someone else’s Trips left on the Profile stack).
            */
           tabPress: (e) => {
+            // Note: the gold-gift hint on the Profile tab is NOT dismissed on tap.
+            // It must stay visible for as long as any live offer exists, so the user
+            // always knows there is something claimable inside Profile → Rewards.
             if (!sessionReady) {
               e.preventDefault();
               navigateToGuestLogin(navigation, { reason: 'tab' });
@@ -870,13 +1026,26 @@ export default function BottomTabs(): React.JSX.Element {
                 size={mainTabIconSize(focused)}
                 avatarUrl={user?.avatarUrl}
                 displayName={user?.name ?? 'You'}
+                showOfferHint={showProfileOfferHint}
               />
             ),
         })}
       />
     </Tab.Navigator>
+    <FloatingOffersStrip
+      visible={offersStripVisible}
+      bottomOffset={offersStripBottom}
+      sideInset={TAB_PILL_SIDE_INSET}
+    />
+    </View>
   );
 }
+
+const stylesRoot = StyleSheet.create({
+  tabsHost: {
+    flex: 1,
+  },
+});
 
 const styles = StyleSheet.create({
   tabBarHidden: {
@@ -1167,6 +1336,16 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: COLORS.textSecondary,
   },
+  /**
+   * Non-clipping host wraps the avatar ring so the offer-hint badge can sit at the top-right
+   * corner and extend beyond the ring's circular boundary.
+   */
+  profileTabIconHost: {
+    position: 'relative',
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'visible',
+  },
   profileTabClip: {
     alignItems: 'center',
     justifyContent: 'center',
@@ -1179,6 +1358,45 @@ const styles = StyleSheet.create({
   profileTabClipFocused: {
     borderWidth: 2,
     borderColor: COLORS.text,
+  },
+  /** Offer-hint badge positioning — top-right of the avatar ring, halo centered on the badge. */
+  profileOfferBadgeWrap: {
+    position: 'absolute',
+    top: -3,
+    right: -3,
+    width: 14,
+    height: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 10,
+  },
+  profileOfferBadgeHalo: {
+    position: 'absolute',
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    backgroundColor: 'rgba(251, 191, 36, 0.55)',
+  },
+  /** Dark indigo coin with a gold gift glyph — matches the floating strip's stub palette. */
+  profileOfferBadge: {
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    backgroundColor: '#1E1B4B',
+    borderWidth: 1.5,
+    borderColor: COLORS.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...Platform.select({
+      ios: {
+        shadowColor: '#0F172A',
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.25,
+        shadowRadius: 2,
+      },
+      android: { elevation: 3 },
+      default: {},
+    }),
   },
   ridesTabIconWrap: {
     position: 'relative',

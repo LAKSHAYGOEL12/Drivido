@@ -844,6 +844,11 @@ export default function SearchResultsScreen(): React.JSX.Element {
   const currentUserId = (user?.id ?? '').trim();
   const currentUserName = (user?.name ?? '').trim();
   const viewerAvatarUrl = user?.avatarUrl?.trim();
+  /**
+   * Backend SSOT — viewer's identity-verified flag for owner avatar tick on
+   * the search results screen (rare path: user lands on their own ride).
+   */
+  const viewerVerified = user?.isIdentityVerified === true;
 
   /** Only persist after results load successfully — not when tapping Search on the previous screen. */
   const recentSavedSigRef = useRef<string | null>(null);
@@ -1259,6 +1264,7 @@ export default function SearchResultsScreen(): React.JSX.Element {
                   currentUserId={currentUserId}
                   currentUserName={currentUserName}
                   viewerAvatarUrl={viewerAvatarUrl}
+                  viewerIsIdentityVerified={viewerVerified}
                   seatFullUnavailable={seatFullBlocked}
                   passengerSearchStraightLine={passengerSearchStraightLine}
                   onPress={() => {

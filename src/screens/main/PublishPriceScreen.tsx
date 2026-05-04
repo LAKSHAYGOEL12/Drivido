@@ -139,12 +139,16 @@ export default function PublishPriceScreen(): React.JSX.Element {
     }
   }, [distanceKmForReco, minRecommended, stopsAllowed, clampToFareBand]);
 
+  /**
+   * Three states. Both edges (below + above the recommended band) are amber-allowed —
+   * only an empty / non-numeric / below-₹{minAllowed} input is hard-blocked, since
+   * those are virtually always typos.
+   */
   const isPriceInvalid =
     !Number.isFinite(inputAmount) || inputAmount <= 0 || inputAmount < minAllowed || inputAmount > maxAllowed;
-
-  const isBelowRecommended = price < minRecommended;
-  const isAboveRecommended = price > maxRecommended;
-  const isWithinRecommended = !isBelowRecommended && !isAboveRecommended;
+  const isBelowRecommended = !isPriceInvalid && price < minRecommended;
+  const isAboveRecommended = !isPriceInvalid && price > maxRecommended;
+  const isWithinRecommended = !isPriceInvalid && !isBelowRecommended && !isAboveRecommended;
 
   const statusColor = isPriceInvalid
     ? COLORS.error
@@ -160,7 +164,9 @@ export default function PublishPriceScreen(): React.JSX.Element {
     ? 'alert-circle'
     : isWithinRecommended
       ? 'checkmark-circle'
-      : 'trending-down';
+      : isBelowRecommended
+        ? 'trending-down'
+        : 'trending-up';
   const statusTitle = isPriceInvalid
     ? 'Price out of range'
     : isWithinRecommended
@@ -171,18 +177,18 @@ export default function PublishPriceScreen(): React.JSX.Element {
   const helperText = (() => {
     if (isPriceInvalid) {
       if (!Number.isFinite(inputAmount) || inputAmount <= 0) {
-        return `Enter an amount between ₹${minAllowed} and ₹${maxAllowed}.`;
+        return `Enter an amount of ₹${minAllowed} or more.`;
       }
       if (inputAmount < minAllowed) {
         return `Minimum allowed is ₹${minAllowed}.`;
       }
-      if (inputAmount > maxAllowed) {
-        return `Maximum allowed is ₹${maxAllowed}.`;
-      }
+      return `Maximum allowed is ₹${maxAllowed}.`;
     }
     if (isWithinRecommended) return 'You’re in the sweet spot for this route distance.';
-    if (isBelowRecommended) return 'Lower fares mean lower earnings for this trip.';
-    return 'Very high prices may get fewer bookings.';
+    if (isBelowRecommended) {
+      return `Suggested from ₹${minRecommended} for this route. Lower fares mean lower earnings — your call.`;
+    }
+    return `Suggested up to ₹${maxRecommended} for this route. Higher prices may get fewer bookings — your call.`;
   })();
 
   const onContinue = () => {

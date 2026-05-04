@@ -79,6 +79,16 @@ import {
   isRideSeatsFull,
 } from '../../utils/rideSeats';
 import { bookingPassengerDisplayName, ridePublisherDisplayName } from '../../utils/displayNames';
+import {
+  bookingPassengerIsIdentityVerified,
+  ridePublisherIsIdentityVerified,
+  userIsIdentityVerified,
+} from '../../utils/identityVerified';
+import {
+  setUserIdentityVerified,
+  useIdentityVerifiedCached,
+} from '../../utils/identityVerifiedCache';
+import { ensureUserIdentityVerifiedProbed } from '../../services/userIdentityVerifiedProbe';
 import { bookingPassengerDeactivated, ridePublisherDeactivated } from '../../utils/deactivatedAccount';
 import type { NavigationProp, ParamListBase } from '@react-navigation/native';
 import LoginBottomSheet from '../../components/auth/LoginBottomSheet';
@@ -2314,6 +2324,36 @@ export default function RideDetailScreen(): React.JSX.Element {
   const cardAvatarName = isOwner
     ? (currentUserName || user?.name || 'You').trim() || 'You'
     : driverName;
+  /**
+   * Verified ✓ flag for the ride-detail header avatar.
+   *
+   * Reads the payload flag *and* the shared cache (seeded by ride lists, chat,
+   * ratings, /auth/me) so the badge paints on the same frame as the avatar
+   * even when this screen is opened directly (deep link) before the ride
+   * payload has reflected the publisher's verification status.
+   */
+  const headerAvatarUserId = isOwner
+    ? (currentUserId ?? '').trim()
+    : (ride.userId ?? '').trim();
+  const cachedHeaderAvatarVerified = useIdentityVerifiedCached(headerAvatarUserId);
+  const headerAvatarVerified = isOwner
+    ? userIsIdentityVerified(user) || cachedHeaderAvatarVerified
+    : (!publisherDeactivated &&
+        (ridePublisherIsIdentityVerified(ride) || cachedHeaderAvatarVerified));
+  React.useEffect(() => {
+    if (!headerAvatarUserId) return;
+    if (isOwner && userIsIdentityVerified(user)) {
+      setUserIdentityVerified(headerAvatarUserId, true);
+      return;
+    }
+    if (!isOwner && ridePublisherIsIdentityVerified(ride)) {
+      setUserIdentityVerified(headerAvatarUserId, true);
+      return;
+    }
+    if (!isOwner && !publisherDeactivated) {
+      void ensureUserIdentityVerifiedProbed(headerAvatarUserId);
+    }
+  }, [headerAvatarUserId, isOwner, ride, publisherDeactivated, user]);
   const ownerUserIdForChat = (ride.userId ?? '').trim();
   /** Signed-in non-owners can message the driver from ride detail; booking is not required. */
   const passengerCanMessageOwner =
@@ -2332,6 +2372,7 @@ export default function RideDetailScreen(): React.JSX.Element {
       ...(ride.publisherAvatarUrl?.trim()
         ? { otherUserAvatarUrl: ride.publisherAvatarUrl.trim() }
         : {}),
+      ...(ridePublisherIsIdentityVerified(ride) ? { otherUserIdentityVerified: true } : {}),
     });
   }, [navigation, ride, driverName]);
   const priceDisplay = formatRidePrice(ride);
@@ -4002,6 +4043,7 @@ export default function RideDetailScreen(): React.JSX.Element {
                 size={isOwner ? 44 : 38}
                 backgroundColor={COLORS.primary}
                 fallbackTextColor={COLORS.white}
+                verified={headerAvatarVerified}
               />
             </View>
             <View style={styles.cardDriverText}>
@@ -4262,6 +4304,7 @@ export default function RideDetailScreen(): React.JSX.Element {
                               name={displayName}
                               size={38}
                               backgroundColor="#e2e8f0"
+                              verified={bookingPassengerIsIdentityVerified(b)}
                             />
                             <View style={styles.seatRequestIdentityText}>
                               <Text style={styles.seatRequestName} numberOfLines={1}>
@@ -4470,6 +4513,11 @@ export default function RideDetailScreen(): React.JSX.Element {
                               size={40}
                               backgroundColor="rgba(41, 190, 139, 0.14)"
                               fallbackTextColor={COLORS.primary}
+                              verified={
+                                isMe
+                                  ? userIsIdentityVerified(user)
+                                  : bookingPassengerIsIdentityVerified(b)
+                              }
                             />
                           </View>
                           <View style={styles.passengerRowOwnerText}>
@@ -4522,6 +4570,9 @@ export default function RideDetailScreen(): React.JSX.Element {
                                     otherUserId: userId,
                                     otherUserName: displayName.trim() || 'Passenger',
                                     ...(b.avatarUrl?.trim() ? { otherUserAvatarUrl: b.avatarUrl.trim() } : {}),
+                                    ...(bookingPassengerIsIdentityVerified(b)
+                                      ? { otherUserIdentityVerified: true }
+                                      : {}),
                                   });
                                 }}
                                 hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
@@ -4593,6 +4644,7 @@ export default function RideDetailScreen(): React.JSX.Element {
                           size={40}
                           backgroundColor="rgba(41, 190, 139, 0.14)"
                           fallbackTextColor={COLORS.primary}
+                          verified={bookingPassengerIsIdentityVerified(b)}
                         />
                       </View>
                       <View style={styles.passengerRowOwnerText}>

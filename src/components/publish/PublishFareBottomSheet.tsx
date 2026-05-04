@@ -71,13 +71,15 @@ export default function PublishFareBottomSheet({
     [distanceKm]
   );
 
+  /**
+   * Re-seed when the sheet opens so the user always sees a usable starting value. We
+   * intentionally only `clampInt(initialAmount, minAllowed, maxAllowed)` — values
+   * **above** the recommended ceiling but **within** the allowed cap are preserved as-is,
+   * because in v2 of the fare model "above suggested" is a warning, not a hard cap.
+   */
   useEffect(() => {
     if (!visible) return;
     const clamped = clampInt(initialAmount, minAllowed, maxAllowed);
-    if (clamped >= maxAllowed) {
-      setInputText(String(minAllowed));
-      return;
-    }
     setInputText(String(clamped));
   }, [visible, initialAmount, minAllowed, maxAllowed]);
 
@@ -144,6 +146,16 @@ export default function PublishFareBottomSheet({
   const effectiveForBounds = currentVal ?? minAllowed;
   const atMin = effectiveForBounds <= minAllowed;
   const atMax = effectiveForBounds >= maxAllowed;
+  /**
+   * Drive the inline amber warning so edit/republish surfaces show the same nudges that
+   * the publish/price step shows. Below the recommended floor (but ≥ ₹{minAllowed}) and
+   * above the recommended ceiling are both warnings, not blocks. Boundary ties are
+   * treated as green to avoid a flicker on the edge.
+   */
+  const belowSuggested =
+    currentVal != null && currentVal >= minAllowed && currentVal < minRecommended;
+  const aboveSuggested =
+    currentVal != null && currentVal <= maxAllowed && currentVal > maxRecommended;
 
   const handleDone = () => {
     const n = parseInputAmount();
@@ -210,6 +222,24 @@ export default function PublishFareBottomSheet({
                 </Text>
               </View>
             </View>
+
+            {belowSuggested ? (
+              <View style={styles.warnBlock}>
+                <Ionicons name="trending-down" size={16} color="#b45309" />
+                <Text style={styles.warnText}>
+                  Below suggested ₹{minRecommended}. Lower fares mean lower earnings — your call.
+                </Text>
+              </View>
+            ) : null}
+
+            {aboveSuggested ? (
+              <View style={styles.warnBlock}>
+                <Ionicons name="trending-up" size={16} color="#b45309" />
+                <Text style={styles.warnText}>
+                  Above suggested ₹{maxRecommended}. Higher prices may get fewer bookings — your call.
+                </Text>
+              </View>
+            ) : null}
 
             <View style={styles.amountCard}>
               <Pressable
@@ -330,6 +360,26 @@ const styles = StyleSheet.create({
   },
   rangeLine: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   rangeMain: { flex: 1, fontSize: 15, fontWeight: '700', color: COLORS.text },
+  warnBlock: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    backgroundColor: '#fffbeb',
+    borderWidth: 1,
+    borderColor: 'rgba(180, 83, 9, 0.18)',
+    marginTop: -10,
+    marginBottom: 14,
+  },
+  warnText: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#b45309',
+    lineHeight: 18,
+  },
   amountCard: {
     flexDirection: 'row',
     alignItems: 'center',

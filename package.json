@@ -9,8 +9,10 @@
     "start:clear": "expo start --clear",
     "android": "expo run:android",
     "android:build": "expo prebuild --clean && expo run:android",
+    "android:apk:local": "expo prebuild --platform android && cd android && ./gradlew assembleDebug",
     "android:release:apk": "eas build -p android --profile release",
     "android:release:aab": "eas build -p android --profile production",
+    "android:bundle:local": "cd android && ./gradlew bundleRelease",
     "ios": "expo run:ios",
     "web": "expo start --web"
   },

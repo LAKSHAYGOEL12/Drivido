@@ -18,6 +18,41 @@ export const GENDER_OPTIONS = [
 export type GenderValue = (typeof GENDER_OPTIONS)[number]['value'];
 
 /**
+ * Identity verification documents.
+ *
+ * - `aadhaar` — Indian 12-digit national ID.
+ * - `pan` — Indian 10-char tax ID.
+ * - `driver_license` — 7–20 alphanumeric.
+ * - `other` — fallback for passport / voter ID / foreign national ID. The
+ *   number is validated permissively and the admin verifies the actual
+ *   document kind from the uploaded photo during manual review.
+ */
+export const IDENTITY_DOCUMENT_OPTIONS = [
+  { value: 'aadhaar', label: 'Aadhaar' },
+  { value: 'pan', label: 'PAN' },
+  { value: 'driver_license', label: 'Driver License' },
+  { value: 'other', label: 'Other' },
+] as const;
+
+export type IdentityDocumentValue = (typeof IDENTITY_DOCUMENT_OPTIONS)[number]['value'];
+
+const AADHAAR_REGEX = /^\d{12}$/;
+const PAN_REGEX = /^[A-Z]{5}\d{4}[A-Z]$/;
+const DRIVER_LICENSE_REGEX = /^[A-Z0-9]{7,20}$/;
+/**
+ * Permissive — accepts any uppercase alphanumeric 5–30 chars. Covers Indian
+ * passports (1 letter + 7 digits), US/UK passports (9 digits), voter IDs, and
+ * most foreign national IDs. Authoritative verification still happens from
+ * the uploaded photo on the backend.
+ */
+const OTHER_DOCUMENT_REGEX = /^[A-Z0-9]{5,30}$/;
+
+/** Strip spaces / dashes from user input for identity number storage + validation. */
+export function normalizeIdentityNumber(value: string): string {
+  return value.replace(/[\s-]/g, '').toUpperCase();
+}
+
+/**
  * Normalize phone to 10 digits (strip all non-digits, remove leading 91 or 0).
  * Kept for legacy profiles / display.
  */
@@ -87,6 +122,27 @@ export const validation = {
 
   /** Optional ride notes from publisher (POST /rides `description`). */
   rideDescription: (value: string): boolean => value.trim().length <= 500,
+
+  /** Identity number — format depends on the chosen document type. */
+  identityNumber: (value: string, type: IdentityDocumentValue): boolean => {
+    const v = normalizeIdentityNumber(value);
+    if (type === 'aadhaar') return AADHAAR_REGEX.test(v);
+    if (type === 'pan') return PAN_REGEX.test(v);
+    if (type === 'driver_license') return DRIVER_LICENSE_REGEX.test(v);
+    if (type === 'other') return OTHER_DOCUMENT_REGEX.test(v);
+    return false;
+  },
+
+  /**
+   * User-supplied label that names the document when `type === 'other'`
+   * (e.g., "Passport", "Voter ID"). Required only for the `other` flow;
+   * surfaced to the reviewing admin alongside the photo and number.
+   */
+  identityLabel: (value: string): boolean => {
+    const t = value.trim();
+    if (t.length < 2 || t.length > 40) return false;
+    return /^[A-Za-z0-9 ()\-/&.]+$/.test(t);
+  },
 } as const;
 
 export const validationErrors = {
@@ -99,4 +155,10 @@ export const validationErrors = {
   otp: (length: number) => `Enter ${length} digit OTP`,
   profileBio: 'Description must be 300 characters or less',
   rideDescription: 'Ride description must be 500 characters or less',
+  identityAadhaar: 'Enter a 12-digit Aadhaar number',
+  identityPan: 'Enter a valid PAN (e.g., ABCDE1234F)',
+  identityDriverLicense: 'Enter a valid Driver License number',
+  identityOther: 'Enter a valid document number (5–30 letters or digits)',
+  identityLabel: 'Enter the document name (e.g., Passport)',
+  identityIncomplete: 'Select a document type and enter its number',
 } as const;

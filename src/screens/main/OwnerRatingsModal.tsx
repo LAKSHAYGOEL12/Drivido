@@ -11,6 +11,8 @@ import { COLORS } from '../../constants/colors';
 import { getUserRatingsSummary, type UserRatingReview } from '../../services/ratings';
 import { DEACTIVATED_ACCOUNT_LABEL } from '../../utils/deactivatedAccount';
 import { findMainTabNavigatorWithOptions } from '../../navigation/findMainTabNavigator';
+import { userIsIdentityVerified } from '../../utils/identityVerified';
+import { useIdentityVerifiedCached } from '../../utils/identityVerifiedCache';
 
 type OwnerRatingsRoute =
   | RouteProp<RidesStackParamList, 'OwnerRatingsModal'>
@@ -53,6 +55,13 @@ export default function OwnerRatingsModal(): React.JSX.Element {
   const [totalRatings, setTotalRatings] = useState(0);
   const [recentReviews, setRecentReviews] = useState<UserRatingReview[]>([]);
   const [loading, setLoading] = useState(true);
+  /**
+   * Backend SSOT verified ✓ for the rated user (peer profile).
+   * Sourced from `getUserRatingsSummary(...).subjectIdentityVerified === true`.
+   */
+  const [subjectVerifiedFromApi, setSubjectVerifiedFromApi] = useState(false);
+  /** Resilience fallback: see RatingsScreen for rationale. */
+  const subjectVerifiedFromCache = useIdentityVerifiedCached(targetUserId);
   const ratingsFetchSeqRef = useRef(0);
 
   useFocusEffect(
@@ -87,6 +96,7 @@ export default function OwnerRatingsModal(): React.JSX.Element {
           setTotalRatings(summary.totalRatings ?? 0);
           setRecentReviews(summary.reviews ?? []);
           setFetchedSubjectAvatar(summary.subjectAvatarUrl);
+          setSubjectVerifiedFromApi(summary.subjectIdentityVerified === true);
         } catch {
           if (cancelled || runId !== ratingsFetchSeqRef.current) return;
           setSubjectDeactivated(false);
@@ -94,6 +104,7 @@ export default function OwnerRatingsModal(): React.JSX.Element {
           setTotalRatings(0);
           setRecentReviews([]);
           setFetchedSubjectAvatar(undefined);
+          setSubjectVerifiedFromApi(false);
         } finally {
           if (cancelled || runId !== ratingsFetchSeqRef.current) return;
           setLoading(false);
@@ -227,6 +238,13 @@ export default function OwnerRatingsModal(): React.JSX.Element {
               size={34}
               backgroundColor="#dbeafe"
               fallbackTextColor="#1e40af"
+              verified={
+                subjectDeactivated && !isViewingSelf
+                  ? false
+                  : isViewingSelf
+                    ? userIsIdentityVerified(user)
+                    : subjectVerifiedFromApi || subjectVerifiedFromCache
+              }
             />
           </View>
           <View style={styles.topTitleWrap}>
@@ -317,6 +335,7 @@ export default function OwnerRatingsModal(): React.JSX.Element {
                         name={review.fromUserName || review.fromUserId || 'User'}
                         size={36}
                         backgroundColor="#e2e8f0"
+                        verified={review.fromUserIdentityVerified === true}
                       />
                     </View>
                     <View style={styles.reviewNameWrap}>
@@ -356,7 +375,9 @@ const styles = StyleSheet.create({
   content: { padding: 16, paddingBottom: 30, gap: 14 },
   topBar: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   iconButton: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
-  topAvatar: { width: 34, height: 34, borderRadius: 17, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
+  // No `overflow: 'hidden'` — `UserAvatar` clips its image internally; clipping
+  // here would chop off the verified ✓ badge that bleeds past the circle.
+  topAvatar: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
   topTitleWrap: { flex: 1 },
   topTitle: { fontSize: 18, fontWeight: '900', color: COLORS.text },
   topSubtitle: { fontSize: 13, fontWeight: '700', color: COLORS.textSecondary },
@@ -403,7 +424,8 @@ const styles = StyleSheet.create({
   reviewItem: { gap: 8, paddingVertical: 6 },
   reviewDivider: { borderTopWidth: 1, borderTopColor: COLORS.borderLight, marginTop: 10, paddingTop: 10 },
   reviewHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
-  avatar: { width: 36, height: 36, borderRadius: 18, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
+  // Same reasoning as `topAvatar` — keep overflow visible so the ✓ badge shows.
+  avatar: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
   reviewNameWrap: { flex: 1 },
   reviewName: { fontSize: 13, fontWeight: '900', color: COLORS.text },
   reviewTime: { fontSize: 11, fontWeight: '800', color: COLORS.textSecondary },

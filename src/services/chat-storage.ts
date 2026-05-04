@@ -47,6 +47,12 @@ export interface StoredThread {
   participantNames: Record<string, string>;
   /** Best-effort URL for the other participant’s profile photo (inbox / chat). */
   otherUserAvatarUrl?: string;
+  /**
+   * Backend SSOT — `true` only when the peer user record has
+   * `isIdentityVerified === true`. Drives the verified ✓ badge on the peer
+   * avatar in inbox rows and the chat header. Frontend never derives this.
+   */
+  otherUserIdentityVerified?: boolean;
   lastMessage: string;
   lastMessageAt: number;
   lastMessageSenderId: string;

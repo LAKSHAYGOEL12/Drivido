@@ -21,6 +21,21 @@ const extraEasMerged = {
 const androidMapsKey = process.env.EXPO_PUBLIC_GOOGLE_MAPS_ANDROID_KEY || '';
 const iosMapsKey = process.env.EXPO_PUBLIC_GOOGLE_MAPS_IOS_KEY || '';
 
+/**
+ * Firebase web config — mirrored into `expo.extra.firebase` so release APKs /
+ * EAS builds still resolve keys when `.env` is not bundled (same pattern as `extra.apiUrl`).
+ * Local dev: dotenv above fills process.env; Metro also inlines EXPO_PUBLIC_* from `.env`.
+ * EAS: set EXPO_PUBLIC_FIREBASE_* as project secrets so prebuild + Metro both see them.
+ */
+const firebaseExtra = {
+  apiKey: (process.env.EXPO_PUBLIC_FIREBASE_API_KEY || '').trim(),
+  authDomain: (process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN || '').trim(),
+  projectId: (process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID || '').trim(),
+  storageBucket: (process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET || '').trim(),
+  messagingSenderId: (process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID || '').trim(),
+  appId: (process.env.EXPO_PUBLIC_FIREBASE_APP_ID || '').trim(),
+};
+
 const config = {
   ...appJson,
   expo: {
@@ -29,6 +44,7 @@ const config = {
     extra: {
       ...(appJson.expo.extra || {}),
       apiUrl: apiBaseUrlFromEnv,
+      firebase: firebaseExtra,
       /** Push: Expo needs `projectId` in dev/bare/APK builds for `getExpoPushTokenAsync`. */
       eas: extraEasMerged,
     },
@@ -51,7 +67,7 @@ const config = {
     // Android Maps key and package (required for prebuild)
     android: {
       ...(appJson.expo.android || {}),
-      package: appJson.expo.android?.package || 'com.drivido.app',
+      package: appJson.expo.android?.package || 'com.drivido.ecopicko',
       /** Firebase / FCM — file at project root; required for Android push (expo-notifications). */
       googleServicesFile: './google-services.json',
       // http:// LAN API (EXPO_PUBLIC_API_URL) on device — required on Android 9+

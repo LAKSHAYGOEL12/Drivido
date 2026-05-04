@@ -1,8 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { Image, StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { getApiBaseUrl } from '../../services/api';
 import { COLORS } from '../../constants/colors';
 import { avatarInitialsFromName } from '../../utils/avatarInitials';
+
+/** Avatar sizes below this skip the badge — overlay would clip the initial. */
+const VERIFIED_BADGE_MIN_AVATAR_SIZE = 28;
 
 function parseHttpOrigin(raw: string): URL | null {
   const t = raw.trim();
@@ -73,10 +77,17 @@ export type UserAvatarProps = {
   style?: StyleProp<ViewStyle>;
   backgroundColor?: string;
   fallbackTextColor?: string;
+  /**
+   * Render the verified \u2713 badge in the bottom-right corner.
+   * Backend SSOT — pass through ONLY `user.isIdentityVerified === true` from API responses.
+   * Frontend never derives this from any other state.
+   */
+  verified?: boolean;
 };
 
 /**
  * Photo URL → image. No URL or failed load → name initials.
+ * When `verified` is true and the avatar is large enough, overlays a small \u2713 badge.
  */
 export default function UserAvatar({
   uri,
@@ -85,6 +96,7 @@ export default function UserAvatar({
   style,
   backgroundColor = '#dbeafe',
   fallbackTextColor = COLORS.text,
+  verified = false,
 }: UserAvatarProps): React.JSX.Element {
   const raw = (uri ?? '').trim();
   const imgUri = raw ? displayableImageUri(raw) : '';
@@ -99,6 +111,10 @@ export default function UserAvatar({
   }, [imgUri]);
 
   const showPhoto = imgUri.length > 0 && !loadFailed;
+  const showBadge = verified === true && size >= VERIFIED_BADGE_MIN_AVATAR_SIZE;
+  const badgeSize = Math.max(14, Math.round(size * 0.34));
+  const badgeIconSize = Math.max(9, Math.round(badgeSize * 0.62));
+  const badgeBorder = Math.max(1.5, Math.round(size * 0.04));
 
   return (
     <View
@@ -107,33 +123,72 @@ export default function UserAvatar({
         {
           width: size,
           height: size,
-          borderRadius: r,
-          backgroundColor: showPhoto ? COLORS.backgroundSecondary : backgroundColor,
         },
         style,
       ]}
     >
-      {showPhoto ? (
-        <Image
-          key={imgUri}
-          source={{ uri: imgUri }}
-          style={{ width: size, height: size, borderRadius: r }}
-          resizeMode="cover"
-          onError={() => {
-            if (__DEV__) {
-              console.warn('[UserAvatar] Failed to load image (check API host vs .env):', imgUri);
-            }
-            setLoadFailed(true);
-          }}
-        />
-      ) : (
-        <Text style={[styles.initial, { fontSize, color: fallbackTextColor }]}>{initials}</Text>
-      )}
+      <View
+        style={[
+          styles.clip,
+          {
+            width: size,
+            height: size,
+            borderRadius: r,
+            backgroundColor: showPhoto ? COLORS.backgroundSecondary : backgroundColor,
+          },
+        ]}
+      >
+        {showPhoto ? (
+          <Image
+            key={imgUri}
+            source={{ uri: imgUri }}
+            style={{ width: size, height: size, borderRadius: r }}
+            resizeMode="cover"
+            onError={() => {
+              if (__DEV__) {
+                console.warn('[UserAvatar] Failed to load image (check API host vs .env):', imgUri);
+              }
+              setLoadFailed(true);
+            }}
+          />
+        ) : (
+          <Text style={[styles.initial, { fontSize, color: fallbackTextColor }]}>{initials}</Text>
+        )}
+      </View>
+      {showBadge ? (
+        <View
+          pointerEvents="none"
+          style={[
+            styles.badge,
+            {
+              width: badgeSize,
+              height: badgeSize,
+              borderRadius: badgeSize / 2,
+              borderWidth: badgeBorder,
+            },
+          ]}
+          accessible
+          accessibilityRole="image"
+          accessibilityLabel="Identity verified"
+        >
+          <Ionicons name="checkmark" size={badgeIconSize} color={COLORS.white} />
+        </View>
+      ) : null}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  wrap: { alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
+  wrap: { alignItems: 'center', justifyContent: 'center' },
+  clip: { alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
   initial: { fontWeight: '800' },
+  badge: {
+    position: 'absolute',
+    right: -2,
+    bottom: -2,
+    backgroundColor: '#1d9bf0',
+    borderColor: COLORS.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
 });

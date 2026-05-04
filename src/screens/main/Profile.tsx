@@ -30,6 +30,11 @@ import {
   tripCountsFromAggregate,
 } from '../../services/tripsAggregation';
 import UserAvatar from '../../components/common/UserAvatar';
+import {
+  userIsIdentityVerified,
+  viewerIdentityVerificationState,
+} from '../../utils/identityVerified';
+import IdentityVerificationStatus from '../../components/common/IdentityVerificationStatus';
 import { useImagePicker } from '../../hooks/useImagePicker';
 import { uploadUserAvatar, deleteUserAvatar } from '../../services/userAvatar';
 import { ratingQualitativeColor, ratingQualitativeLabel } from '../../utils/ratingQualitativeLabel';
@@ -39,8 +44,9 @@ import { unregisterPushTokenWithBackend } from '../../services/pushTokenRegistra
 import RidePreferenceChips from '../../components/profile/RidePreferenceChips';
 import { normalizeRidePreferenceIds } from '../../constants/ridePreferences';
 import SkeletonBlock from '../../components/common/SkeletonBlock';
-import NetInfo from '@react-native-community/netinfo';
+import { useNetworkStatus } from '../../contexts/NetworkContext';
 import { OFFLINE_HEADLINE } from '../../constants/offlineMessaging';
+import ProfileRewardsSection from '../../components/promotions/ProfileRewardsSection';
 
 export default function Profile(): React.JSX.Element {
   const insets = useSafeAreaInsets();
@@ -63,7 +69,7 @@ export default function Profile(): React.JSX.Element {
   const [tripsCompletedThisMonth, setTripsCompletedThisMonth] = useState(0);
   const [memberSinceLabel, setMemberSinceLabel] = useState('—');
   const [loading, setLoading] = useState(true);
-  const [netOnline, setNetOnline] = useState<boolean | null>(null);
+  const { isOffline } = useNetworkStatus();
   const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
   const [avatarUploading, setAvatarUploading] = useState(false);
   const [photoMenuVisible, setPhotoMenuVisible] = useState(false);
@@ -71,6 +77,13 @@ export default function Profile(): React.JSX.Element {
   const [subjectBioFromApi, setSubjectBioFromApi] = useState('');
   const [subjectOccupationFromApi, setSubjectOccupationFromApi] = useState('');
   const [subjectRidePrefsFromApi, setSubjectRidePrefsFromApi] = useState<string[]>([]);
+  /**
+   * Verified ✓ flag for the peer being viewed (when this screen renders someone
+   * else's profile). Backend SSOT — populated only from
+   * `getUserRatingsSummary(...).subjectIdentityVerified === true`. Reset on
+   * subject change / unmount so we never bleed state across users.
+   */
+  const [subjectVerifiedFromApi, setSubjectVerifiedFromApi] = useState(false);
   /** Avoid flashing “—” on Trips when refocusing the same profile (e.g. back from Trips screen). */
   const prevTripsSubjectIdRef = useRef<string | null>(null);
   const prevProfileSubjectIdRef = useRef<string | null>(null);
@@ -152,16 +165,6 @@ export default function Profile(): React.JSX.Element {
     }
   }, [pushNotificationsAllowed]);
 
-  useEffect(() => {
-    const unsub = NetInfo.addEventListener((s) => {
-      setNetOnline(s.isConnected === true && s.isInternetReachable !== false);
-    });
-    void NetInfo.fetch().then((s) => {
-      setNetOnline(s.isConnected === true && s.isInternetReachable !== false);
-    });
-    return () => unsub();
-  }, []);
-
   const onPushNotificationsSwitch = useCallback(
     (value: boolean) => {
       const uid = user?.id?.trim();
@@ -236,6 +239,7 @@ export default function Profile(): React.JSX.Element {
         setSubjectBioFromApi('');
         setSubjectOccupationFromApi('');
         setSubjectRidePrefsFromApi([]);
+        setSubjectVerifiedFromApi(false);
         return () => {};
       }
 
@@ -281,6 +285,7 @@ export default function Profile(): React.JSX.Element {
                 normalizeRidePreferenceIds(summary.subjectRidePreferences ?? [])
               );
             }
+            setSubjectVerifiedFromApi(summary.subjectIdentityVerified === true);
             setMemberSinceLabel(
               formatMemberSinceLabel(
                 summary.subjectCreatedAt ?? (isSelf ? user?.createdAt : undefined)
@@ -293,6 +298,7 @@ export default function Profile(): React.JSX.Element {
             setSubjectBioFromApi('');
             setSubjectOccupationFromApi('');
             setSubjectRidePrefsFromApi([]);
+            setSubjectVerifiedFromApi(false);
             setMemberSinceLabel(formatMemberSinceLabel(isSelf ? user?.createdAt : undefined));
           }
 
@@ -392,9 +398,10 @@ export default function Profile(): React.JSX.Element {
         contentContainerStyle={[styles.content, { paddingBottom: mainTabScrollBottomPad }]}
         showsVerticalScrollIndicator={false}
         contentInsetAdjustmentBehavior={Platform.OS === 'ios' ? 'never' : undefined}
+        nestedScrollEnabled
       >
       <View style={styles.headerCard}>
-        {netOnline === false ? (
+        {isOffline ? (
           <View style={styles.offlineHintRow}>
             <Ionicons name="cloud-offline-outline" size={14} color={COLORS.textSecondary} />
             <Text style={styles.offlineHintText}>{OFFLINE_HEADLINE}</Text>
@@ -426,6 +433,7 @@ export default function Profile(): React.JSX.Element {
                 uri={profileHeaderPhotoUri}
                 name={displayName}
                 size={72}
+                verified={isSelf ? userIsIdentityVerified(user) : subjectVerifiedFromApi}
               />
               {avatarUploading ? (
                 <View style={styles.avatarUploadOverlay}>
@@ -447,7 +455,26 @@ export default function Profile(): React.JSX.Element {
             ) : null}
           </View>
         </View>
-        <Text style={styles.name}>{displayName}</Text>
+        {(() => {
+          const isVerified = isSelf ? userIsIdentityVerified(user) : subjectVerifiedFromApi;
+          return (
+            <View style={styles.nameRow}>
+              <Text style={styles.name} numberOfLines={1}>
+                {displayName}
+              </Text>
+              {isVerified ? (
+                <Ionicons
+                  name="checkmark-circle"
+                  size={20}
+                  color="#1d9bf0"
+                  style={styles.nameVerifiedIcon}
+                  accessibilityRole="image"
+                  accessibilityLabel="Identity verified"
+                />
+              ) : null}
+            </View>
+          );
+        })()}
         {(() => {
           const occupationLine = isSelf
             ? (user?.occupation ?? '').trim() || subjectOccupationFromApi
@@ -468,6 +495,61 @@ export default function Profile(): React.JSX.Element {
             );
           }
           return null;
+        })()}
+        {(() => {
+          const verificationState = viewerIdentityVerificationState({
+            isSelf,
+            user,
+            subjectVerified: subjectVerifiedFromApi,
+          });
+          if (isSelf && verificationState === 'unverified') {
+            return (
+              <Pressable
+                onPress={() => navigation.navigate('VerifyIdentity')}
+                style={({ pressed }) => [
+                  styles.verifyCta,
+                  pressed && styles.verifyCtaPressed,
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel="Verify your identity"
+                accessibilityHint="Open identity verification flow"
+              >
+                <Ionicons name="shield-checkmark-outline" size={14} color={COLORS.secondary} />
+                <Text style={styles.verifyCtaText}>Verify your identity</Text>
+                <Ionicons name="chevron-forward" size={14} color={COLORS.secondary} />
+              </Pressable>
+            );
+          }
+          if (isSelf && verificationState === 'rejected') {
+            return (
+              <View style={styles.verificationStack}>
+                <IdentityVerificationStatus
+                  state={verificationState}
+                  reason={user?.identityVerificationReason}
+                />
+                <Pressable
+                  onPress={() => navigation.navigate('VerifyIdentity')}
+                  style={({ pressed }) => [
+                    styles.verifyCta,
+                    pressed && styles.verifyCtaPressed,
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityLabel="Re-upload identity document"
+                  accessibilityHint="Open identity verification flow"
+                >
+                  <Ionicons name="refresh-outline" size={14} color={COLORS.secondary} />
+                  <Text style={styles.verifyCtaText}>Re-upload identity</Text>
+                  <Ionicons name="chevron-forward" size={14} color={COLORS.secondary} />
+                </Pressable>
+              </View>
+            );
+          }
+          return (
+            <IdentityVerificationStatus
+              state={verificationState}
+              style={styles.verificationStatusPill}
+            />
+          );
         })()}
       </View>
 
@@ -512,6 +594,8 @@ export default function Profile(): React.JSX.Element {
         />
         <StatItem label="Since" value={memberSinceLabel} icon="calendar-outline" />
       </View>
+
+      {isSelf ? <ProfileRewardsSection sessionReady={sessionReady} /> : null}
 
       {isSelf ? (
         <Pressable
@@ -1244,7 +1328,12 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: COLORS.white,
     backgroundColor: COLORS.white,
-    overflow: 'hidden',
+    /**
+     * No `overflow: 'hidden'` here on purpose — the inner image is already
+     * clipped to a circle by `UserAvatar`'s own clip view, and clipping the
+     * ring would also crop the absolutely-positioned verified ✓ badge that
+     * sits at the bottom-right of the avatar (right/bottom: -2).
+     */
     ...Platform.select({
       ios: {
         shadowColor: '#000',
@@ -1366,12 +1455,23 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: COLORS.textSecondary,
   },
+  nameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    marginTop: 4,
+    paddingHorizontal: 16,
+  },
   name: {
     fontSize: 26,
     fontWeight: '800',
     color: COLORS.text,
     letterSpacing: -0.5,
-    marginTop: 4,
+    flexShrink: 1,
+  },
+  nameVerifiedIcon: {
+    marginTop: 2,
   },
   occupation: {
     marginTop: 2,
@@ -1434,6 +1534,35 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: COLORS.textSecondary,
     fontStyle: 'italic',
+  },
+  verificationStatusPill: {
+    marginTop: 10,
+  },
+  verificationStack: {
+    marginTop: 10,
+    alignItems: 'center',
+  },
+  verifyCta: {
+    marginTop: 10,
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 999,
+    backgroundColor: 'rgba(37, 99, 235, 0.10)',
+    borderWidth: 1,
+    borderColor: 'rgba(37, 99, 235, 0.18)',
+  },
+  verifyCtaPressed: {
+    opacity: 0.85,
+  },
+  verifyCtaText: {
+    fontSize: 12.5,
+    fontWeight: '700',
+    color: COLORS.secondary,
+    letterSpacing: 0.1,
   },
   bioHint: {
     marginTop: 4,

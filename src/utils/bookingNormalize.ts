@@ -300,6 +300,31 @@ export function mapRawToBookingRow(o: Record<string, unknown>): RideBookingRow |
     (o as Record<string, unknown>).statusReason ?? (o as Record<string, unknown>).status_reason
   );
 
+  /**
+   * Backend SSOT \u2713 badge for the passenger on this booking row. Backend may surface the
+   * flag on the booking root or nested under `user`/`passenger`/`bookedBy`/`rider`,
+   * and may use either camel- or snake_case. We coerce to a strict boolean and only keep
+   * `true` so render sites can safely compare with `=== true`.
+   */
+  const identityVerifiedRaw = (() => {
+    const sources = [o, nestedUser, passenger, bookedBy, rider] as const;
+    const keys = [
+      'isIdentityVerified',
+      'is_identity_verified',
+      'identityVerified',
+      'identity_verified',
+    ] as const;
+    for (const src of sources) {
+      if (!src || typeof src !== 'object') continue;
+      const rec = src as Record<string, unknown>;
+      for (const k of keys) {
+        const v = rec[k];
+        if (v === true || v === 'true') return true;
+      }
+    }
+    return false;
+  })();
+
   const updatedAt = toStr(o.updatedAt ?? o.updated_at);
   const previousBookingId = toStr(o.previousBookingId ?? o.previous_booking_id);
   const retryOfBookingId = toStr(o.retryOfBookingId ?? o.retry_of_booking_id);
@@ -338,6 +363,7 @@ export function mapRawToBookingRow(o: Record<string, unknown>): RideBookingRow |
       : {}),
     ...(passengerListSegmentId ? { passengerListSegmentId } : {}),
     ...(statusReason ? { statusReason } : {}),
+    ...(identityVerifiedRaw ? { isIdentityVerified: true } : {}),
     // Extract dateOfBirth - check root first, then nested objects
     ...((): { dateOfBirth?: string } => {
       const dob = toStr(

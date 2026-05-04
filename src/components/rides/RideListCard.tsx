@@ -24,6 +24,12 @@ import {
 } from '../../utils/bookingStatus';
 import { getRideAvailabilityShort, isRideSeatsFull } from '../../utils/rideSeats';
 import { bookingPassengerDisplayName, ridePublisherDisplayName } from '../../utils/displayNames';
+import { bookingPassengerIsIdentityVerified, ridePublisherIsIdentityVerified } from '../../utils/identityVerified';
+import {
+  setUserIdentityVerified,
+  useIdentityVerifiedCached,
+} from '../../utils/identityVerifiedCache';
+import { ensureUserIdentityVerifiedProbed } from '../../services/userIdentityVerifiedProbe';
 import UserAvatar from '../common/UserAvatar';
 import type { PassengerSearchStraightLinePayload } from '../../utils/passengerSearchStraightLine';
 
@@ -37,6 +43,15 @@ export type RideListCardProps = {
   currentUserName?: string;
   /** Current user profile image (owner card when no passenger row to show). */
   viewerAvatarUrl?: string;
+  /**
+   * Backend SSOT — current viewer's `isIdentityVerified` flag. Used as the
+   * verified ✓ source when the card shows the viewer's own avatar (owner
+   * cards on My Rides / past rides). Backend ride list/detail rarely
+   * surfaces the publisher's verified flag for the viewer themselves, so
+   * this prop closes the gap. Pass `userIsIdentityVerified(user)` from
+   * `AuthContext` at the parent screen.
+   */
+  viewerIsIdentityVerified?: boolean;
   /** Past rides: show “Cancelled” when the viewer’s booking was cancelled. */
   showCancelledBadge?: boolean;
   /** Past rides: show “Rejected” when owner rejected passenger request. */
@@ -83,6 +98,7 @@ export default function RideListCard({
   currentUserId,
   currentUserName,
   viewerAvatarUrl,
+  viewerIsIdentityVerified,
   showCancelledBadge,
   showRejectedBadge,
   rejectedBadgeText,
@@ -201,6 +217,73 @@ export default function RideListCard({
       ? bookingPassengerDisplayName(firstBookingForAvatar)
       : currentUserName || 'You'
     : driverName;
+  /**
+   * Verified ✓ flag must match whichever avatar this card shows:
+   * - Owner card showing the viewer (self) → viewer's verified flag from auth.
+   * - Owner card showing a confirmed passenger's face → that booking's flag.
+   * - Passenger card showing the publisher (driver) → ride's publisher flag.
+   */
+  const avatarShowsViewerSelf = isOwner && (ownerUseSelfIdentity || !firstBookingForAvatar);
+  const avatarShowsConfirmedPassenger = isOwner && !ownerUseSelfIdentity && Boolean(firstBookingForAvatar);
+
+  /**
+   * Whose user ID corresponds to the avatar shown? Used to consult the shared
+   * verified-cache as a resilience fallback when the ride payload omits
+   * `publisherIdentityVerified` (common on `GET /rides` and search results).
+   */
+  const avatarUserId = avatarShowsViewerSelf
+    ? (currentUserId ?? '').trim()
+    : avatarShowsConfirmedPassenger && firstBookingForAvatar
+      ? (firstBookingForAvatar.userId ?? '').trim()
+      : (ride.userId ?? '').trim();
+
+  const cachedAvatarVerified = useIdentityVerifiedCached(avatarUserId);
+
+  /**
+   * Cache propagation + lazy probe:
+   * - When *this* row's payload proves the flag, write it through to the
+   *   shared cache so siblings rendering after us (and the next ride detail
+   *   open) paint the ✓ on the same frame as the avatar instead of one
+   *   frame later. Effect runs post-commit, so no "set state during render"
+   *   warnings even when subscribers (other cards) are mounted.
+   * - When no synchronous source has the answer (peer driver whose ride
+   *   payload omits the flag and whose ID isn't in the persisted cache yet),
+   *   fire the public-profile probe. It's deduped session-wide and
+   *   short-timeout per route, so a long list does at most one network call
+   *   per unique driver.
+   */
+  React.useEffect(() => {
+    if (!avatarUserId) return;
+    if (avatarShowsViewerSelf && viewerIsIdentityVerified === true) {
+      setUserIdentityVerified(avatarUserId, true);
+      return;
+    }
+    if (avatarShowsConfirmedPassenger && firstBookingForAvatar) {
+      if (bookingPassengerIsIdentityVerified(firstBookingForAvatar)) {
+        setUserIdentityVerified(avatarUserId, true);
+        return;
+      }
+    } else if (ridePublisherIsIdentityVerified(ride)) {
+      setUserIdentityVerified(avatarUserId, true);
+      return;
+    }
+    if (!avatarShowsViewerSelf) {
+      void ensureUserIdentityVerifiedProbed(avatarUserId);
+    }
+  }, [
+    avatarUserId,
+    avatarShowsViewerSelf,
+    avatarShowsConfirmedPassenger,
+    firstBookingForAvatar,
+    ride,
+    viewerIsIdentityVerified,
+  ]);
+
+  const avatarVerified = avatarShowsViewerSelf
+    ? viewerIsIdentityVerified === true || cachedAvatarVerified
+    : avatarShowsConfirmedPassenger && firstBookingForAvatar
+      ? bookingPassengerIsIdentityVerified(firstBookingForAvatar) || cachedAvatarVerified
+      : ridePublisherIsIdentityVerified(ride) || cachedAvatarVerified;
   const showAvatarRow = !ownerMyRidesSeatOnly;
   const priceDisplay = formatRidePrice(ride);
   const dateShort = getRideCardDateShort(ride);
@@ -333,6 +416,7 @@ export default function RideListCard({
               size={36}
               backgroundColor={COLORS.primary}
               fallbackTextColor={COLORS.white}
+              verified={avatarVerified}
             />
           </View>
         ) : null}

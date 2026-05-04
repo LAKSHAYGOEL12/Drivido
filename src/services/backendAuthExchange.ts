@@ -4,6 +4,7 @@
  */
 import { resolveApiBaseOrigin } from '../config/apiBaseUrl';
 import { API } from '../constants/API';
+import { getFirebaseAuth } from '../config/firebase';
 import { pickAvatarUrlFromRecord } from '../utils/avatarUrl';
 import {
   peekPendingFirebaseProfileForExchange,
@@ -73,6 +74,19 @@ export type BackendAuthUser = {
   /** Driver comfort tags — same ids as `constants/ridePreferences.ts`. */
   ridePreferences?: string[] | null;
   ride_preferences?: string[] | null;
+  /**
+   * Backend SSOT for the verified \u2713 badge. App renders the badge only when this is `true`.
+   * Admin flips this in Mongo after manually reviewing the uploaded identity document.
+   */
+  isIdentityVerified?: boolean;
+  is_identity_verified?: boolean;
+  identityVerified?: boolean;
+  identity_verified?: boolean;
+  /** Optional status surface for the user's own profile UI: 'pending' | 'verified' | 'rejected'. */
+  identityVerificationStatus?: string;
+  identity_verification_status?: string;
+  identityDocumentStatus?: string;
+  identity_document_status?: string;
 };
 
 export type BackendAuthExchangeResult = {
@@ -155,6 +169,14 @@ export async function exchangeFirebaseIdTokenForBackendSession(
   const body: Record<string, string> = { idToken: idToken.trim() };
   if (pending.dateOfBirth) body.dateOfBirth = pending.dateOfBirth;
   if (pending.gender) body.gender = pending.gender;
+  /**
+   * Backend `firebaseSignIn` resolves name as `decoded.name || body.name || body.displayName`.
+   * Send the live Firebase `displayName` as the body fallback so the user record gets a real
+   * name even when the issued ID token was minted before `updateProfile({ displayName })`
+   * landed (e.g., right after Register on the same Firebase session).
+   */
+  const fbDisplayName = getFirebaseAuth()?.currentUser?.displayName?.trim();
+  if (fbDisplayName) body.name = fbDisplayName.slice(0, 80);
 
   const res = await fetch(url, {
     method: 'POST',

@@ -17,7 +17,7 @@ import {
   BackHandler,
   DeviceEventEmitter,
 } from 'react-native';
-import NetInfo from '@react-native-community/netinfo';
+import { useNetworkStatus } from '../../contexts/NetworkContext';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Alert } from '../../utils/themedAlert';
 import { useFocusEffect, useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
@@ -49,9 +49,11 @@ import {
   OFFLINE_SUBTITLE_REFRESH,
   OFFLINE_SUBTITLE_RETRY,
   OFFLINE_USER_MESSAGE,
+  isLikelyOfflineErrorMessage,
 } from '../../constants/offlineMessaging';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
 import RideListCard from '../../components/rides/RideListCard';
+import { userIsIdentityVerified } from '../../utils/identityVerified';
 import {
   getRideScheduledAt,
   isPublishedRideLiveNow,
@@ -422,8 +424,10 @@ function isLikelyNetworkFailure(e: unknown): boolean {
   if (err.response != null) return false;
   const code = String(err.code ?? '');
   if (code === 'ERR_NETWORK' || code === 'ECONNABORTED') return true;
-  const msg = String(err.message ?? '').toLowerCase();
+  const rawMsg = String(err.message ?? '');
+  const msg = rawMsg.toLowerCase();
   return (
+    isLikelyOfflineErrorMessage(rawMsg) ||
     msg.includes('network request failed') ||
     msg.includes('network error') ||
     msg.includes('failed to fetch') ||
@@ -534,6 +538,7 @@ function YourRidesRideCard({
   currentUserId,
   currentUserName,
   viewerAvatarUrl,
+  viewerIsIdentityVerified,
   bookedRideIds,
   ratedRideIds,
   ratedTargetsByRide,
@@ -547,6 +552,7 @@ function YourRidesRideCard({
   currentUserId: string;
   currentUserName: string;
   viewerAvatarUrl?: string;
+  viewerIsIdentityVerified?: boolean;
   bookedRideIds: Set<string>;
   ratedRideIds: Set<string>;
   ratedTargetsByRide: Record<string, string[]>;
@@ -659,6 +665,7 @@ function YourRidesRideCard({
         currentUserId={currentUserId}
         currentUserName={currentUserName}
         viewerAvatarUrl={viewerAvatarUrl}
+        viewerIsIdentityVerified={viewerIsIdentityVerified}
         showCancelledBadge={showCancelledBadgePast}
         showRejectedBadge={rejectedByYouInPast}
         rejectedBadgeText={rejectedDueToRideStarted ? 'Not approved' : undefined}
@@ -742,6 +749,13 @@ export default function YourRides(): React.JSX.Element {
   const currentUserId = (user?.id ?? '').trim();
   const currentUserName = (user?.name ?? '').trim();
   const viewerAvatarUrl = user?.avatarUrl?.trim();
+  /**
+   * Backend SSOT — verified ✓ for the viewer's own avatar shown on owner ride
+   * cards (My Rides / Past rides). Backend ride list/detail rarely echoes
+   * `publisherIdentityVerified` for the viewer themselves, so we read auth
+   * state and forward it to `RideListCard`.
+   */
+  const viewerVerified = userIsIdentityVerified(user);
   const [rides, setRides] = useState<RideListItem[]>([]);
   const [bookedRideIds, setBookedRideIds] = useState<Set<string>>(new Set());
   const [filter, setFilter] = useState<FilterTab>('myRides');
@@ -751,8 +765,22 @@ export default function YourRides(): React.JSX.Element {
   const [error, setError] = useState<string | null>(null);
   /** Empty list because requests failed at the network layer (not “you have no trips”). */
   const [offlineEmpty, setOfflineEmpty] = useState(false);
-  /** `null` until first NetInfo read — avoids treating “unknown” as offline. */
-  const [netConnected, setNetConnected] = useState<boolean | null>(null);
+  /**
+   * Reactive offline flag from the centralized {@link useNetworkStatus} provider, which
+   * decides offline only after a real backend probe (no more false positives from
+   * NetInfo's third-party reachability checks).
+   */
+  const { isOffline: networkOffline, isOnline: networkOnline } = useNetworkStatus();
+  /**
+   * Mirror the boolean `false` semantics older render code below relies on
+   * (`netConnected === false` = offline, `!== false` = treat as online or unknown).
+   */
+  const netConnected = networkOffline ? false : true;
+  /** Imperative reads inside async callbacks — avoids stale closure on `networkOffline`. */
+  const networkOfflineRef = useRef(networkOffline);
+  useEffect(() => {
+    networkOfflineRef.current = networkOffline;
+  }, [networkOffline]);
   /** List was restored from AsyncStorage while offline. */
   const [showingStaleFromCache, setShowingStaleFromCache] = useState(false);
   /** Softer copy + animation right after booking navigates here. */
@@ -982,27 +1010,22 @@ export default function YourRides(): React.JSX.Element {
     };
   }, [ratingKeyboardOffset]);
 
+  /**
+   * As soon as we're confidently back online, drop the "showing cached" badge — the next
+   * `fetchRides()` call will replace cached rows with live data anyway.
+   */
   useEffect(() => {
-    const unsub = NetInfo.addEventListener((state) => {
-      const online = state.isConnected === true && state.isInternetReachable !== false;
-      setNetConnected(online);
-      if (online) {
-        setShowingStaleFromCache(false);
-      }
-    });
-    void NetInfo.fetch().then((s) => {
-      const online = s.isConnected === true && s.isInternetReachable !== false;
-      setNetConnected(online);
-    });
-    return () => unsub();
-  }, []);
+    if (networkOnline) setShowingStaleFromCache(false);
+  }, [networkOnline]);
 
   const fetchRides = useCallback(async (softRefresh = false) => {
     setError(null);
 
-    const netState = await NetInfo.fetch();
-    const online = netState.isConnected === true && netState.isInternetReachable !== false;
-    setNetConnected(online);
+    /**
+     * Read the latest provider snapshot — no extra network round-trip. The provider's
+     * own probe is what decided this value, so we trust it for cache-vs-fetch routing.
+     */
+    const online = !networkOfflineRef.current;
 
     if (!online && softRefresh && ridesRef.current.length > 0) {
       setBackgroundRefreshing(false);
@@ -1448,10 +1471,8 @@ export default function YourRides(): React.JSX.Element {
           await fetchRides(false);
           return;
         }
-        const net = await NetInfo.fetch();
         if (cancelled) return;
-        const online = net.isConnected === true && net.isInternetReachable !== false;
-        setNetConnected(online);
+        const online = !networkOfflineRef.current;
         if (!online && currentUserId.trim()) {
           const cached = await loadYourRidesListCache(currentUserId.trim());
           if (cancelled) return;
@@ -2106,6 +2127,7 @@ export default function YourRides(): React.JSX.Element {
                   currentUserId={currentUserId}
                   currentUserName={currentUserName}
                   viewerAvatarUrl={viewerAvatarUrl}
+                  viewerIsIdentityVerified={viewerVerified}
                   bookedRideIds={bookedRideIds}
                   ratedRideIds={ratedRideIds}
                   ratedTargetsByRide={ratedTargetsByRide}
@@ -2161,6 +2183,7 @@ export default function YourRides(): React.JSX.Element {
                   currentUserId={currentUserId}
                   currentUserName={currentUserName}
                   viewerAvatarUrl={viewerAvatarUrl}
+                  viewerIsIdentityVerified={viewerVerified}
                   bookedRideIds={bookedRideIds}
                   ratedRideIds={ratedRideIds}
                   ratedTargetsByRide={ratedTargetsByRide}

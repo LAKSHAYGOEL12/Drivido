@@ -1,6 +1,11 @@
 import React, { useCallback, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import UserAvatar from '../../components/common/UserAvatar';
+import {
+  userIsIdentityVerified,
+  viewerIdentityVerificationState,
+} from '../../utils/identityVerified';
+import IdentityVerificationStatus from '../../components/common/IdentityVerificationStatus';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect, useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -52,6 +57,13 @@ export default function UserProfileEntry(): React.JSX.Element {
   const prevTripsSubjectIdRef = useRef<string | null>(null);
 
   const [fetchedSubjectAvatar, setFetchedSubjectAvatar] = useState<string | undefined>();
+  /**
+   * Backend SSOT \u2713 badge for the viewed peer (non-self). Only `true` from
+   * `getUserRatingsSummary` (read from the public-user payload) sets this; we never
+   * derive it from any other state. Cleared whenever the subject changes so a stale
+   * `true` from a previous user can't bleed onto a new profile.
+   */
+  const [fetchedSubjectVerified, setFetchedSubjectVerified] = useState(false);
   const headerPhotoUri = showDeactivatedOther
     ? undefined
     : (route.params?.avatarUrl ?? '').trim() ||
@@ -66,6 +78,7 @@ export default function UserProfileEntry(): React.JSX.Element {
         prevTripsSubjectIdRef.current = null;
         setLoading(true);
         setFetchedSubjectAvatar(undefined);
+        setFetchedSubjectVerified(false);
         setTripsLoading(true);
         setTripsCompleted(0);
         setTripsCancelled(0);
@@ -80,6 +93,7 @@ export default function UserProfileEntry(): React.JSX.Element {
       if (peerDeactivatedFromRoute && !isSelf) {
         setSubjectDeactivatedFromApi(false);
         setFetchedSubjectAvatar(undefined);
+        setFetchedSubjectVerified(false);
         setAvgRating(0);
         setTotalRatings(0);
         setTripsLoading(false);
@@ -108,6 +122,7 @@ export default function UserProfileEntry(): React.JSX.Element {
             setAvgRating(0);
             setTotalRatings(0);
             setFetchedSubjectAvatar(undefined);
+            setFetchedSubjectVerified(false);
             setMemberSinceLabel('—');
             setTripsLoading(false);
             setTripsCompleted(0);
@@ -120,6 +135,7 @@ export default function UserProfileEntry(): React.JSX.Element {
           setAvgRating(summary.avgRating ?? 0);
           setTotalRatings(summary.totalRatings ?? 0);
           setFetchedSubjectAvatar(summary.subjectAvatarUrl);
+          setFetchedSubjectVerified(summary.subjectIdentityVerified === true);
           setSubjectBioFromApi((summary.subjectBio ?? '').trim());
           setSubjectRidePrefsFromApi(
             normalizeRidePreferenceIds(summary.subjectRidePreferences ?? [])
@@ -135,6 +151,7 @@ export default function UserProfileEntry(): React.JSX.Element {
           setAvgRating(0);
           setTotalRatings(0);
           setFetchedSubjectAvatar(undefined);
+          setFetchedSubjectVerified(false);
           setSubjectBioFromApi('');
           setSubjectRidePrefsFromApi([]);
           setMemberSinceLabel(formatMemberSinceLabel(isSelf ? user?.createdAt : undefined));
@@ -240,10 +257,23 @@ export default function UserProfileEntry(): React.JSX.Element {
         </View>
 
         <View style={styles.avatarWrap}>
-          <UserAvatar uri={headerPhotoUri} name={targetDisplayName} size={72} />
+          <UserAvatar
+            uri={headerPhotoUri}
+            name={targetDisplayName}
+            size={72}
+            verified={isSelf ? userIsIdentityVerified(user) : fetchedSubjectVerified}
+          />
         </View>
 
         <Text style={styles.name}>{targetDisplayName}</Text>
+        <IdentityVerificationStatus
+          state={viewerIdentityVerificationState({
+            isSelf,
+            user,
+            subjectVerified: fetchedSubjectVerified,
+          })}
+          style={styles.verificationStatusPill}
+        />
         {(() => {
           const bioLine = isSelf
             ? (user?.bio ?? '').trim() || subjectBioFromApi
@@ -446,6 +476,9 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: COLORS.text,
     textAlign: 'center',
+  },
+  verificationStatusPill: {
+    marginTop: 8,
   },
   bio: {
     marginTop: 4,

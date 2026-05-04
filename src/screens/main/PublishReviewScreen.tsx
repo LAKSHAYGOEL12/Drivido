@@ -5,7 +5,6 @@ import {
   KeyboardAvoidingView,
   Modal,
   Platform,
-  Pressable,
   ScrollView,
   StyleSheet,
   Switch,
@@ -17,7 +16,7 @@ import {
 import { CommonActions, useFocusEffect, useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import NetInfo from '@react-native-community/netinfo';
+import { useNetworkStatus } from '../../contexts/NetworkContext';
 import type { PublishStackParamList } from '../../navigation/types';
 import { COLORS } from '../../constants/colors';
 import { OFFLINE_HEADLINE, OFFLINE_SUBTITLE_RETRY } from '../../constants/offlineMessaging';
@@ -42,6 +41,7 @@ import {
   alertRouteRequiredBeforePrice,
 } from '../../utils/publishAlerts';
 import { addRecentPublished } from '../../services/recent-published-storage';
+import { emitRequestMyRidesListRefresh } from '../../services/myRidesListRefreshEvents';
 import { formatPublishStyleDateLabel } from '../../utils/rideDisplay';
 import { validation, validationErrors } from '../../constants/validation';
 import { showToast } from '../../utils/toast';
@@ -57,6 +57,7 @@ import { Alert } from '../../utils/themedAlert';
 import DatePickerModal from '../../components/common/DatePickerModal';
 import PassengersPickerModal from '../../components/common/PassengersPickerModal';
 import PublishFareBottomSheet from '../../components/publish/PublishFareBottomSheet';
+import TimePickerClock, { type TimePickerClockValue } from '../../components/time/TimePickerClock';
 
 type ScreenRoute = RouteProp<PublishStackParamList, 'PublishReview'>;
 
@@ -73,11 +74,6 @@ function formatTime12(hour24: number, minute: number): string {
 }
 
 const MIN_LEAD_MINUTES = 30;
-const MINUTE_OPTIONS = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55] as const;
-const CLOCK_SIZE = 248;
-const CLOCK_CENTER = CLOCK_SIZE / 2;
-const HOUR_OUTER_RADIUS = CLOCK_SIZE * 0.39;
-const HOUR_INNER_RADIUS = CLOCK_SIZE * 0.24;
 
 function isSelectedDateTimeTooSoon(selectedDate: Date, selectedTime: { hour: number; minute: number }, leadMinutes: number): boolean {
   const now = new Date();
@@ -120,23 +116,12 @@ export default function PublishReviewScreen(): React.JSX.Element {
   const [showTimeModal, setShowTimeModal] = useState(false);
   const [showFareBottomSheet, setShowFareBottomSheet] = useState(false);
   const [showPassengersModal, setShowPassengersModal] = useState(false);
-  const [clockMode, setClockMode] = useState<'hour' | 'minute'>('hour');
   const [clockHour24, setClockHour24] = useState(selectedTimeHour);
   const [clockMinute, setClockMinute] = useState((Math.round(selectedTimeMinute / 5) * 5) % 60);
   const [timeModalToast, setTimeModalToast] = useState('');
   const timeModalToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [netOnline, setNetOnline] = useState<boolean | null>(null);
-
-  React.useEffect(() => {
-    const unsub = NetInfo.addEventListener((s) => {
-      setNetOnline(s.isConnected === true && s.isInternetReachable !== false);
-    });
-    void NetInfo.fetch().then((s) => {
-      setNetOnline(s.isConnected === true && s.isInternetReachable !== false);
-    });
-    return () => unsub();
-  }, []);
+  const { isOffline: offline } = useNetworkStatus();
 
   React.useEffect(() => {
     return () => {
@@ -165,8 +150,6 @@ export default function PublishReviewScreen(): React.JSX.Element {
       return [];
     }
   }, [refreshUser, patchUser]);
-
-  const offline = netOnline === false;
 
   /** Review is final confirmation — stops are fixed; fare matches the route you already built. */
   const routeEndpointsLocked = true;
@@ -267,7 +250,7 @@ export default function PublishReviewScreen(): React.JSX.Element {
         0,
         0
       ).toISOString();
-      const username = (user?.name?.trim() || user?.phone || '').trim() || 'User';
+      const username = (user?.name?.trim() || '').slice(0, 80) || 'Driver';
       const pr = p as Record<string, unknown>;
       const encodedFromNav = pickRoutePolylineEncodedFromRecord(pr);
       const encodedForPost =
@@ -358,6 +341,7 @@ export default function PublishReviewScreen(): React.JSX.Element {
         recentUserKey
       );
 
+      emitRequestMyRidesListRefresh();
       navigation.dispatch(
         CommonActions.reset({
           index: 0,
@@ -590,40 +574,14 @@ export default function PublishReviewScreen(): React.JSX.Element {
     setShowTimeModal(false);
   }, [applyClockTime, clockHour24, clockMinute, selectedDate]);
 
-  const handleClockPress = useCallback(
-    (locationX: number, locationY: number) => {
-      const dx = locationX - CLOCK_CENTER;
-      const dy = locationY - CLOCK_CENTER;
-      const radius = Math.sqrt(dx * dx + dy * dy);
-      let angleDeg = (Math.atan2(dy, dx) * 180) / Math.PI + 90;
-      if (angleDeg < 0) angleDeg += 360;
-
-      if (clockMode === 'hour') {
-        const dialHour = Math.round(angleDeg / 30) % 12;
-        const isInnerRing = radius < (HOUR_OUTER_RADIUS + HOUR_INNER_RADIUS) / 2;
-        const nextHour24 = isInnerRing ? dialHour + 12 : dialHour;
-        setClockHour24(nextHour24);
-        setClockMode('minute');
-      } else {
-        const index = Math.round(angleDeg / 30) % 12;
-        const minute = MINUTE_OPTIONS[index];
-        const candidate = { hour: clockHour24, minute };
-        if (isSelectedDateTimeTooSoon(selectedDate, candidate, MIN_LEAD_MINUTES)) {
-          if (timeModalToastTimerRef.current) clearTimeout(timeModalToastTimerRef.current);
-          setTimeModalToast('Choose a time at least 30 minutes from now.');
-          timeModalToastTimerRef.current = setTimeout(() => setTimeModalToast(''), 1800);
-          return;
-        }
-        setClockMinute(minute);
-      }
-    },
-    [clockMode, clockHour24, selectedDate]
-  );
+  const handleClockChange = useCallback((next: TimePickerClockValue) => {
+    setClockHour24(next.hour24);
+    setClockMinute(next.minute);
+  }, []);
 
   const openTimeModal = useCallback(() => {
     setClockHour24(selectedTimeHour);
     setClockMinute((Math.round(selectedTimeMinute / 5) * 5) % 60);
-    setClockMode('hour');
     setTimeModalToast('');
     setShowTimeModal(true);
   }, [selectedTimeHour, selectedTimeMinute]);
@@ -856,104 +814,13 @@ export default function PublishReviewScreen(): React.JSX.Element {
               ) : null}
               <View style={styles.timeModalContent} onStartShouldSetResponder={() => true}>
                 <Text style={styles.timeModalHeading}>Select time</Text>
-                <View style={styles.clockTimeSelectRow}>
-                  <TouchableOpacity
-                    style={[styles.clockTimeBox, clockMode === 'hour' && styles.clockTimeBoxActive]}
-                    onPress={() => setClockMode('hour')}
-                    activeOpacity={0.85}
-                  >
-                    <Text style={[styles.clockTimeBoxText, clockMode === 'hour' && styles.clockTimeBoxTextActive]}>
-                      {clockHour24.toString().padStart(2, '0')}
-                    </Text>
-                  </TouchableOpacity>
-                  <Text style={styles.clockTimeColon}>:</Text>
-                  <TouchableOpacity
-                    style={[styles.clockTimeBox, clockMode === 'minute' && styles.clockTimeBoxActive]}
-                    onPress={() => setClockMode('minute')}
-                    activeOpacity={0.85}
-                  >
-                    <Text style={[styles.clockTimeBoxText, clockMode === 'minute' && styles.clockTimeBoxTextActive]}>
-                      {clockMinute.toString().padStart(2, '0')}
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-                <Pressable
-                  style={styles.clockFaceWrap}
-                  onPress={(e) => {
-                    const { locationX, locationY } = e.nativeEvent;
-                    handleClockPress(locationX, locationY);
-                  }}
-                >
-                  <View style={[styles.clockFace, { width: CLOCK_SIZE, height: CLOCK_SIZE }]} pointerEvents="none">
-                    {clockMode === 'hour' &&
-                      [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map((h) => {
-                        const angleDeg = h * 30 - 90;
-                        const rad = (angleDeg * Math.PI) / 180;
-                        const x = CLOCK_CENTER + HOUR_OUTER_RADIUS * Math.cos(rad) - 8;
-                        const y = CLOCK_CENTER + HOUR_OUTER_RADIUS * Math.sin(rad) - 9;
-                        return (
-                          <Text key={`outer_${h}`} style={[styles.clockHourLabel, { left: x, top: y }]} pointerEvents="none">
-                            {h}
-                          </Text>
-                        );
-                      })}
-                    {clockMode === 'hour' &&
-                      [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23].map((h) => {
-                        const angleDeg = (h % 12) * 30 - 90;
-                        const rad = (angleDeg * Math.PI) / 180;
-                        const x = CLOCK_CENTER + HOUR_INNER_RADIUS * Math.cos(rad) - 8;
-                        const y = CLOCK_CENTER + HOUR_INNER_RADIUS * Math.sin(rad) - 9;
-                        return (
-                          <Text
-                            key={`inner_${h}`}
-                            style={[styles.clockHourLabel, styles.clockHourLabelInner, { left: x, top: y }]}
-                            pointerEvents="none"
-                          >
-                            {h}
-                          </Text>
-                        );
-                      })}
-                    {clockMode === 'minute' &&
-                      MINUTE_OPTIONS.map((min, idx) => {
-                        const angleDeg = idx * 30 - 90;
-                        const rad = (angleDeg * Math.PI) / 180;
-                        const x = CLOCK_CENTER + HOUR_OUTER_RADIUS * Math.cos(rad) - 10;
-                        const y = CLOCK_CENTER + HOUR_OUTER_RADIUS * Math.sin(rad) - 10;
-                        return (
-                          <Text key={min} style={[styles.clockMinuteLabel, { left: x, top: y }]} pointerEvents="none">
-                            {min.toString().padStart(2, '0')}
-                          </Text>
-                        );
-                      })}
-                    <View
-                      style={[
-                        styles.clockHandWrap,
-                        {
-                          left: CLOCK_CENTER - 15,
-                          top: CLOCK_CENTER - 15,
-                          transform: [{ rotate: `${(clockHour24 % 12) * 30 + (clockMinute / 60) * 30 - 90}deg` }],
-                        },
-                      ]}
-                    >
-                      <View style={styles.clockHourHand} />
-                    </View>
-                    <View
-                      style={[
-                        styles.clockHandWrapMinute,
-                        {
-                          left: CLOCK_CENTER - 21,
-                          top: CLOCK_CENTER - 21,
-                          transform: [{ rotate: `${clockMinute * 6 - 90}deg` }],
-                        },
-                      ]}
-                    >
-                      <View style={styles.clockMinuteHand} />
-                    </View>
-                  </View>
-                </Pressable>
-                <Text style={styles.clockHint}>
-                  {clockMode === 'hour' ? 'Tap clock to pick hour' : 'Tap clock to pick minutes (0–55 in 5 min steps)'}
-                </Text>
+                <TimePickerClock
+                  hour24={clockHour24}
+                  minute={clockMinute}
+                  selectedDate={selectedDate}
+                  onChange={handleClockChange}
+                  minLeadMinutes={MIN_LEAD_MINUTES}
+                />
                 <View style={styles.timeModalActionsRow}>
                   <TouchableOpacity style={styles.timeModalCancelBtn} onPress={cancelTimeModal} activeOpacity={0.85}>
                     <Text style={styles.timeModalCancelBtnText}>Cancel</Text>
@@ -1356,108 +1223,6 @@ const styles = StyleSheet.create({
     color: COLORS.text,
     textAlign: 'center',
     marginBottom: 20,
-  },
-  clockTimeSelectRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 12,
-    gap: 8,
-  },
-  clockTimeBox: {
-    minWidth: 96,
-    height: 68,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    backgroundColor: COLORS.backgroundSecondary,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  clockTimeBoxActive: {
-    borderColor: COLORS.primary,
-    backgroundColor: 'rgba(34,197,94,0.12)',
-  },
-  clockTimeBoxText: {
-    fontSize: 44,
-    fontWeight: '700',
-    color: COLORS.text,
-    lineHeight: 48,
-  },
-  clockTimeBoxTextActive: {
-    color: COLORS.primary,
-  },
-  clockTimeColon: {
-    fontSize: 44,
-    fontWeight: '700',
-    color: COLORS.text,
-    lineHeight: 48,
-    marginHorizontal: 2,
-  },
-  clockFaceWrap: {
-    width: CLOCK_SIZE,
-    height: CLOCK_SIZE,
-    marginVertical: 8,
-  },
-  clockFace: {
-    borderRadius: CLOCK_SIZE / 2,
-    borderWidth: 3,
-    borderColor: COLORS.border,
-    backgroundColor: COLORS.backgroundSecondary,
-    position: 'relative',
-    overflow: 'visible',
-  },
-  clockHourLabel: {
-    position: 'absolute',
-    width: 20,
-    textAlign: 'center',
-    fontSize: 15,
-    fontWeight: '700',
-    color: COLORS.text,
-  },
-  clockHourLabelInner: {
-    fontSize: 13,
-    width: 20,
-    color: COLORS.textSecondary,
-  },
-  clockMinuteLabel: {
-    position: 'absolute',
-    width: 24,
-    textAlign: 'center',
-    fontSize: 15,
-    fontWeight: '700',
-    color: COLORS.text,
-  },
-  clockHandWrap: {
-    position: 'absolute',
-    width: 30,
-    height: 30,
-    alignItems: 'center',
-    justifyContent: 'flex-start',
-  },
-  clockHourHand: {
-    width: 4,
-    height: 30,
-    backgroundColor: COLORS.text,
-    borderRadius: 2,
-  },
-  clockHandWrapMinute: {
-    position: 'absolute',
-    width: 42,
-    height: 42,
-    alignItems: 'center',
-    justifyContent: 'flex-start',
-  },
-  clockMinuteHand: {
-    width: 2.5,
-    height: 42,
-    backgroundColor: COLORS.primary,
-    borderRadius: 1.5,
-  },
-  clockHint: {
-    fontSize: 12,
-    color: COLORS.textSecondary,
-    marginTop: 6,
-    marginBottom: 4,
   },
   timeModalActionsRow: {
     flexDirection: 'row',

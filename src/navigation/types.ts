@@ -142,6 +142,8 @@ export type SearchStackParamList = {
     otherUserName: string;
     otherUserId: string;
     otherUserAvatarUrl?: string;
+    /** Backend SSOT — peer's `isIdentityVerified` flag for the chat header avatar tick. */
+    otherUserIdentityVerified?: boolean;
     /** Peer account deactivated — mask header and block new messages. */
     otherUserDeactivated?: boolean;
   };
@@ -325,6 +327,8 @@ export type RidesStackParamList = {
     otherUserName: string;
     otherUserId: string;
     otherUserAvatarUrl?: string;
+    /** Backend SSOT — peer's `isIdentityVerified` flag for the chat header avatar tick. */
+    otherUserIdentityVerified?: boolean;
     /** Peer account deactivated — mask header and block new messages. */
     otherUserDeactivated?: boolean;
   };
@@ -341,6 +345,8 @@ export type InboxStackParamList = {
     otherUserName: string;
     otherUserId: string;
     otherUserAvatarUrl?: string;
+    /** Backend SSOT — peer's `isIdentityVerified` flag for the chat header avatar tick. */
+    otherUserIdentityVerified?: boolean;
     otherUserDeactivated?: boolean;
   };
   /** Same screen as other tabs — open the ride this chat belongs to (e.g. from inbox-only stack). */
@@ -399,6 +405,8 @@ export type ProfileStackParamList = {
   EditProfile: undefined;
   /** Password, deactivate messaging, delete account (email/password Firebase users). */
   AccountSecurity: undefined;
+  /** Standalone identity verification flow reached from Profile when not yet uploaded. */
+  VerifyIdentity: undefined;
   /** Trip stats; omit `userId` for the signed-in user. */
   Trips:
     | {
